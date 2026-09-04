@@ -118,35 +118,52 @@ std::string formatFlashId(const std::array<std::uint8_t,4>& id)
 bool CartridgeStorage::Impl::out(const std::vector<std::uint8_t>& bytes,
                                  std::string& error)
 {
-    int transferred = 0;
-    const int result = libusb_bulk_transfer(handle, 0x02,
-        const_cast<unsigned char*>(bytes.data()), static_cast<int>(bytes.size()),
-        &transferred, timeout_ms);
-    if (result != 0) {
-        if(result==LIBUSB_ERROR_PIPE)(void)libusb_clear_halt(handle,0x02);
+    for (unsigned attempt = 0; attempt < 2; ++attempt) {
+        int transferred = 0;
+        const int result = libusb_bulk_transfer(handle, 0x02,
+            const_cast<unsigned char*>(bytes.data()), static_cast<int>(bytes.size()),
+            &transferred, timeout_ms);
+        if (result == 0) {
+            if (transferred != static_cast<int>(bytes.size())) {
+                error = "USB OUT returned a short transfer"; return false;
+            }
+            return true;
+        }
+        // A stalled endpoint normally transfers no bytes. Clear the halt and
+        // retry the same transaction once; this avoids replaying a partially
+        // accepted flash command while recovering transient USB stalls.
+        if (result == LIBUSB_ERROR_PIPE && transferred == 0 && attempt == 0 &&
+            libusb_clear_halt(handle, 0x02) == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            continue;
+        }
         error = usbError("USB OUT failed", result); return false;
     }
-    if (transferred != static_cast<int>(bytes.size())) {
-        error = "USB OUT returned a short transfer"; return false;
-    }
-    return true;
+    return false;
 }
 
 bool CartridgeStorage::Impl::in(std::vector<std::uint8_t>& bytes,
                                 std::size_t size, std::string& error)
 {
-    bytes.assign(size, 0);
-    int transferred = 0;
-    const int result = libusb_bulk_transfer(handle, 0x81, bytes.data(),
-        static_cast<int>(size), &transferred, timeout_ms);
-    if (result != 0) {
-        if(result==LIBUSB_ERROR_PIPE)(void)libusb_clear_halt(handle,0x81);
+    for (unsigned attempt = 0; attempt < 2; ++attempt) {
+        bytes.assign(size, 0);
+        int transferred = 0;
+        const int result = libusb_bulk_transfer(handle, 0x81, bytes.data(),
+            static_cast<int>(size), &transferred, timeout_ms);
+        if (result == 0) {
+            if (transferred != static_cast<int>(size)) {
+                error = "USB IN returned a short transfer"; return false;
+            }
+            return true;
+        }
+        if (result == LIBUSB_ERROR_PIPE && attempt == 0 &&
+            libusb_clear_halt(handle, 0x81) == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            continue;
+        }
         error = usbError("USB IN failed", result); return false;
     }
-    if (transferred != static_cast<int>(size)) {
-        error = "USB IN returned a short transfer"; return false;
-    }
-    return true;
+    return false;
 }
 
 bool CartridgeStorage::Impl::commandEcho(
