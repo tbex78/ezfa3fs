@@ -2,7 +2,7 @@
 
 EZ3FS is an independent indexed archive filesystem for the 32-MiB EZF Advance
 III NOR flash geometry. It contains no EZ3 loader, menu, ROM catalog, FAT
-volume, or GBA ROM patching. Current version: **0.10.0**.
+volume, or GBA ROM patching. Current version: **0.11.0**.
 
 Version 0.4.0 added read-only physical-cartridge inspection and extraction.
 Version 0.4.1 recognizes an EZ3FS signature as a safe fallback when a genuine
@@ -16,6 +16,7 @@ Version 0.8.0 adds verified physical-cartridge image backup with `card-pull`.
 Version 0.9.0 adds transactional writable cartridge mounting through a local
 staging image.
 Version 0.10.0 adds staged-image status and confirmed commit workflows.
+Version 0.11.0 adds recovery snapshots for interrupted writable mounts.
 See [EZ3FS_FORMAT.md](EZ3FS_FORMAT.md) for the binary format.
 
 ## Build
@@ -129,3 +130,14 @@ Alternatively, inspect the staged changes and commit them as one transaction:
 when the raw images already match; otherwise it displays the change summary,
 requires `COMMIT EZ3FS`, programs with read-back verification, and preserves
 the staging image as a recovery copy.
+
+Writable staged mounts create `STAGING.ez3fs.recovery.ez3fs` before mounting.
+The snapshot is removed after a clean unmount. If the mount is interrupted,
+recover the pre-edit image with:
+
+```sh
+./ez3fs card-recover working.ez3fs
+```
+
+Recovery requires the exact confirmation text `RECOVER EZ3FS` and never
+accesses the cartridge.

@@ -1,5 +1,6 @@
 #include "ez3fs/archive.hpp"
 #include "ez3fs/archive_comparison.hpp"
+#include "ez3fs/recovery_snapshot.hpp"
 #include "ez3fs/byte_storage.hpp"
 #include "ez3fs/cartridge_storage.hpp"
 #include "ez3fs/cartridge_programmer.hpp"
@@ -32,7 +33,7 @@ std::uint64_t fileModifiedTime(const fs::path& path) {
     const auto seconds=system_time.time_since_epoch().count();
     return seconds>0?static_cast<std::uint64_t>(seconds):0;
 }
-void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs card-info\n  ez3fs card-list\n  ez3fs card-verify\n  ez3fs card-extract OUTPUT_DIRECTORY\n  ez3fs card-pull OUTPUT.ez3fs\n  ez3fs card-write IMAGE.ez3fs\n  ez3fs card-status STAGING.ez3fs\n  ez3fs card-commit STAGING.ez3fs\n  ez3fs card-mount MOUNTPOINT [--foreground]\n  ez3fs card-mount MOUNTPOINT --writable STAGING.ez3fs [--foreground]\n  ez3fs --version\n"; }
+void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs card-info\n  ez3fs card-list\n  ez3fs card-verify\n  ez3fs card-extract OUTPUT_DIRECTORY\n  ez3fs card-pull OUTPUT.ez3fs\n  ez3fs card-write IMAGE.ez3fs\n  ez3fs card-status STAGING.ez3fs\n  ez3fs card-commit STAGING.ez3fs\n  ez3fs card-recover STAGING.ez3fs\n  ez3fs card-mount MOUNTPOINT [--foreground]\n  ez3fs card-mount MOUNTPOINT --writable STAGING.ez3fs [--foreground]\n  ez3fs --version\n"; }
 bool loadArchive(const fs::path& p,ez3fs::Archive& a) {
     std::vector<std::uint8_t> b; if(!readFile(p,b)){std::cerr<<"Could not read image: "<<p<<'\n';return false;}
     std::string e; if(!a.open(std::move(b),e)){std::cerr<<e<<'\n';return false;} return true;
@@ -180,6 +181,26 @@ int cardCommit(const fs::path& staging_path) {
     std::cout<<"Committed and verified "<<staging_path<<". The staging image was preserved.\n";
     return 0;
 }
+int cardRecover(const fs::path& staging_path) {
+    ez3fs::RecoverySnapshot snapshot(staging_path);std::string error;
+    if(!snapshot.exists(error)){
+        if(error.empty())error="no recovery snapshot found for "+staging_path.string();
+        std::cerr<<error<<'\n';return 1;
+    }
+    ez3fs::Archive recovery;if(!loadArchive(snapshot.recoveryPath(),recovery))return 1;
+    if(!recovery.verify(error)){std::cerr<<error<<'\n';return 1;}
+    std::cout<<"WARNING: this will replace the staging image with its recovery snapshot.\n"
+             <<"Type RECOVER EZ3FS to continue: "<<std::flush;
+    std::string confirmation;std::getline(std::cin,confirmation);
+    if(confirmation!="RECOVER EZ3FS"){
+        std::cerr<<"Cancelled; staging image was not modified.\n";return 1;
+    }
+    if(!snapshot.restore(error)){std::cerr<<error<<'\n';return 1;}
+    if(!snapshot.clear(error)){
+        std::cerr<<"Recovered staging image, but could not clear snapshot: "<<error<<'\n';return 1;
+    }
+    std::cout<<"Recovered and verified "<<staging_path<<".\n";return 0;
+}
 int cardMount(int argc,char** argv) {
     if(argc<3||argc>6){usage();return 1;}bool foreground=false,writable=false;fs::path staging;
     for(int i=3;i<argc;++i){const std::string option(argv[i]);
@@ -195,11 +216,16 @@ int cardMount(int argc,char** argv) {
         std::cerr<<error<<'\n';std::string ignored;storage.close(ignored);return 1;}
     if(!closeCartridge(storage))return 1;
     if(writable){
+        ez3fs::RecoverySnapshot recovery(staging);std::string recovery_error;
+        if(!recovery.create(archive,recovery_error)){std::cerr<<recovery_error<<'\n';return 1;}
         if(!staged_output->write(archive.image(),error)){std::cerr<<error<<'\n';return 1;}
         std::cout<<"Cartridge changes will be staged in "<<staging<<".\n"
                  <<"The cartridge will not change automatically. After unmounting, run:\n"
                  <<"  ez3fs card-write "<<staging<<'\n';
-        return ez3fs::mountImage(staging.string(),argv[2],true,foreground);
+        const int result=ez3fs::mountImage(staging.string(),argv[2],true,foreground);
+        if(result==0){if(!recovery.clear(recovery_error))std::cerr<<"Warning: "<<recovery_error<<'\n';}
+        else std::cerr<<"Writable mount did not finish cleanly; recovery snapshot preserved at "<<recovery.recoveryPath()<<'\n';
+        return result;
     }
     return ez3fs::mountArchive(archive,argv[2],foreground,"ez3fs-card");
 }
@@ -276,6 +302,7 @@ int main(int argc,char** argv) {
     if(argc==3&&std::string(argv[1])=="card-write")return cardWrite(argv[2]);
     if(argc==3&&std::string(argv[1])=="card-status")return cardStatus(argv[2]);
     if(argc==3&&std::string(argv[1])=="card-commit")return cardCommit(argv[2]);
+    if(argc==3&&std::string(argv[1])=="card-recover")return cardRecover(argv[2]);
     if(argc>=2&&std::string(argv[1])=="card-mount")return cardMount(argc,argv);
     usage();return 1;
 }
