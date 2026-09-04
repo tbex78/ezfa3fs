@@ -17,6 +17,9 @@ Version 0.9.0 adds transactional writable cartridge mounting through a local
 staging image.
 Version 0.10.0 adds staged-image status and confirmed commit workflows.
 Version 0.11.0 adds recovery snapshots for interrupted writable mounts.
+The experimental EZ3FS-LIVE `1.0.0` subsystem is documented in
+[EZ3FS_LIVE_FORMAT.md](EZ3FS_LIVE_FORMAT.md); it currently runs only in the
+NOR-aware simulator and does not alter physical-cartridge commands.
 See [EZ3FS_FORMAT.md](EZ3FS_FORMAT.md) for the binary format.
 
 ## Build
