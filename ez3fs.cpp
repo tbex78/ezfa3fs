@@ -36,6 +36,7 @@ std::uint64_t fileModifiedTime(const fs::path& path) {
     return seconds>0?static_cast<std::uint64_t>(seconds):0;
 }
 void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs live-format IMAGE.ez3live\n  ez3fs live-list IMAGE.ez3live\n  ez3fs live-mkdir IMAGE.ez3live DIRECTORY\n  ez3fs live-put IMAGE.ez3live SOURCE_FILE DESTINATION\n  ez3fs live-get IMAGE.ez3live FILE OUTPUT_FILE\n  ez3fs live-rm IMAGE.ez3live FILE\n  ez3fs live-rmdir IMAGE.ez3live DIRECTORY\n  ez3fs card-info\n  ez3fs card-list\n  ez3fs card-verify\n  ez3fs card-extract OUTPUT_DIRECTORY\n  ez3fs card-pull OUTPUT.ez3fs\n  ez3fs card-write IMAGE.ez3fs\n  ez3fs card-status STAGING.ez3fs\n  ez3fs card-commit STAGING.ez3fs\n  ez3fs card-recover STAGING.ez3fs\n  ez3fs card-mount MOUNTPOINT [--foreground]\n  ez3fs card-mount MOUNTPOINT --writable STAGING.ez3fs [--foreground]\n  ez3fs --version\n"; }
+bool confirm(const std::string& prompt) { std::cout<<prompt<<" [y/N]: "<<std::flush;std::string answer;std::getline(std::cin,answer);return answer=="y"||answer=="Y"||answer=="yes"||answer=="YES"; }
 bool loadArchive(const fs::path& p,ez3fs::Archive& a) {
     std::vector<std::uint8_t> b; if(!readFile(p,b)){std::cerr<<"Could not read image: "<<p<<'\n';return false;}
     std::string e; if(!a.open(std::move(b),e)){std::cerr<<e<<'\n';return false;} return true;
@@ -124,9 +125,8 @@ int cardWrite(const fs::path& path) {
     if(!archive.verify(error)){std::cerr<<error<<'\n';return 1;}
     std::cout<<"WARNING: this will erase the complete 32-MiB cartridge and program\n"
              <<archive.image().size()<<" bytes from "<<path<<".\n"
-             <<"Type WRITE EZ3FS to continue: "<<std::flush;
-    std::string confirmation;std::getline(std::cin,confirmation);
-    if(confirmation!="WRITE EZ3FS"){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+             <<"Confirm cartridge replacement"<<'\n';
+    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
     ez3fs::CartridgeProgrammer programmer;
     if(!programmer.programAndVerify(archive.image(),std::cout,error)){
         std::cerr<<"Cartridge programming failed: "<<error<<'\n';return 1;
@@ -173,9 +173,8 @@ int cardCommit(const fs::path& staging_path) {
     if(!comparison.requiresCommit()){
         std::cout<<"Cartridge already matches the staging image; nothing to commit.\n";return 0;}
     std::cout<<"WARNING: committing will erase and replace the complete cartridge.\n"
-             <<"Type COMMIT EZ3FS to continue: "<<std::flush;
-    std::string confirmation;std::getline(std::cin,confirmation);
-    if(confirmation!="COMMIT EZ3FS"){
+             <<"Confirm cartridge replacement"<<'\n';
+    if(!confirm("Proceed")){
         std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
     std::string error;ez3fs::CartridgeProgrammer programmer;
     if(!programmer.programAndVerify(staging.image(),std::cout,error)){
@@ -192,9 +191,8 @@ int cardRecover(const fs::path& staging_path) {
     ez3fs::Archive recovery;if(!loadArchive(snapshot.recoveryPath(),recovery))return 1;
     if(!recovery.verify(error)){std::cerr<<error<<'\n';return 1;}
     std::cout<<"WARNING: this will replace the staging image with its recovery snapshot.\n"
-             <<"Type RECOVER EZ3FS to continue: "<<std::flush;
-    std::string confirmation;std::getline(std::cin,confirmation);
-    if(confirmation!="RECOVER EZ3FS"){
+             <<"Confirm staging image recovery"<<'\n';
+    if(!confirm("Proceed")){
         std::cerr<<"Cancelled; staging image was not modified.\n";return 1;
     }
     if(!snapshot.restore(error)){std::cerr<<error<<'\n';return 1;}
@@ -357,8 +355,8 @@ int liveCardEraseBlock(const std::string& block_text) {
     std::size_t block=0;try { std::size_t parsed=0;block=std::stoull(block_text,&parsed,0);if(parsed!=block_text.size())throw std::invalid_argument("block"); }
     catch(const std::exception&) { std::cerr<<"Invalid cartridge block: "<<block_text<<'\n';return 1; }
     if(block<2||block>=ez3fs::live::NorFlash::block_count){std::cerr<<"Only blocks 2 through 511 may be erased.\n";return 1;}
-    std::cout<<"WARNING: this will erase live cartridge block "<<block<<" (64 KiB).\nType ERASE EZ3FS-LIVE BLOCK to continue: "<<std::flush;std::string confirmation;std::getline(std::cin,confirmation);
-    if(confirmation!="ERASE EZ3FS-LIVE BLOCK"){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    std::cout<<"WARNING: this will erase live cartridge block "<<block<<" (64 KiB).\n";
+    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
     ez3fs::CartridgeProgrammer programmer;std::string error;if(!programmer.eraseLiveBlock(block,std::cout,error)){std::cerr<<error<<'\n';return 1;}return 0;
 }
 int liveCardWrite(const fs::path& image) {
@@ -370,9 +368,8 @@ int liveCardWrite(const fs::path& image) {
     if(!ez3fs::live::Filesystem::open(flash,filesystem,error)||!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}
     std::cout<<"WARNING: this will erase the complete 32-MiB cartridge and program\n"
              <<"the verified EZ3FS-LIVE image from "<<image<<".\n"
-             <<"Type WRITE EZ3FS-LIVE to continue: "<<std::flush;
-    std::string confirmation;std::getline(std::cin,confirmation);
-    if(confirmation!="WRITE EZ3FS-LIVE"){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+             <<"Confirm cartridge replacement"<<'\n';
+    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
     ez3fs::CartridgeProgrammer programmer;
     if(!programmer.programAndVerify(bytes,std::cout,error)){std::cerr<<"Cartridge programming failed: "<<error<<'\n';return 1;}
     std::cout<<"Programmed and verified the EZ3FS-LIVE image successfully.\n";return 0;

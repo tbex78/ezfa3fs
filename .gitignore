@@ -8,6 +8,7 @@ misc/
 notes/
 pcap/
 
+*.bin
 /ez3fs
 *.ez3fs
 *.ez3fs.tmp
