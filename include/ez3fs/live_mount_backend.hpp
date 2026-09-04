@@ -3,6 +3,8 @@
 #include "ez3fs/live_filesystem.hpp"
 #include "ez3fs/mount_backend.hpp"
 
+#include <map>
+
 namespace ez3fs {
 
 class LiveMountBackend final : public MountBackend {
@@ -19,13 +21,19 @@ public:
     bool removeFile(const std::string& path,std::string& error) override;
     bool removeDirectory(const std::string& path,std::string& error) override;
     bool rename(const std::string& from,const std::string& to,std::string& error) override;
-    bool commit(std::string& error) override { error.clear();return true; }
+    bool commit(std::string& error) override;
     std::uint64_t capacityBytes() const noexcept override { return live::NorFlash::capacity; }
     std::uint64_t freeBytes() const override { return filesystem_.freeBlocks()*live::NorFlash::block_size; }
     std::size_t entryCount() const noexcept override { return filesystem_.entries().size(); }
 private:
+    struct PendingFile final {
+        std::vector<std::uint8_t> bytes;
+        std::uint64_t modified_time = 0;
+    };
     static std::string normalize(const std::string& path);
+    bool stageFile(const std::string& path,PendingFile*& pending,std::string& error);
     live::Filesystem& filesystem_;
+    std::map<std::string,PendingFile> pending_files_;
 };
 
 } // namespace ez3fs

@@ -4,7 +4,7 @@ EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
 NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
 FAT partition, or ROM-patching workflow.
 
-Application version: **0.30.2**.
+Application version: **0.30.6**.
 
 Two incompatible formats are supported:
 
@@ -38,6 +38,10 @@ recoverability take priority over performance in this version.
 EZ3FS-LIVE does not yet implement garbage collection. Replaced and deleted
 file blocks are not reused, so repeated writes reduce the free-block count
 until the image is reformatted or rebuilt.
+
+Unix permission bits are not part of either image format. FUSE exposes fixed
+`0755` directory and `0644` file modes; `chmod` on a writable mount is
+accepted as a compatibility no-op so standard copy tools can complete.
 
 ## Build
 

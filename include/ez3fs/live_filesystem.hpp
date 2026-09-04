@@ -73,6 +73,8 @@ public:
     bool rename(const std::string& from,const std::string& to,std::string& error);
     bool readFile(const std::string& path,std::vector<std::uint8_t>& bytes,
                   std::string& error) const;
+    bool readFileRange(const std::string& path,std::size_t offset,std::size_t size,
+                       std::vector<std::uint8_t>& bytes,std::string& error) const;
     bool verify(std::string& error) const;
     const std::vector<Entry>& entries() const noexcept { return entries_; }
     std::uint64_t generation() const noexcept { return generation_; }

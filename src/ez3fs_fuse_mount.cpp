@@ -92,6 +92,14 @@ int ez3fsOpen(const char* path,struct fuse_file_info* info) {
     std::lock_guard<std::mutex> lock(session().mutex());MountNode node;if(!session().backend().lookup(path,node)||node.directory)return -ENOENT;
     if((info->flags&O_ACCMODE)!=O_RDONLY&&!session().backend().writable())return -EROFS;return 0;
 }
+int ez3fsChmod(const char* path,mode_t,struct fuse_file_info*) {
+    std::lock_guard<std::mutex> lock(session().mutex());MountNode node;
+    if(!session().backend().lookup(path,node))return -ENOENT;
+    // EZ3FS formats do not store Unix permission bits. Accept chmod on a
+    // writable mount so standard copy tools can finish, while getattr keeps
+    // exposing the filesystem's fixed 0644/0755 policy.
+    return session().backend().writable()?0:-EROFS;
+}
 int ez3fsRead(const char* path,char* buffer,size_t size,off_t offset,struct fuse_file_info*) {
     if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().mutex());std::vector<std::uint8_t> bytes;
     if(!session().backend().read(path,static_cast<std::size_t>(offset),size,bytes))return -ENOENT;
@@ -117,6 +125,7 @@ int ez3fsRename(const char* from,const char* to,unsigned flags) {if(flags!=0)ret
     const bool changed=session().backend().rename(from,to,error);return finishMutation(changed,error);}
 int ez3fsFlush(const char*,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return session().commit()?0:-EIO;}
 int ez3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return session().commit()?0:-EIO;}
+int ez3fsRelease(const char*,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return session().commit()?0:-EIO;}
 void ez3fsDestroy(void* private_data) {auto* mounted=static_cast<MountSession*>(private_data);std::lock_guard<std::mutex> lock(mounted->mutex());mounted->commit();}
 int ez3fsStatfs(const char*,struct statvfs* status) {std::lock_guard<std::mutex> lock(session().mutex());
     std::memset(status,0,sizeof(*status));status->f_bsize=4096;status->f_frsize=4096;
@@ -125,9 +134,9 @@ int ez3fsStatfs(const char*,struct statvfs* status) {std::lock_guard<std::mutex>
     status->f_ffree=1024;status->f_favail=1024;status->f_namemax=255;return 0;}
 
 fuse_operations operations() {fuse_operations value{};value.getattr=ez3fsGetattr;value.readdir=ez3fsReaddir;value.open=ez3fsOpen;
-    value.read=ez3fsRead;value.mkdir=ez3fsMkdir;value.create=ez3fsCreate;value.write=ez3fsWrite;value.truncate=ez3fsTruncate;
+    value.read=ez3fsRead;value.chmod=ez3fsChmod;value.mkdir=ez3fsMkdir;value.create=ez3fsCreate;value.write=ez3fsWrite;value.truncate=ez3fsTruncate;
     value.unlink=ez3fsUnlink;value.rmdir=ez3fsRmdir;value.rename=ez3fsRename;value.flush=ez3fsFlush;value.fsync=ez3fsFsync;
-    value.destroy=ez3fsDestroy;value.statfs=ez3fsStatfs;return value;}
+    value.release=ez3fsRelease;value.destroy=ez3fsDestroy;value.statfs=ez3fsStatfs;return value;}
 int runMount(MountSession& mounted,const std::string& mountpoint,
              bool foreground,const std::string& filesystem_name) {
     auto callbacks=operations();

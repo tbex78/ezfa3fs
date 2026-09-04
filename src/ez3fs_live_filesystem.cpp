@@ -236,12 +236,32 @@ bool Filesystem::rename(const std::string& from,const std::string& to,std::strin
 bool Filesystem::readFile(const std::string& path,std::vector<std::uint8_t>& bytes,
                           std::string& error) const {
     const auto* entry=find(path);if(!entry||entry->directory){error="live file does not exist";return false;}
-    bytes.resize(static_cast<std::size_t>(entry->size));std::size_t done=0;
-    for(std::uint32_t i=0;i<entry->block_count&&done<bytes.size();++i){
-        std::vector<std::uint8_t> block(NorFlash::block_size);if(!flash_.read((entry->first_block+i)*NorFlash::block_size,block.data(),block.size(),error))return false;
-        const auto count=std::min(block.size(),bytes.size()-done);std::copy_n(block.data(),count,bytes.data()+done);done+=count;
-    }
+    if(!readFileRange(path,0,static_cast<std::size_t>(entry->size),bytes,error))return false;
     if(Crc32::calculate(bytes.data(),bytes.size())!=entry->crc32){error="live file checksum mismatch";return false;}
+    error.clear();return true;
+}
+
+bool Filesystem::readFileRange(const std::string& path,std::size_t offset,
+                               std::size_t size,std::vector<std::uint8_t>& bytes,
+                               std::string& error) const {
+    const auto* entry=find(path);
+    if(!entry||entry->directory){error="live file does not exist";return false;}
+    const auto file_size=static_cast<std::size_t>(entry->size);
+    if(offset>file_size){error="live file read offset is out of bounds";return false;}
+    const auto count=std::min(size,file_size-offset);bytes.clear();bytes.reserve(count);
+    if(count==0){error.clear();return true;}
+    const auto first=offset/NorFlash::block_size;
+    const auto last=(offset+count-1)/NorFlash::block_size;
+    std::vector<std::uint8_t> block(NorFlash::block_size);
+    for(std::size_t index=first;index<=last;++index) {
+        if(!flash_.read((entry->first_block+index)*NorFlash::block_size,
+                        block.data(),block.size(),error))return false;
+        const auto begin=index==first?offset%NorFlash::block_size:0;
+        const auto end=index==last?((offset+count-1)%NorFlash::block_size)+1:
+                                  NorFlash::block_size;
+        bytes.insert(bytes.end(),block.begin()+static_cast<std::ptrdiff_t>(begin),
+                     block.begin()+static_cast<std::ptrdiff_t>(end));
+    }
     error.clear();return true;
 }
 

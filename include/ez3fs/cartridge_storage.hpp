@@ -39,7 +39,7 @@ private:
     friend class CartridgeLiveDevice;
     bool readLiveBlockAfterWrite(std::size_t block,
                                  std::vector<std::uint8_t>& bytes,
-                                 std::string& error);
+                                 std::string& error,bool reopen_first);
     class Impl;
     std::unique_ptr<Impl> impl_;
 };

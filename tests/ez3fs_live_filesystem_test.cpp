@@ -16,6 +16,12 @@ int main()
     std::vector<std::uint8_t> bytes;
     require(filesystem.readFile("docs/readme.txt",bytes,error));
     require(bytes==std::vector<std::uint8_t>({'o','k'}));
+    std::vector<std::uint8_t> large(ez3fs::live::NorFlash::block_size+4);
+    for(std::size_t i=0;i<large.size();++i)large[i]=static_cast<std::uint8_t>(i);
+    require(filesystem.putFile("docs/large.bin",large,1234,error));
+    require(filesystem.readFileRange("docs/large.bin",
+        ez3fs::live::NorFlash::block_size-2,6,bytes,error));
+    require(bytes==std::vector<std::uint8_t>({0xFE,0xFF,0x00,0x01,0x02,0x03}));
     const auto generation=filesystem.generation();
     require(filesystem.putFile("docs/readme.txt",{'n','e','w'},1235,error));
     require(filesystem.generation()>generation);
@@ -33,9 +39,10 @@ int main()
     ez3fs::live::Filesystem reopened(flash);
     require(ez3fs::live::Filesystem::open(flash,reopened,error));
     require(reopened.generation()==before);
-    require(reopened.entries().size()==2);
+    require(reopened.entries().size()==3);
     require(reopened.freeBlocks()==free_before_data_failure-1);
     require(!reopened.createDirectory("docs/readme.txt",error));
     require(reopened.removeFile("docs/readme.txt",error));
+    require(reopened.removeFile("docs/large.bin",error));
     require(reopened.removeDirectory("docs",error));
 }

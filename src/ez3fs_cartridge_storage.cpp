@@ -590,17 +590,22 @@ bool CartridgeStorage::eraseLiveBlock(std::size_t block,std::string& error) { re
 bool CartridgeStorage::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) { return impl_->programLiveBlock(block,bytes,std::cerr,error); }
 bool CartridgeStorage::readLiveBlockAfterWrite(std::size_t block,
                                                std::vector<std::uint8_t>& bytes,
-                                               std::string& error) {
-    std::string close_error;const bool closed=close(close_error);
+                                               std::string& error,
+                                               bool reopen_first) {
+    bytes.resize(live::NorFlash::block_size);
+    if(!reopen_first&&read(block*live::NorFlash::block_size,bytes.data(),bytes.size(),error)) {
+        error.clear();return true;
+    }
+    const auto direct_error=error;std::string close_error;const bool closed=close(close_error);
     std::string reopen_error;
     if(!openForLiveWrite(reopen_error)) {
         error="could not reopen cartridge after live write: "+reopen_error;
         if(!closed&&!close_error.empty())error+="; close also failed: "+close_error;
         return false;
     }
-    bytes.resize(live::NorFlash::block_size);
     if(!read(block*live::NorFlash::block_size,bytes.data(),bytes.size(),error)) {
         error="could not verify live cartridge block "+std::to_string(block)+": "+error;
+        if(!direct_error.empty())error+="; direct verification also failed: "+direct_error;
         return false;
     }
     error.clear();return true;
@@ -610,7 +615,7 @@ bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& e
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
         std::string operation_error;const bool completed=impl_->eraseLiveBlock(block,std::cerr,operation_error,true);
         std::vector<std::uint8_t> readback;
-        if(!readLiveBlockAfterWrite(block,readback,error))return false;
+        if(!readLiveBlockAfterWrite(block,readback,error,!completed))return false;
         const auto programmed=std::find_if(readback.begin(),readback.end(),[](std::uint8_t byte){return byte!=0xFF;});
         if(programmed==readback.end()){error.clear();return true;}
         std::ostringstream detail;
@@ -628,7 +633,7 @@ bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::v
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
         std::string operation_error;const bool completed=impl_->programLiveBlock(block,bytes,std::cerr,operation_error,true);
         std::vector<std::uint8_t> readback;
-        if(!readLiveBlockAfterWrite(block,readback,error))return false;
+        if(!readLiveBlockAfterWrite(block,readback,error,!completed))return false;
         const auto mismatch=std::mismatch(readback.begin(),readback.end(),bytes.begin());
         if(mismatch.first==readback.end()){error.clear();return true;}
         std::ostringstream detail;

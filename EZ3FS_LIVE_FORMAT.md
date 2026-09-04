@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.30.2`.
+`0.30.6`.
 
 ## Geometry and layout
 
@@ -114,7 +114,7 @@ block, including leaked blocks from interrupted writes. This prevents unsafe
 NOR `0 -> 1` programming attempts after remounting.
 
 `live-list` reports the remaining free tail blocks. There is no garbage
-collector in format/application version 1.0.0/0.30.2. Space is recovered only
+collector in format/application version 1.0.0/0.30.6. Space is recovered only
 by creating a fresh image or rebuilding and completely rewriting the
 cartridge.
 
