@@ -336,6 +336,23 @@ int liveCardReadBlock(const std::string& block_text,const fs::path& output) {
     if(!writeFile(output,bytes.data(),bytes.size())){std::cerr<<"Could not write block output: "<<output<<'\n';return 1;}
     std::cout<<"Read cartridge block "<<block<<" ("<<bytes.size()<<" bytes) to "<<output<<".\n";return 0;
 }
+int liveCardErasePlan(const std::string& block_text) {
+    std::size_t block=0;try { std::size_t parsed=0;block=std::stoull(block_text,&parsed,0);if(parsed!=block_text.size())throw std::invalid_argument("block"); }
+    catch(const std::exception&) { std::cerr<<"Invalid cartridge block: "<<block_text<<'\n';return 1; }
+    if(block>=ez3fs::live::NorFlash::block_count){std::cerr<<"Cartridge block must be between 0 and 511.\n";return 1;}
+    const std::uint64_t begin=block*ez3fs::live::NorFlash::block_size,end=begin+ez3fs::live::NorFlash::block_size;
+    std::cout<<"Dry-run erase plan for logical block "<<block<<" (bytes 0x"<<std::hex<<begin<<"..0x"<<end-1<<std::dec<<")\n";
+    for(unsigned window=0;window<4;++window) {
+        std::cout<<"window "<<window<<":\n";
+        std::vector<std::uint32_t> addresses;
+        for(std::uint32_t address=0;address<=0x8000;address+=0x1000)addresses.push_back(address);
+        for(std::uint32_t address=0x10000;address<=0x3F8000;address+=0x8000)addresses.push_back(address);
+        if(window%2) {addresses.clear();for(std::uint32_t address=0;address<=0x3F8000;address+=0x8000)addresses.push_back(address);for(std::uint32_t address=0x3F9000;address<=0x3FF000;address+=0x1000)addresses.push_back(address);}
+        for(const auto address:addresses) { const auto byte_offset=static_cast<std::uint64_t>(window)*0x800000u+static_cast<std::uint64_t>(address)*2u;
+            if(byte_offset<end&&byte_offset+0x2000u>begin)std::cout<<"  0x96 word 0x"<<std::hex<<address<<" (byte 0x"<<byte_offset<<")\n"<<std::dec; }
+    }
+    std::cout<<"No erase command was sent.\n";return 0;
+}
 int liveCardWrite(const fs::path& image) {
     std::vector<std::uint8_t> bytes;
     if(!readFile(image,bytes)){std::cerr<<"Could not read image: "<<image<<'\n';return 1;}
@@ -393,6 +410,7 @@ int main(int argc,char** argv) {
     if(argc==4&&std::string(argv[1])=="live-rmdir")return liveRemove(argv[2],argv[3],true);
     if(argc==3&&std::string(argv[1])=="live-card-pull")return liveCardPull(argv[2]);
     if(argc==4&&std::string(argv[1])=="live-card-read-block")return liveCardReadBlock(argv[2],argv[3]);
+    if(argc==3&&std::string(argv[1])=="live-card-erase-plan")return liveCardErasePlan(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-card-write")return liveCardWrite(argv[2]);
     usage();return 1;
 }
