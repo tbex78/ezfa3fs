@@ -32,9 +32,9 @@ public:
     void shutdown() noexcept;
     bool read(std::uint64_t offset, std::uint8_t* destination,
               std::size_t size, std::string& error);
-    bool eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error);
+    bool eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error,bool allow_metadata=false);
     bool programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,
-                          std::ostream& progress,std::string& error);
+                          std::ostream& progress,std::string& error,bool allow_metadata=false);
     bool is_open = false;
     std::array<std::uint8_t, 4> flash_id{};
 
@@ -415,9 +415,9 @@ bool CartridgeStorage::Impl::programImage(
     progress << '\n';
     return finishWriteOperation(error);
 }
-bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error)
+bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error,bool allow_metadata)
 {
-    if(block<2||block>=0x200){error="live erase only permits blocks 2 through 511";return false;}
+    if((!allow_metadata&&block<2)||block>=0x200){error="live erase block is outside the permitted range";return false;}
     const unsigned window=static_cast<unsigned>(block/128);const auto local=static_cast<std::uint32_t>((block%128)*0x8000u);
     if(!selectWriteWindow(window,error))return false;
     std::vector<std::uint8_t> command={0x5A,0xA5,0x96,0,static_cast<std::uint8_t>(local),static_cast<std::uint8_t>(local>>8),static_cast<std::uint8_t>(local>>16),static_cast<std::uint8_t>(local>>24),0,0,0,0,0};
@@ -426,9 +426,9 @@ bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& prog
     progress<<"Erase response status: 0x"<<std::hex<<static_cast<unsigned>(response[12])<<std::dec<<"\n";
     if(!finishWriteOperation(error))return false;progress<<"Erased cartridge block "<<block<<".\n";return true;
 }
-bool CartridgeStorage::Impl::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::ostream& progress,std::string& error)
+bool CartridgeStorage::Impl::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::ostream& progress,std::string& error,bool allow_metadata)
 {
-    if(block<2||block>=0x200||bytes.size()!=0x10000){error="live block programming requires a 64-KiB block 2 through 511";return false;}
+    if((!allow_metadata&&block<2)||block>=0x200||bytes.size()!=0x10000){error="live block programming is outside the permitted range";return false;}
     const unsigned window=static_cast<unsigned>(block/128);const auto local=static_cast<std::uint32_t>((block%128)*0x8000u);
     if(!selectWriteWindow(window,error))return false;
     std::vector<std::uint8_t> command={0x5A,0xA5,0x92,0,0,0,0,0,0,0,0,0,0x41};putLe32(command,4,local);putLe32(command,8,static_cast<std::uint32_t>(bytes.size()));
@@ -447,9 +447,9 @@ bool CartridgeStorage::Impl::programImage(
 {
     error="EZ3FS was built without libusb support";return false;
 }
-bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t,std::ostream&,std::string& error)
+bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t,std::ostream&,std::string& error,bool)
 { error="EZ3FS was built without libusb support";return false; }
-bool CartridgeStorage::Impl::programLiveBlock(std::size_t,const std::vector<std::uint8_t>&,std::ostream&,std::string& error)
+bool CartridgeStorage::Impl::programLiveBlock(std::size_t,const std::vector<std::uint8_t>&,std::ostream&,std::string& error,bool)
 { error="EZ3FS was built without libusb support";return false; }
 #endif
 
@@ -554,6 +554,8 @@ bool CartridgeStorage::close(std::string& error) { return impl_->close(error); }
 bool CartridgeStorage::openForLiveWrite(std::string& error) { return impl_->openForProgramming(error); }
 bool CartridgeStorage::eraseLiveBlock(std::size_t block,std::string& error) { return impl_->eraseLiveBlock(block,std::cerr,error); }
 bool CartridgeStorage::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) { return impl_->programLiveBlock(block,bytes,std::cerr,error); }
+bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& error) { return impl_->eraseLiveBlock(block,std::cerr,error,true); }
+bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) { return impl_->programLiveBlock(block,bytes,std::cerr,error,true); }
 bool CartridgeStorage::isOpen() const noexcept { return impl_->is_open; }
 std::array<std::uint8_t,4> CartridgeStorage::flashId() const noexcept { return impl_->flash_id; }
 std::uint64_t CartridgeStorage::capacity() const noexcept { return cartridge_capacity; }
