@@ -98,13 +98,13 @@ bool NorFlash::eraseBlock(std::size_t block,std::string& error) {
     error.clear();return true;
 }
 
-bool Filesystem::format(NorFlash& flash,std::string& error) {
+bool Filesystem::format(BlockDevice& flash,std::string& error) {
     for(std::size_t block=0;block<NorFlash::block_count;++block)
         if(!flash.eraseBlock(block,error))return false;
     Filesystem filesystem(flash);return filesystem.commit(error);
 }
 
-bool Filesystem::open(NorFlash& flash,Filesystem& result,std::string& error) {
+bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error) {
     bool found=false;std::uint64_t newest=0;std::size_t chosen=0;std::vector<Entry> entries;
     for(std::size_t block=0;block<2;++block) {
         std::vector<std::uint8_t> bytes(NorFlash::block_size);

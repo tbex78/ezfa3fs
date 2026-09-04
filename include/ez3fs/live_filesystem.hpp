@@ -15,7 +15,15 @@ namespace ez3fs::live {
 
 inline constexpr std::string_view format_version = "1.0.0";
 
-class NorFlash final {
+class BlockDevice {
+public:
+    virtual ~BlockDevice() = default;
+    virtual bool read(std::size_t offset,std::uint8_t* destination,std::size_t size,std::string& error) const = 0;
+    virtual bool program(std::size_t offset,const std::uint8_t* source,std::size_t size,std::string& error) = 0;
+    virtual bool eraseBlock(std::size_t block,std::string& error) = 0;
+};
+
+class NorFlash final : public BlockDevice {
 public:
     static constexpr std::size_t block_size = 0x10000;
     static constexpr std::size_t block_count = 0x200;
@@ -27,11 +35,9 @@ public:
     bool load(ByteStorage& storage,std::string& error);
     bool load(ByteStorage& storage,std::ostream& progress,std::string& error);
     bool save(const std::string& path,std::string& error) const;
-    bool read(std::size_t offset,std::uint8_t* destination,std::size_t size,
-              std::string& error) const;
-    bool program(std::size_t offset,const std::uint8_t* source,std::size_t size,
-                 std::string& error);
-    bool eraseBlock(std::size_t block,std::string& error);
+    bool read(std::size_t offset,std::uint8_t* destination,std::size_t size,std::string& error) const override;
+    bool program(std::size_t offset,const std::uint8_t* source,std::size_t size,std::string& error) override;
+    bool eraseBlock(std::size_t block,std::string& error) override;
     void failNextProgramAfter(std::size_t bytes) noexcept { fault_bytes_=bytes; }
 
 private:
@@ -51,9 +57,9 @@ struct Entry final {
 
 class Filesystem final {
 public:
-    explicit Filesystem(NorFlash& flash) : flash_(flash) {}
-    static bool format(NorFlash& flash,std::string& error);
-    static bool open(NorFlash& flash,Filesystem& filesystem,std::string& error);
+    explicit Filesystem(BlockDevice& flash) : flash_(flash) {}
+    static bool format(BlockDevice& flash,std::string& error);
+    static bool open(BlockDevice& flash,Filesystem& filesystem,std::string& error);
 
     bool createDirectory(const std::string& path,std::string& error);
     bool putFile(const std::string& path,const std::vector<std::uint8_t>& bytes,
@@ -72,7 +78,7 @@ private:
     bool parentExists(const std::string& path) const;
     Entry* find(const std::string& path);
     const Entry* find(const std::string& path) const;
-    NorFlash& flash_;
+    BlockDevice& flash_;
     std::vector<Entry> entries_;
     std::uint64_t generation_ = 0;
     std::size_t active_superblock_ = 0;
