@@ -23,6 +23,7 @@ ez3fs live-card-write cartridge.ez3live
 ez3fs live-card-read-block 1 block-1.bin
 ez3fs live-card-erase-plan 1
 ez3fs live-card-erase-block 2
+ez3fs live-card-program-block 2 block-2.bin
 ```
 
 Mutating commands commit the image before exiting, so changes survive separate

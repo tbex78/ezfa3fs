@@ -359,6 +359,15 @@ int liveCardEraseBlock(const std::string& block_text) {
     if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
     ez3fs::CartridgeProgrammer programmer;std::string error;if(!programmer.eraseLiveBlock(block,std::cout,error)){std::cerr<<error<<'\n';return 1;}return 0;
 }
+int liveCardProgramBlock(const std::string& block_text,const fs::path& input) {
+    std::size_t block=0;try { std::size_t parsed=0;block=std::stoull(block_text,&parsed,0);if(parsed!=block_text.size())throw std::invalid_argument("block"); }
+    catch(const std::exception&) { std::cerr<<"Invalid cartridge block: "<<block_text<<'\n';return 1; }
+    if(block<2||block>=ez3fs::live::NorFlash::block_count){std::cerr<<"Only blocks 2 through 511 may be programmed.\n";return 1;}
+    std::vector<std::uint8_t> bytes;if(!readFile(input,bytes)||bytes.size()!=ez3fs::live::NorFlash::block_size){std::cerr<<"Input must be exactly 64 KiB.\n";return 1;}
+    std::cout<<"WARNING: this will program live cartridge block "<<block<<" (64 KiB).\n";
+    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    ez3fs::CartridgeProgrammer programmer;std::string error;if(!programmer.programLiveBlock(block,bytes,std::cout,error)){std::cerr<<error<<'\n';return 1;}return 0;
+}
 int liveCardWrite(const fs::path& image) {
     std::vector<std::uint8_t> bytes;
     if(!readFile(image,bytes)){std::cerr<<"Could not read image: "<<image<<'\n';return 1;}
@@ -417,6 +426,7 @@ int main(int argc,char** argv) {
     if(argc==4&&std::string(argv[1])=="live-card-read-block")return liveCardReadBlock(argv[2],argv[3]);
     if(argc==3&&std::string(argv[1])=="live-card-erase-plan")return liveCardErasePlan(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-card-erase-block")return liveCardEraseBlock(argv[2]);
+    if(argc==4&&std::string(argv[1])=="live-card-program-block")return liveCardProgramBlock(argv[2],argv[3]);
     if(argc==3&&std::string(argv[1])=="live-card-write")return liveCardWrite(argv[2]);
     usage();return 1;
 }
