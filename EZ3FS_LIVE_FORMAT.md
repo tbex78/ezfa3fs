@@ -20,6 +20,7 @@ ez3fs live-get cartridge.ez3live docs/README.md recovered.md
 ez3fs live-rm cartridge.ez3live docs/README.md
 ez3fs live-rmdir cartridge.ez3live docs
 ez3fs live-card-write cartridge.ez3live
+ez3fs live-card-read-block 1 block-1.bin
 ```
 
 Mutating commands commit the image before exiting, so changes survive separate

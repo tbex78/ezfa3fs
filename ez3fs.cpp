@@ -16,6 +16,7 @@
 #include <iterator>
 #include <memory>
 #include <set>
+#include <stdexcept>
 namespace fs=std::filesystem;
 namespace {
 bool readFile(const fs::path& p,std::vector<std::uint8_t>& b) {
@@ -325,6 +326,16 @@ int liveCardPull(const fs::path& image) { ez3fs::CartridgeStorage storage;std::s
     if(!loaded||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;} ez3fs::live::Filesystem filesystem(flash);
     if(!ez3fs::live::Filesystem::open(flash,filesystem,error)||!filesystem.verify(error)||!flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}
     std::cout<<"Pulled and verified EZ3FS-LIVE generation "<<filesystem.generation()<<" to "<<image<<".\n";return 0; }
+int liveCardReadBlock(const std::string& block_text,const fs::path& output) {
+    std::size_t block=0;try { std::size_t parsed=0;block=std::stoull(block_text,&parsed,0);if(parsed!=block_text.size())throw std::invalid_argument("block"); }
+    catch(const std::exception&) { std::cerr<<"Invalid cartridge block: "<<block_text<<'\n';return 1; }
+    if(block>=ez3fs::live::NorFlash::block_count){std::cerr<<"Cartridge block must be between 0 and 511.\n";return 1;}
+    ez3fs::CartridgeStorage storage;std::string error;if(!storage.open(error)){std::cerr<<error<<'\n';return 1;}
+    std::vector<std::uint8_t> bytes(ez3fs::live::NorFlash::block_size);const bool read=storage.read(block*bytes.size(),bytes.data(),bytes.size(),error);std::string close_error;const bool closed=storage.close(close_error);
+    if(!read||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;}
+    if(!writeFile(output,bytes.data(),bytes.size())){std::cerr<<"Could not write block output: "<<output<<'\n';return 1;}
+    std::cout<<"Read cartridge block "<<block<<" ("<<bytes.size()<<" bytes) to "<<output<<".\n";return 0;
+}
 int liveCardWrite(const fs::path& image) {
     std::vector<std::uint8_t> bytes;
     if(!readFile(image,bytes)){std::cerr<<"Could not read image: "<<image<<'\n';return 1;}
@@ -381,6 +392,7 @@ int main(int argc,char** argv) {
     if(argc==4&&std::string(argv[1])=="live-rm")return liveRemove(argv[2],argv[3],false);
     if(argc==4&&std::string(argv[1])=="live-rmdir")return liveRemove(argv[2],argv[3],true);
     if(argc==3&&std::string(argv[1])=="live-card-pull")return liveCardPull(argv[2]);
+    if(argc==4&&std::string(argv[1])=="live-card-read-block")return liveCardReadBlock(argv[2],argv[3]);
     if(argc==3&&std::string(argv[1])=="live-card-write")return liveCardWrite(argv[2]);
     usage();return 1;
 }
