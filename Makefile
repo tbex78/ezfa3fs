@@ -5,7 +5,7 @@ CPPFLAGS = -Iinclude
 LDFLAGS =
 LDLIBS =
 PROGRAM = ez3fs
-SOURCES = ez3fs.cpp src/ez3fs_archive.cpp src/ez3fs_archive_comparison.cpp src/ez3fs_archive_loader.cpp src/ez3fs_live_filesystem.cpp src/ez3fs_live_cartridge_session.cpp src/ez3fs_cartridge_live_device.cpp src/ez3fs_new_image_file.cpp src/ez3fs_recovery_snapshot.cpp src/ez3fs_virtual_filesystem.cpp src/ez3fs_fuse_mount.cpp src/ez3fs_cartridge_storage.cpp
+SOURCES = ez3fs.cpp src/ez3fs_archive.cpp src/ez3fs_archive_comparison.cpp src/ez3fs_archive_loader.cpp src/ez3fs_live_filesystem.cpp src/ez3fs_live_cartridge_session.cpp src/ez3fs_cartridge_live_device.cpp src/ez3fs_new_image_file.cpp src/ez3fs_recovery_snapshot.cpp src/ez3fs_virtual_filesystem.cpp src/ez3fs_virtual_mount_backend.cpp src/ez3fs_fuse_mount.cpp src/ez3fs_cartridge_storage.cpp
 FUSE3_CFLAGS = `if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists fuse3 >/dev/null 2>&1; then pkg-config --cflags fuse3; fi`
 FUSE3_LIBS = `if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists fuse3 >/dev/null 2>&1; then pkg-config --libs fuse3; fi`
 FUSE3_DEFINE = `if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists fuse3 >/dev/null 2>&1; then printf '%s\n' '-DEZ3FS_HAS_FUSE3=1'; fi`

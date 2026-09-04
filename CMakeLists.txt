@@ -10,7 +10,7 @@ if(PkgConfig_FOUND)
     pkg_check_modules(LIBUSB QUIET IMPORTED_TARGET libusb-1.0)
 endif()
 
-set(EZ3FS_SOURCES src/ez3fs_archive.cpp src/ez3fs_archive_comparison.cpp src/ez3fs_archive_loader.cpp src/ez3fs_live_filesystem.cpp src/ez3fs_new_image_file.cpp src/ez3fs_recovery_snapshot.cpp src/ez3fs_virtual_filesystem.cpp)
+set(EZ3FS_SOURCES src/ez3fs_archive.cpp src/ez3fs_archive_comparison.cpp src/ez3fs_archive_loader.cpp src/ez3fs_live_filesystem.cpp src/ez3fs_new_image_file.cpp src/ez3fs_recovery_snapshot.cpp src/ez3fs_virtual_filesystem.cpp src/ez3fs_virtual_mount_backend.cpp)
 add_executable(ez3fs ez3fs.cpp src/ez3fs_fuse_mount.cpp src/ez3fs_cartridge_storage.cpp src/ez3fs_cartridge_live_device.cpp src/ez3fs_live_cartridge_session.cpp ${EZ3FS_SOURCES})
 target_include_directories(ez3fs PRIVATE include)
 if(TARGET PkgConfig::FUSE3)
