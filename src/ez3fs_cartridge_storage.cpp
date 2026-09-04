@@ -586,25 +586,46 @@ bool CartridgeStorage::readLiveBlockAfterWrite(std::size_t block,
     error.clear();return true;
 }
 bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& error) {
-    std::string operation_error;const bool completed=impl_->eraseLiveBlock(block,std::cerr,operation_error,true);
-    std::vector<std::uint8_t> readback;
-    if(!readLiveBlockAfterWrite(block,readback,error))return false;
-    const auto programmed=std::find_if(readback.begin(),readback.end(),[](std::uint8_t byte){return byte!=0xFF;});
-    if(programmed!=readback.end()) {
-        error=completed?"live filesystem erase readback is not blank":operation_error+"; erase readback is not blank";
-        return false;
+    constexpr unsigned attempts=3;
+    for(unsigned attempt=1;attempt<=attempts;++attempt) {
+        std::string operation_error;const bool completed=impl_->eraseLiveBlock(block,std::cerr,operation_error,true);
+        std::vector<std::uint8_t> readback;
+        if(!readLiveBlockAfterWrite(block,readback,error))return false;
+        const auto programmed=std::find_if(readback.begin(),readback.end(),[](std::uint8_t byte){return byte!=0xFF;});
+        if(programmed==readback.end()){error.clear();return true;}
+        std::ostringstream detail;
+        if(!completed&&!operation_error.empty())detail<<operation_error<<"; ";
+        detail<<"erase readback block "<<block<<" is not blank at byte 0x"<<std::hex
+              <<static_cast<std::size_t>(programmed-readback.begin())<<" (0x"
+              <<static_cast<unsigned>(*programmed)<<')'<<std::dec;
+        error=detail.str();
+        if(attempt<attempts)std::cerr<<"Retrying live block erase (attempt "<<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
     }
-    error.clear();return true;
+    return false;
 }
 bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) {
-    std::string operation_error;const bool completed=impl_->programLiveBlock(block,bytes,std::cerr,operation_error,true);
-    std::vector<std::uint8_t> readback;
-    if(!readLiveBlockAfterWrite(block,readback,error))return false;
-    if(readback!=bytes) {
-        error=completed?"live filesystem program readback mismatch":operation_error+"; program readback mismatch";
-        return false;
+    constexpr unsigned attempts=3;
+    for(unsigned attempt=1;attempt<=attempts;++attempt) {
+        std::string operation_error;const bool completed=impl_->programLiveBlock(block,bytes,std::cerr,operation_error,true);
+        std::vector<std::uint8_t> readback;
+        if(!readLiveBlockAfterWrite(block,readback,error))return false;
+        const auto mismatch=std::mismatch(readback.begin(),readback.end(),bytes.begin());
+        if(mismatch.first==readback.end()){error.clear();return true;}
+        std::ostringstream detail;
+        if(!completed&&!operation_error.empty())detail<<operation_error<<"; ";
+        detail<<"program readback block "<<block<<" differs at byte 0x"<<std::hex
+              <<static_cast<std::size_t>(mismatch.first-readback.begin())<<" (read 0x"
+              <<static_cast<unsigned>(*mismatch.first)<<", expected 0x"
+              <<static_cast<unsigned>(*mismatch.second)<<')'<<std::dec;
+        error=detail.str();
+        if(attempt==attempts)return false;
+        std::cerr<<"Retrying live block program (attempt "<<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
+        std::string erase_error;
+        if(!eraseLiveFilesystemBlock(block,erase_error)) {
+            error+="; retry erase failed: "+erase_error;return false;
+        }
     }
-    error.clear();return true;
+    return false;
 }
 bool CartridgeStorage::isOpen() const noexcept { return impl_->is_open; }
 std::array<std::uint8_t,4> CartridgeStorage::flashId() const noexcept { return impl_->flash_id; }
