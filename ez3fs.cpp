@@ -353,6 +353,14 @@ int liveCardErasePlan(const std::string& block_text) {
     }
     std::cout<<"No erase command was sent.\n";return 0;
 }
+int liveCardEraseBlock(const std::string& block_text) {
+    std::size_t block=0;try { std::size_t parsed=0;block=std::stoull(block_text,&parsed,0);if(parsed!=block_text.size())throw std::invalid_argument("block"); }
+    catch(const std::exception&) { std::cerr<<"Invalid cartridge block: "<<block_text<<'\n';return 1; }
+    if(block<2||block>=ez3fs::live::NorFlash::block_count){std::cerr<<"Only blocks 2 through 511 may be erased.\n";return 1;}
+    std::cout<<"WARNING: this will erase live cartridge block "<<block<<" (64 KiB).\nType ERASE EZ3FS-LIVE BLOCK to continue: "<<std::flush;std::string confirmation;std::getline(std::cin,confirmation);
+    if(confirmation!="ERASE EZ3FS-LIVE BLOCK"){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    ez3fs::CartridgeProgrammer programmer;std::string error;if(!programmer.eraseLiveBlock(block,std::cout,error)){std::cerr<<error<<'\n';return 1;}return 0;
+}
 int liveCardWrite(const fs::path& image) {
     std::vector<std::uint8_t> bytes;
     if(!readFile(image,bytes)){std::cerr<<"Could not read image: "<<image<<'\n';return 1;}
@@ -411,6 +419,7 @@ int main(int argc,char** argv) {
     if(argc==3&&std::string(argv[1])=="live-card-pull")return liveCardPull(argv[2]);
     if(argc==4&&std::string(argv[1])=="live-card-read-block")return liveCardReadBlock(argv[2],argv[3]);
     if(argc==3&&std::string(argv[1])=="live-card-erase-plan")return liveCardErasePlan(argv[2]);
+    if(argc==3&&std::string(argv[1])=="live-card-erase-block")return liveCardEraseBlock(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-card-write")return liveCardWrite(argv[2]);
     usage();return 1;
 }

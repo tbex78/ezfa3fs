@@ -66,6 +66,7 @@ private:
     bool eraseAll(std::ostream& progress, std::string& error);
     bool programImage(const std::vector<std::uint8_t>& image,
                       std::ostream& progress, std::string& error);
+    bool eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error);
 };
 
 #if defined(EZ3FS_HAS_LIBUSB)
@@ -411,6 +412,16 @@ bool CartridgeStorage::Impl::programImage(
     progress << '\n';
     return finishWriteOperation(error);
 }
+bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error)
+{
+    if(block<2||block>=0x200){error="live erase only permits blocks 2 through 511";return false;}
+    const unsigned window=static_cast<unsigned>(block/128);const auto local=static_cast<std::uint32_t>((block%128)*0x8000u);
+    if(!selectWriteWindow(window,error))return false;
+    std::vector<std::uint8_t> command={0x5A,0xA5,0x96,0,static_cast<std::uint8_t>(local),static_cast<std::uint8_t>(local>>8),static_cast<std::uint8_t>(local>>16),static_cast<std::uint8_t>(local>>24),0,0,0,0,0};
+    std::vector<std::uint8_t> response;if(!out(command,error)||!in(response,command.size(),error))return false;
+    if(response.size()!=command.size()||!std::equal(command.begin(),command.begin()+12,response.begin())||response[12]!=0){error="cartridge live block erase failed";return false;}
+    if(!finishWriteOperation(error))return false;progress<<"Erased cartridge block "<<block<<".\n";return true;
+}
 #else
 bool CartridgeStorage::Impl::eraseAll(std::ostream&,std::string& error)
 {
@@ -422,6 +433,8 @@ bool CartridgeStorage::Impl::programImage(
 {
     error="EZ3FS was built without libusb support";return false;
 }
+bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t,std::ostream&,std::string& error)
+{ error="EZ3FS was built without libusb support";return false; }
 #endif
 
 bool CartridgeStorage::Impl::open(std::string& error)
@@ -566,6 +579,19 @@ bool CartridgeProgrammer::programAndVerify(
     }
     progress << '\n';
     return storage_.close(error);
+}
+
+bool CartridgeProgrammer::eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error)
+{
+    if(block<2||block>=0x200){error="live erase only permits blocks 2 through 511";return false;}
+    if(!storage_.impl_->openForProgramming(error))return false;
+    if(!storage_.impl_->eraseLiveBlock(block,progress,error)){std::string ignored;storage_.close(ignored);return false;}
+    if(!storage_.close(error))return false;
+    if(!storage_.open(error))return false;
+    std::vector<std::uint8_t> bytes(0x10000);const bool read=storage_.read(block*0x10000,bytes.data(),bytes.size(),error);std::string close_error;const bool closed=storage_.close(close_error);
+    if(!read||!closed){if(error.empty())error=close_error;return false;}
+    if(!std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;})){error="live block erase readback is not blank";return false;}
+    progress<<"Verified erased cartridge block "<<block<<".\n";return true;
 }
 
 } // namespace ez3fs
