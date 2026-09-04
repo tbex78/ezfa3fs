@@ -42,6 +42,11 @@ bool NorFlash::load(const std::string& path,std::string& error) {
     bytes_=std::move(bytes);error.clear();return true;
 }
 
+bool NorFlash::load(const std::vector<std::uint8_t>& bytes,std::string& error) {
+    if(bytes.size()!=capacity){error="live image must be exactly 32 MiB";return false;}
+    bytes_=bytes;error.clear();return true;
+}
+
 bool NorFlash::load(ByteStorage& storage,std::string& error) {
     if(storage.capacity()!=capacity){error="storage capacity is not 32 MiB";return false;}
     std::vector<std::uint8_t> bytes(capacity);

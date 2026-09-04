@@ -1,5 +1,6 @@
 #include "ez3fs/cartridge_storage.hpp"
 #include "ez3fs/cartridge_programmer.hpp"
+#include "ez3fs/live_filesystem.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -533,7 +534,12 @@ bool CartridgeProgrammer::programAndVerify(
     std::string& error)
 {
     Archive validated;
-    if(!validated.open(image,error) || !validated.verify(error)) return false;
+    if(!validated.open(image,error) || !validated.verify(error)) {
+        live::NorFlash live_flash; live::Filesystem live_filesystem(live_flash); std::string live_error;
+        if(!live_flash.load(image,live_error) || !live::Filesystem::open(live_flash,live_filesystem,live_error) || !live_filesystem.verify(live_error)) {
+            error="not an EZ3FS or EZ3FS-LIVE image"; return false;
+        }
+    }
     if(!storage_.impl_->openForProgramming(error)) return false;
     progress << "Erasing the complete 32-MiB cartridge...\n";
     if(!storage_.impl_->eraseAll(progress,error) ||
