@@ -13,6 +13,7 @@ public:
     bool read(std::size_t offset,std::uint8_t* destination,std::size_t size,std::string& error) const override;
     bool program(std::size_t offset,const std::uint8_t* source,std::size_t size,std::string& error) override;
     bool eraseBlock(std::size_t block,std::string& error) override;
+    bool prepareForErase(std::string& error) override;
 private:
     CartridgeStorage& storage_;
 };

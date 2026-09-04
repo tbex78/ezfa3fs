@@ -20,7 +20,11 @@ public:
     bool eraseBlock(std::size_t block,std::string& error) override {
         return flash_.eraseBlock(block,error);
     }
+    bool prepareForErase(std::string& error) override {
+        ++prepare_erase_count;error.clear();return true;
+    }
     mutable std::size_t read_count = 0;
+    std::size_t prepare_erase_count = 0;
 private:
     ez3fs::live::NorFlash& flash_;
 };
@@ -73,6 +77,7 @@ int main()
     require(reopened.collectGarbage(reclaimed,error,
         [&](std::size_t completed,std::size_t total){progress_completed=completed;progress_total=total;}));
     require(reclaimed==2);
+    require(reopened_device.prepare_erase_count==reclaimed);
     require(progress_completed==510&&progress_total==510);
     require(reopened.verify(error));
     require(reopened.putFile("docs/recycled.txt",{'z'},1238,error));

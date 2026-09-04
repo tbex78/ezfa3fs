@@ -29,6 +29,7 @@ public:
     bool read(std::uint64_t offset, std::uint8_t* destination,
               std::size_t size, std::string& error) override;
     bool openForLiveWrite(std::string& error);
+    bool restartLiveWriteSession(std::string& error);
     bool eraseLiveBlock(std::size_t block,std::string& error);
     bool programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error);
     bool eraseLiveFilesystemBlock(std::size_t block,std::string& error);

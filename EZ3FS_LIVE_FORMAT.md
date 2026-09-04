@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.32.0`.
+`0.32.1`.
 
 ## Geometry and layout
 
@@ -120,7 +120,11 @@ at mount time.
 referenced by the selected committed generation, and make the resulting holes
 available to the circular contiguous-extent allocator. The cartridge command
 must run while the filesystem is unmounted. An interrupted collection is safe
-to repeat because active extents and metadata blocks are never erase targets.
+to repeat because the collector first synchronizes the current manifest into
+the alternate superblock, then protects active extents and both metadata
+blocks from erasure. Cartridge collection restarts the writer session between
+inspection and each erase because the USB bridge does not reliably accept a
+flash erase directly after a read transaction.
 
 `live-list` reports an available-block estimate. Unknown remnants from an
 interrupted write are removed from that estimate when allocation probes them

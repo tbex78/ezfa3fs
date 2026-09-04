@@ -5,7 +5,7 @@ III NOR cartridge. It is independent of the original EZ3 layout and contains
 no loader, menu, ROM catalog, partition table, FAT filesystem, or patched ROM
 metadata.
 
-EZ3FS 1.2 is the format emitted by EZ3FS application `0.32.0`. The application
+EZ3FS 1.2 is the format emitted by EZ3FS application `0.32.1`. The application
 also reads format 1.0, format 1.1, and the legacy EZFS magic described below.
 It is incompatible with the transactional EZ3FS-LIVE format.
 

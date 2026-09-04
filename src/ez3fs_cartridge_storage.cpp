@@ -452,7 +452,12 @@ bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& prog
     for(const auto address:addresses){
         std::vector<std::uint8_t> command={0x5A,0xA5,0x96,0,static_cast<std::uint8_t>(address),static_cast<std::uint8_t>(address>>8),static_cast<std::uint8_t>(address>>16),static_cast<std::uint8_t>(address>>24),0,0,0,0,0};
         std::vector<std::uint8_t> response;if(!out(command,error)||!in(response,command.size(),error))return false;
-        if(response.size()!=command.size()||!std::equal(command.begin(),command.begin()+12,response.begin())||response[12]!=0){error="cartridge live block erase failed";return false;}
+        if(response.size()!=command.size()||!std::equal(command.begin(),command.begin()+12,response.begin())||response[12]!=0){
+            std::ostringstream detail;detail<<"cartridge live block erase response mismatch";
+            if(response.size()==command.size())detail<<" (status 0x"<<std::hex<<static_cast<unsigned>(response[12])<<')'<<std::dec;
+            else detail<<" (received "<<response.size()<<" bytes, expected "<<command.size()<<')';
+            error=detail.str();return false;
+        }
         progress<<"Erase response status: 0x"<<std::hex<<static_cast<unsigned>(response[12])<<std::dec<<"\n";
     }
     if(!finishWriteOperation(error))return false;progress<<"Erased cartridge block "<<block<<".\n";return true;
@@ -586,6 +591,12 @@ CartridgeStorage::~CartridgeStorage() = default;
 bool CartridgeStorage::open(std::string& error) { return impl_->open(error); }
 bool CartridgeStorage::close(std::string& error) { return impl_->close(error); }
 bool CartridgeStorage::openForLiveWrite(std::string& error) { return impl_->openForProgramming(error); }
+bool CartridgeStorage::restartLiveWriteSession(std::string& error) {
+    std::string close_error;const bool closed=close(close_error);
+    if(openForLiveWrite(error))return true;
+    if(!closed&&!close_error.empty())error+="; close also failed: "+close_error;
+    return false;
+}
 bool CartridgeStorage::eraseLiveBlock(std::size_t block,std::string& error) { return impl_->eraseLiveBlock(block,std::cerr,error); }
 bool CartridgeStorage::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) { return impl_->programLiveBlock(block,bytes,std::cerr,error); }
 bool CartridgeStorage::readLiveBlockAfterWrite(std::size_t block,

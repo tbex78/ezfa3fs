@@ -252,7 +252,7 @@ bool Filesystem::collectGarbage(std::size_t& reclaimed_blocks,
                                 std::string& error,ScanProgress progress) {
     reclaimed_blocks=0;constexpr std::size_t first_data_block=2;
     constexpr std::size_t total=NorFlash::block_count-first_data_block;
-    std::vector<std::uint8_t> bytes(NorFlash::block_size);
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);std::vector<std::size_t> garbage;
     if(progress)progress(0,total);
     for(std::size_t block=first_data_block;block<NorFlash::block_count;++block) {
         if(!blockReferenced(block)) {
@@ -260,16 +260,24 @@ bool Filesystem::collectGarbage(std::size_t& reclaimed_blocks,
                 error="could not inspect garbage-collection block "+std::to_string(block)+": "+error;return false;
             }
             const bool blank=std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;});
-            if(!blank) {
-                unavailable_blocks_[block]=true;
-                if(!flash_.eraseBlock(block,error)) {
-                    error="could not reclaim live block "+std::to_string(block)+": "+error;return false;
-                }
-                ++reclaimed_blocks;
-            }
-            unavailable_blocks_[block]=false;
+            if(!blank)garbage.push_back(block);
         }
         if(progress)progress(block-first_data_block+1,total);
+    }
+    if(!garbage.empty()) {
+        // Write the selected manifest to the alternate superblock before
+        // reclaiming anything. Both valid generations then protect the same
+        // active extents if a later collection step is interrupted.
+        if(!commit(error)){error="could not synchronize live metadata before garbage collection: "+error;return false;}
+    }
+    for(const auto block:garbage) {
+        unavailable_blocks_[block]=true;
+        // Real hardware needs a clean writer transition after the inspection
+        // read. In-memory devices implement this boundary as a no-op.
+        if(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error)) {
+            error="could not reclaim live block "+std::to_string(block)+": "+error;return false;
+        }
+        unavailable_blocks_[block]=false;++reclaimed_blocks;
     }
     next_free_block_=first_data_block;error.clear();return true;
 }

@@ -18,4 +18,7 @@ bool CartridgeLiveDevice::eraseBlock(std::size_t block,std::string& error) {
     if(block>=live::NorFlash::block_count){error="cartridge live erase block is out of range";return false;}
     return storage_.eraseLiveFilesystemBlock(block,error);
 }
+bool CartridgeLiveDevice::prepareForErase(std::string& error) {
+    return storage_.restartLiveWriteSession(error);
+}
 } // namespace ez3fs
