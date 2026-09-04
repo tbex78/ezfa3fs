@@ -14,6 +14,7 @@ ez3fs live-mkdir cartridge.ez3live docs
 ez3fs live-put cartridge.ez3live README.md docs/README.md
 ez3fs live-list cartridge.ez3live
 ez3fs live-verify cartridge.ez3live
+ez3fs live-mount cartridge.ez3live /Volumes/EZ3FS-LIVE
 ez3fs live-get cartridge.ez3live docs/README.md recovered.md
 ez3fs live-rm cartridge.ez3live docs/README.md
 ez3fs live-rmdir cartridge.ez3live docs

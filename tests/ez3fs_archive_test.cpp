@@ -21,7 +21,7 @@ private:
 };
 }
 int main() {
-    require(ez3fs::project_version=="0.15.1");
+    require(ez3fs::project_version=="0.16.0");
     const std::vector<ez3fs::InputFile> files{
         {"hello.txt",{'h','e','l','l','o'},false,1700000000},
         {"folder/data.bin",{0,0x7F,0xFF},false,1700000001}};

@@ -291,6 +291,13 @@ void printLiveEntries(const ez3fs::live::Filesystem& filesystem) { std::cout<<"E
 int liveList(const fs::path& path) { ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);if(!loadLive(path,flash,filesystem))return 1;printLiveEntries(filesystem);return 0; }
 int liveVerify(const fs::path& path) { ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);if(!loadLive(path,flash,filesystem))return 1;std::string error;
     if(!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}std::cout<<"Verified EZ3FS-LIVE generation "<<filesystem.generation()<<" with "<<filesystem.entries().size()<<" entries.\n";return 0; }
+int liveMount(const fs::path& image,const fs::path& mountpoint,bool foreground) {
+    ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;
+    if(!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}std::vector<ez3fs::InputFile> contents;
+    for(const auto& entry:filesystem.entries()){ez3fs::InputFile file;file.name=entry.name;file.directory=entry.directory;file.modified_time=entry.modified_time;
+        if(!entry.directory&&!filesystem.readFile(entry.name,file.bytes,error)){std::cerr<<error<<'\n';return 1;}contents.push_back(std::move(file));}
+    return ez3fs::mountLiveContents(contents,mountpoint.string(),foreground);
+}
 int liveMkdir(const fs::path& image,const std::string& path) { ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;
     if(!filesystem.createDirectory(path,error)||!flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}return 0; }
 int livePut(const fs::path& image,const fs::path& source,const std::string& destination) { if(!fs::is_regular_file(source)){std::cerr<<"Input is not a regular file: "<<source<<'\n';return 1;}
@@ -354,6 +361,7 @@ int main(int argc,char** argv) {
     if(argc==3&&std::string(argv[1])=="live-format")return liveFormat(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-list")return liveList(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-verify")return liveVerify(argv[2]);
+    if(argc>=4&&std::string(argv[1])=="live-mount"){bool foreground=false;for(int i=4;i<argc;++i)if(std::string(argv[i])=="--foreground")foreground=true;return liveMount(argv[2],argv[3],foreground);}
     if(argc==4&&std::string(argv[1])=="live-mkdir")return liveMkdir(argv[2],argv[3]);
     if(argc==5&&std::string(argv[1])=="live-put")return livePut(argv[2],argv[3],argv[4]);
     if(argc==5&&std::string(argv[1])=="live-get")return liveGet(argv[2],argv[3],argv[4]);

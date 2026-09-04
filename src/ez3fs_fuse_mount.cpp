@@ -160,11 +160,19 @@ int mountArchive(const Archive& archive,const std::string& mountpoint,
     MountSession mounted(archive.contents());
     return runMount(mounted,mountpoint,foreground,filesystem_name);
 }
+int mountLiveContents(const std::vector<InputFile>& contents,const std::string& mountpoint,bool foreground) {
+    ArchiveImage image;std::string error;if(!ImageBuilder{}.build(contents,image,error)){std::cerr<<error<<'\n';return 1;}
+    Archive archive;if(!archive.open(std::move(image.bytes),error)){std::cerr<<error<<'\n';return 1;}
+    return mountArchive(archive,mountpoint,foreground,"ez3fs-live");
+}
 #else
 int mountImage(const std::string&,const std::string&,bool,bool) {
     std::cerr<<"FUSE 3 support was not available when ez3fs was built.\n";return 1;
 }
 int mountArchive(const Archive&,const std::string&,bool,const std::string&) {
+    std::cerr<<"FUSE 3 support was not available when ez3fs was built.\n";return 1;
+}
+int mountLiveContents(const std::vector<InputFile>&,const std::string&,bool) {
     std::cerr<<"FUSE 3 support was not available when ez3fs was built.\n";return 1;
 }
 #endif
