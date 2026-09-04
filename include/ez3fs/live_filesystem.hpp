@@ -57,6 +57,7 @@ public:
     bool removeDirectory(const std::string& path,std::string& error);
     bool readFile(const std::string& path,std::vector<std::uint8_t>& bytes,
                   std::string& error) const;
+    bool verify(std::string& error) const;
     const std::vector<Entry>& entries() const noexcept { return entries_; }
     std::uint64_t generation() const noexcept { return generation_; }
     std::size_t freeBlocks() const noexcept;

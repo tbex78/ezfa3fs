@@ -202,4 +202,13 @@ bool Filesystem::readFile(const std::string& path,std::vector<std::uint8_t>& byt
     error.clear();return true;
 }
 
+bool Filesystem::verify(std::string& error) const {
+    for(const auto& entry:entries_) {
+        if(entry.directory) continue;
+        std::vector<std::uint8_t> bytes;
+        if(!readFile(entry.name,bytes,error)) return false;
+    }
+    error.clear();return true;
+}
+
 } // namespace ez3fs::live
