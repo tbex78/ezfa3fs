@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -57,9 +58,12 @@ struct Entry final {
 
 class Filesystem final {
 public:
+    using ScanProgress = std::function<void(std::size_t,std::size_t)>;
+
     explicit Filesystem(BlockDevice& flash) : flash_(flash) {}
     static bool format(BlockDevice& flash,std::string& error);
-    static bool open(BlockDevice& flash,Filesystem& filesystem,std::string& error);
+    static bool open(BlockDevice& flash,Filesystem& filesystem,std::string& error,
+                     ScanProgress progress = {});
 
     bool createDirectory(const std::string& path,std::string& error);
     bool putFile(const std::string& path,const std::vector<std::uint8_t>& bytes,

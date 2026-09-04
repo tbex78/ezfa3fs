@@ -104,7 +104,8 @@ bool Filesystem::format(BlockDevice& flash,std::string& error) {
     Filesystem filesystem(flash);return filesystem.commit(error);
 }
 
-bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error) {
+bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
+                      ScanProgress progress) {
     bool found=false;std::uint64_t newest=0;std::size_t chosen=0;std::vector<Entry> entries;
     for(std::size_t block=0;block<2;++block) {
         std::vector<std::uint8_t> bytes(NorFlash::block_size);
@@ -139,6 +140,19 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error) 
     if(!found){error="no valid EZ3FS-LIVE superblock found";return false;}
     result.entries_=std::move(entries);result.generation_=newest;result.active_superblock_=chosen;result.next_free_block_=2;
     for(const auto& entry:result.entries_)result.next_free_block_=std::max(result.next_free_block_,static_cast<std::size_t>(entry.first_block+entry.block_count));
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);
+    const auto first_scanned=result.next_free_block_;
+    const auto scan_count=NorFlash::block_count-first_scanned;
+    if(progress)progress(0,scan_count);
+    for(std::size_t block=first_scanned;block<NorFlash::block_count;++block) {
+        if(!flash.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
+            error="could not scan EZ3FS-LIVE allocation block "+std::to_string(block)+": "+error;
+            return false;
+        }
+        if(std::any_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte!=0xFF;}))
+            result.next_free_block_=block+1;
+        if(progress)progress(block-first_scanned+1,scan_count);
+    }
     error.clear();return true;
 }
 

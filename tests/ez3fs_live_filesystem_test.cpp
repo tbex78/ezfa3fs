@@ -34,6 +34,7 @@ int main()
     require(ez3fs::live::Filesystem::open(flash,reopened,error));
     require(reopened.generation()==before);
     require(reopened.entries().size()==2);
+    require(reopened.freeBlocks()==free_before_data_failure-1);
     require(!reopened.createDirectory("docs/readme.txt",error));
     require(reopened.removeFile("docs/readme.txt",error));
     require(reopened.removeDirectory("docs",error));

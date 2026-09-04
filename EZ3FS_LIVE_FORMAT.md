@@ -3,8 +3,8 @@
 EZ3FS-LIVE is the experimental copy-on-write filesystem for the 32-MiB
 EZ-Flash Advance III NOR geometry. It is incompatible with packed EZ3FS
 images and has a distinct `EZ3LIVE\0` magic. This prototype is currently
-available through a persistent 32-MiB image backend and an in-memory simulator;
-physical-cartridge integration is not enabled yet.
+available through a persistent 32-MiB image backend, an in-memory simulator,
+and a physical-cartridge block device.
 
 Command-line workflow:
 
@@ -16,6 +16,7 @@ ez3fs live-list cartridge.ez3live
 ez3fs live-verify cartridge.ez3live
 ez3fs live-mount cartridge.ez3live /Volumes/EZ3FS-LIVE
 ez3fs live-card-mount /Volumes/EZ3FS-LIVE
+ez3fs live-card-mount /Volumes/EZ3FS-LIVE --writable --foreground
 ez3fs live-get cartridge.ez3live docs/README.md recovered.md
 ez3fs live-rm cartridge.ez3live docs/README.md
 ez3fs live-rmdir cartridge.ez3live docs
@@ -31,8 +32,13 @@ processes. The image is exactly 32 MiB and is not compatible with packed
 `.ez3fs` images.
 
 `live-card-write` is destructive: it erases and replaces the complete
-cartridge after validating the image and requiring the confirmation phrase
-`WRITE EZ3FS-LIVE`.
+cartridge after validating the image and receiving yes/no confirmation.
+
+The writable cartridge mount commits mutations directly to the cartridge.
+Each operation uses append-only data allocation and alternates the two
+superblocks. This experimental implementation commits each FUSE write request
+individually; workloads that issue many small writes consume free blocks more
+quickly until garbage collection is implemented.
 
 The cartridge is divided into 512 blocks of 64 KiB. Blocks 0 and 1 are
 generation-numbered redundant superblocks. File data starts at block 2 and is

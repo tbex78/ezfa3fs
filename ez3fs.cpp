@@ -35,7 +35,48 @@ std::uint64_t fileModifiedTime(const fs::path& path) {
     const auto seconds=system_time.time_since_epoch().count();
     return seconds>0?static_cast<std::uint64_t>(seconds):0;
 }
-void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs live-format IMAGE.ez3live\n  ez3fs live-list IMAGE.ez3live\n  ez3fs live-mkdir IMAGE.ez3live DIRECTORY\n  ez3fs live-put IMAGE.ez3live SOURCE_FILE DESTINATION\n  ez3fs live-get IMAGE.ez3live FILE OUTPUT_FILE\n  ez3fs live-rm IMAGE.ez3live FILE\n  ez3fs live-rmdir IMAGE.ez3live DIRECTORY\n  ez3fs card-info\n  ez3fs card-list\n  ez3fs card-verify\n  ez3fs card-extract OUTPUT_DIRECTORY\n  ez3fs card-pull OUTPUT.ez3fs\n  ez3fs card-write IMAGE.ez3fs\n  ez3fs card-status STAGING.ez3fs\n  ez3fs card-commit STAGING.ez3fs\n  ez3fs card-recover STAGING.ez3fs\n  ez3fs card-mount MOUNTPOINT [--foreground]\n  ez3fs card-mount MOUNTPOINT --writable STAGING.ez3fs [--foreground]\n  ez3fs --version\n"; }
+void usage() {
+    std::cerr<<R"(Usage:
+  ez3fs create OUTPUT.ez3fs FILE...
+  ez3fs list IMAGE.ez3fs
+  ez3fs verify IMAGE.ez3fs
+  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY
+  ez3fs mkdir IMAGE.ez3fs DIRECTORY
+  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION
+  ez3fs rm IMAGE.ez3fs FILE
+  ez3fs rmdir IMAGE.ez3fs DIRECTORY
+  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]
+  ez3fs live-format IMAGE.ez3live
+  ez3fs live-list IMAGE.ez3live
+  ez3fs live-verify IMAGE.ez3live
+  ez3fs live-mkdir IMAGE.ez3live DIRECTORY
+  ez3fs live-put IMAGE.ez3live SOURCE_FILE [DESTINATION]
+  ez3fs live-get IMAGE.ez3live FILE OUTPUT_FILE
+  ez3fs live-rm IMAGE.ez3live FILE
+  ez3fs live-rmdir IMAGE.ez3live DIRECTORY
+  ez3fs live-mount IMAGE.ez3live MOUNTPOINT [--foreground]
+  ez3fs live-card-mount MOUNTPOINT [--foreground]
+  ez3fs live-card-mount MOUNTPOINT --writable --foreground
+  ez3fs live-card-pull IMAGE.ez3live
+  ez3fs live-card-write IMAGE.ez3live
+  ez3fs live-card-read-block BLOCK OUTPUT.bin
+  ez3fs live-card-erase-plan BLOCK
+  ez3fs live-card-erase-block BLOCK
+  ez3fs live-card-program-block BLOCK INPUT.bin
+  ez3fs card-info
+  ez3fs card-list
+  ez3fs card-verify
+  ez3fs card-extract OUTPUT_DIRECTORY
+  ez3fs card-pull OUTPUT.ez3fs
+  ez3fs card-write IMAGE.ez3fs
+  ez3fs card-status STAGING.ez3fs
+  ez3fs card-commit STAGING.ez3fs
+  ez3fs card-recover STAGING.ez3fs
+  ez3fs card-mount MOUNTPOINT [--foreground]
+  ez3fs card-mount MOUNTPOINT --writable STAGING.ez3fs [--foreground]
+  ez3fs --version
+)";
+}
 bool confirm(const std::string& prompt) { std::cout<<prompt<<" [y/N]: "<<std::flush;std::string answer;std::getline(std::cin,answer);return answer=="y"||answer=="Y"||answer=="yes"||answer=="YES"; }
 bool loadArchive(const fs::path& p,ez3fs::Archive& a) {
     std::vector<std::uint8_t> b; if(!readFile(p,b)){std::cerr<<"Could not read image: "<<p<<'\n';return false;}
@@ -302,7 +343,13 @@ int liveMount(const fs::path& image,const fs::path& mountpoint,bool foreground) 
     if(!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}auto contents=liveContents(filesystem,error);if(!error.empty()){std::cerr<<error<<'\n';return 1;}
     return ez3fs::mountLiveContents(contents,mountpoint.string(),foreground);
 }
-int liveCardMount(const fs::path& mountpoint,bool foreground) {
+int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground) {
+    if(writable){
+        if(!foreground){std::cerr<<"Writable cartridge mounting requires --foreground.\n";return 1;}
+        std::cout<<"WARNING: changes made through this mount are written directly to the EZ3FS-LIVE cartridge.\n";
+        if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+        return ez3fs::mountLiveCartridge(mountpoint.string(),foreground);
+    }
     ez3fs::CartridgeStorage storage;std::string error;if(!storage.open(error)){std::cerr<<error<<'\n';return 1;}
     ez3fs::live::NorFlash flash;const bool loaded=flash.load(storage,error);std::string close_error;const bool closed=storage.close(close_error);
     if(!loaded||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;}ez3fs::live::Filesystem filesystem(flash);
@@ -416,7 +463,7 @@ int main(int argc,char** argv) {
     if(argc==3&&std::string(argv[1])=="live-list")return liveList(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-verify")return liveVerify(argv[2]);
     if(argc>=4&&std::string(argv[1])=="live-mount"){bool foreground=false;for(int i=4;i<argc;++i)if(std::string(argv[i])=="--foreground")foreground=true;return liveMount(argv[2],argv[3],foreground);}
-    if(argc>=3&&std::string(argv[1])=="live-card-mount"){bool foreground=false;for(int i=3;i<argc;++i)if(std::string(argv[i])=="--foreground")foreground=true;return liveCardMount(argv[2],foreground);}
+    if(argc>=3&&std::string(argv[1])=="live-card-mount"){bool writable=false,foreground=false;for(int i=3;i<argc;++i){const std::string option(argv[i]);if(option=="--writable")writable=true;else if(option=="--foreground")foreground=true;else{std::cerr<<"Unknown live-card-mount option: "<<option<<'\n';return 1;}}return liveCardMount(argv[2],writable,foreground);}
     if(argc==4&&std::string(argv[1])=="live-mkdir")return liveMkdir(argv[2],argv[3]);
     if((argc==4||argc==5)&&std::string(argv[1])=="live-put")return livePut(argv[2],argv[3],argc==5?argv[4]:argv[3]);
     if(argc==5&&std::string(argv[1])=="live-get")return liveGet(argv[2],argv[3],argv[4]);

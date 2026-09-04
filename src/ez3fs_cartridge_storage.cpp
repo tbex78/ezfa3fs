@@ -336,8 +336,12 @@ bool CartridgeStorage::Impl::selectWriteWindow(unsigned window,
 
 bool CartridgeStorage::Impl::finishWriteOperation(std::string& error)
 {
-    return tx92(0xFF,0xFF,error) && tx92One(1,0x04,error) &&
-           tx92One(0,0,error) && tx92One(0,0,error);
+    const bool finished=tx92(0xFF,0xFF,error) && tx92One(1,0x04,error) &&
+                        tx92One(0,0,error) && tx92One(0,0,error);
+    // A write-window selection invalidates the cached read mapping. Force the
+    // next read to restore a known mapping before issuing a 0x91 command.
+    if(finished)mapped_limit=0;
+    return finished;
 }
 
 bool CartridgeStorage::Impl::eraseAll(std::ostream& progress,
@@ -420,10 +424,14 @@ bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& prog
     if((!allow_metadata&&block<2)||block>=0x200){error="live erase block is outside the permitted range";return false;}
     const unsigned window=static_cast<unsigned>(block/128);const auto local=static_cast<std::uint32_t>((block%128)*0x8000u);
     if(!selectWriteWindow(window,error))return false;
-    std::vector<std::uint8_t> command={0x5A,0xA5,0x96,0,static_cast<std::uint8_t>(local),static_cast<std::uint8_t>(local>>8),static_cast<std::uint8_t>(local>>16),static_cast<std::uint8_t>(local>>24),0,0,0,0,0};
-    std::vector<std::uint8_t> response;if(!out(command,error)||!in(response,command.size(),error))return false;
-    if(response.size()!=command.size()||!std::equal(command.begin(),command.begin()+12,response.begin())||response[12]!=0){error="cartridge live block erase failed";return false;}
-    progress<<"Erase response status: 0x"<<std::hex<<static_cast<unsigned>(response[12])<<std::dec<<"\n";
+    std::vector<std::uint32_t> addresses;
+    if(block==0)for(std::uint32_t address=0;address<0x8000;address+=0x1000)addresses.push_back(address);else addresses.push_back(local);
+    for(const auto address:addresses){
+        std::vector<std::uint8_t> command={0x5A,0xA5,0x96,0,static_cast<std::uint8_t>(address),static_cast<std::uint8_t>(address>>8),static_cast<std::uint8_t>(address>>16),static_cast<std::uint8_t>(address>>24),0,0,0,0,0};
+        std::vector<std::uint8_t> response;if(!out(command,error)||!in(response,command.size(),error))return false;
+        if(response.size()!=command.size()||!std::equal(command.begin(),command.begin()+12,response.begin())||response[12]!=0){error="cartridge live block erase failed";return false;}
+        progress<<"Erase response status: 0x"<<std::hex<<static_cast<unsigned>(response[12])<<std::dec<<"\n";
+    }
     if(!finishWriteOperation(error))return false;progress<<"Erased cartridge block "<<block<<".\n";return true;
 }
 bool CartridgeStorage::Impl::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::ostream& progress,std::string& error,bool allow_metadata)
