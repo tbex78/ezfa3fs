@@ -82,6 +82,8 @@ public:
 
 private:
     bool commit(std::string& error);
+    bool findBlankExtent(std::size_t block_count,std::size_t& first_block,
+                         std::string& error);
     bool parentExists(const std::string& path) const;
     Entry* find(const std::string& path);
     const Entry* find(const std::string& path) const;

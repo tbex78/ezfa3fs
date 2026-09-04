@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.30.8`.
+`0.31.0`.
 
 ## Geometry and layout
 
@@ -108,13 +108,15 @@ the previous committed filesystem state.
 ## Allocation and recovery
 
 Data allocation is append-only. Replacing or deleting a file makes its old
-extent unreachable but does not erase or reuse it. On open, EZ3FS-LIVE scans
-the data area and advances the allocation cursor past the highest programmed
-block, including leaked blocks from interrupted writes. This prevents unsafe
-NOR `0 -> 1` programming attempts after remounting.
+extent unreachable but does not erase or reuse it. Mounting derives an initial
+allocation cursor from committed entries without scanning the free tail.
+Before programming a file, the allocator searches for a contiguous erased
+extent and skips programmed blocks leaked by interrupted writes. This prevents
+unsafe NOR `0 -> 1` programming attempts while avoiding a full allocation scan
+at mount time.
 
 `live-list` reports the remaining free tail blocks. There is no garbage
-collector in format/application version 1.0.0/0.30.8. Space is recovered only
+collector in format/application version 1.0.0/0.31.0. Space is recovered only
 by creating a fresh image or rebuilding and completely rewriting the
 cartridge.
 

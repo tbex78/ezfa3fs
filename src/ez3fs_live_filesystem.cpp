@@ -106,6 +106,9 @@ bool Filesystem::format(BlockDevice& flash,std::string& error) {
 
 bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
                       ScanProgress progress) {
+    // Retained for source compatibility. Allocation is now checked lazily at
+    // the point of use instead of scanning the complete free tail on mount.
+    (void)progress;
     bool found=false;std::uint64_t newest=0;std::size_t chosen=0;std::vector<Entry> entries;
     for(std::size_t block=0;block<2;++block) {
         std::vector<std::uint8_t> bytes(NorFlash::block_size);
@@ -140,19 +143,6 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
     if(!found){error="no valid EZ3FS-LIVE superblock found";return false;}
     result.entries_=std::move(entries);result.generation_=newest;result.active_superblock_=chosen;result.next_free_block_=2;
     for(const auto& entry:result.entries_)result.next_free_block_=std::max(result.next_free_block_,static_cast<std::size_t>(entry.first_block+entry.block_count));
-    std::vector<std::uint8_t> bytes(NorFlash::block_size);
-    const auto first_scanned=result.next_free_block_;
-    const auto scan_count=NorFlash::block_count-first_scanned;
-    if(progress)progress(0,scan_count);
-    for(std::size_t block=first_scanned;block<NorFlash::block_count;++block) {
-        if(!flash.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
-            error="could not scan EZ3FS-LIVE allocation block "+std::to_string(block)+": "+error;
-            return false;
-        }
-        if(std::any_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte!=0xFF;}))
-            result.next_free_block_=block+1;
-        if(progress)progress(block-first_scanned+1,scan_count);
-    }
     error.clear();return true;
 }
 
@@ -187,6 +177,27 @@ bool Filesystem::commit(std::string& error) {
 
 std::size_t Filesystem::freeBlocks() const noexcept{return NorFlash::block_count-next_free_block_;}
 
+bool Filesystem::findBlankExtent(std::size_t block_count,
+                                 std::size_t& first_block,
+                                 std::string& error) {
+    if(block_count==0){first_block=next_free_block_;error.clear();return true;}
+    if(block_count>freeBlocks()){error="live filesystem is out of free blocks; garbage collection is required";return false;}
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);std::size_t run=0;std::size_t run_start=next_free_block_;
+    for(std::size_t block=next_free_block_;block<NorFlash::block_count;++block) {
+        if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
+            error="could not inspect live allocation block "+std::to_string(block)+": "+error;return false;
+        }
+        const bool blank=std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;});
+        if(blank) {
+            if(run==0)run_start=block;
+            if(++run==block_count){first_block=run_start;error.clear();return true;}
+        } else run=0;
+    }
+    next_free_block_=NorFlash::block_count;
+    error="live filesystem has no contiguous erased extent large enough for the file; garbage collection is required";
+    return false;
+}
+
 bool Filesystem::createDirectory(const std::string& path,std::string& error) {
     if(!validPath(path)||!parentExists(path)||find(path)){error="invalid or existing live directory path";return false;}
     const auto old=entries_;entries_.push_back({path,0,0,0,0,0,true});
@@ -197,8 +208,8 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
                          std::uint64_t modified_time,std::string& error) {
     if(!validPath(path)||!parentExists(path)){error="invalid live file path";return false;}
     const auto blocks=(bytes.size()+NorFlash::block_size-1)/NorFlash::block_size;
-    if(blocks>freeBlocks()){error="live filesystem is out of free blocks; garbage collection is required";return false;}
-    const auto old=entries_;const auto old_next=next_free_block_;auto* existing=find(path);
+    std::size_t first_block=0;if(!findBlankExtent(blocks,first_block,error))return false;
+    const auto old=entries_;auto* existing=find(path);next_free_block_=first_block;
     if(existing&&existing->directory){error="live path is a directory";return false;}
     for(std::size_t i=0;i<blocks;++i){
         std::vector<std::uint8_t> block(NorFlash::block_size,0xFF);const auto begin=i*NorFlash::block_size;const auto count=std::min(NorFlash::block_size,bytes.size()-begin);
@@ -210,7 +221,7 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
         }
         ++next_free_block_;
     }
-    Entry replacement{path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),static_cast<std::uint32_t>(old_next),static_cast<std::uint32_t>(blocks),false};
+    Entry replacement{path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),static_cast<std::uint32_t>(first_block),static_cast<std::uint32_t>(blocks),false};
     if(existing)*existing=replacement;else entries_.push_back(std::move(replacement));
     if(commit(error))return true;entries_=old;return false;
 }

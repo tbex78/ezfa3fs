@@ -4,7 +4,7 @@ EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
 NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
 FAT partition, or ROM-patching workflow.
 
-Application version: **0.30.8**.
+Application version: **0.31.0**.
 
 Two incompatible formats are supported:
 
@@ -30,10 +30,11 @@ The following operations have been tested on a physical cartridge:
 - Recovery from transient USB endpoint stalls and erase/program readback
   mismatches through bounded verified retries.
 
-Direct writable mounting works but is deliberately slow. Every physical block
-transaction reconnects and performs a 64-KiB readback, and every FUSE write
-request currently creates a new copy of the complete file. Correctness and
-recoverability take priority over performance in this version.
+Direct writable mounting buffers FUSE write chunks until flush or close, uses
+range-based reads, and verifies successful data-block transactions without
+reconnecting. Metadata verification and USB-error recovery still reopen the
+device when required. Every programmed or erased block retains readback
+verification.
 
 EZ3FS-LIVE does not yet implement garbage collection. Replaced and deleted
 file blocks are not reused, so repeated writes reduce the free-block count

@@ -9,15 +9,7 @@ LiveCartridgeSession::~LiveCartridgeSession() { std::string ignored;close(ignore
 bool LiveCartridgeSession::open(std::string& error) {
     if(open_){error.clear();return true;}
     if(!storage_.openForLiveWrite(error))return false;
-    unsigned displayed=101;
-    const auto progress=[&displayed](std::size_t completed,std::size_t total) {
-        const auto percent=total==0?100u:static_cast<unsigned>(completed*100/total);
-        if(percent==displayed)return;
-        displayed=percent;
-        std::cerr<<"\rScanning EZ3FS-LIVE allocation: "<<percent<<'%'<<std::flush;
-        if(completed==total)std::cerr<<'\n';
-    };
-    if(!live::Filesystem::open(device_,filesystem_,error,progress)){std::cerr<<'\n';std::string ignored;storage_.close(ignored);return false;}
+    if(!live::Filesystem::open(device_,filesystem_,error)){std::string ignored;storage_.close(ignored);return false;}
     if(!filesystem_.verify(error)){std::string ignored;storage_.close(ignored);return false;}
     open_=true;error.clear();return true;
 }
