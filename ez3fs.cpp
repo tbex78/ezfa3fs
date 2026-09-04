@@ -376,7 +376,7 @@ int main(int argc,char** argv) {
     if(argc>=4&&std::string(argv[1])=="live-mount"){bool foreground=false;for(int i=4;i<argc;++i)if(std::string(argv[i])=="--foreground")foreground=true;return liveMount(argv[2],argv[3],foreground);}
     if(argc>=3&&std::string(argv[1])=="live-card-mount"){bool foreground=false;for(int i=3;i<argc;++i)if(std::string(argv[i])=="--foreground")foreground=true;return liveCardMount(argv[2],foreground);}
     if(argc==4&&std::string(argv[1])=="live-mkdir")return liveMkdir(argv[2],argv[3]);
-    if(argc==5&&std::string(argv[1])=="live-put")return livePut(argv[2],argv[3],argv[4]);
+    if((argc==4||argc==5)&&std::string(argv[1])=="live-put")return livePut(argv[2],argv[3],argc==5?argv[4]:argv[3]);
     if(argc==5&&std::string(argv[1])=="live-get")return liveGet(argv[2],argv[3],argv[4]);
     if(argc==4&&std::string(argv[1])=="live-rm")return liveRemove(argv[2],argv[3],false);
     if(argc==4&&std::string(argv[1])=="live-rmdir")return liveRemove(argv[2],argv[3],true);
