@@ -361,9 +361,9 @@ bool CartridgeStorage::Impl::finishWriteOperation(std::string& error)
 {
     const bool finished=tx92(0xFF,0xFF,error) && tx92One(1,0x04,error) &&
                         tx92One(0,0,error) && tx92One(0,0,error);
-    // A write-window selection invalidates the cached read mapping. Force the
-    // next read to restore a known mapping before issuing a 0x91 command.
-    if(finished)mapped_limit=0;
+    // The captured post-write status tail restores the default linear first
+    // 8-MiB read view.  Higher offsets still trigger prepareMapping().
+    if(finished)mapped_limit=0x00800000u;
     return finished;
 }
 
@@ -553,10 +553,10 @@ void CartridgeStorage::Impl::shutdown() noexcept
     handle = nullptr;
     if (context) libusb_exit(context);
     context = nullptr;
-    // The write-window protocol changes the cartridge mapping.  Do not keep
-    // the previous read-window capacity as if it were still valid: the first
-    // read after reopening must explicitly restore the normal read mapping.
-    mapped_limit = 0;
+    // Initialization and the captured post-write status sequence leave the
+    // first 8 MiB directly readable.  Expanding this mapping for a low read
+    // selects the wrong cartridge view on real hardware.
+    mapped_limit = 0x00800000u;
 #else
     is_open = false;
 #endif
