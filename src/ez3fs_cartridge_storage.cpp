@@ -553,7 +553,10 @@ void CartridgeStorage::Impl::shutdown() noexcept
     handle = nullptr;
     if (context) libusb_exit(context);
     context = nullptr;
-    mapped_limit = 0x00800000u;
+    // The write-window protocol changes the cartridge mapping.  Do not keep
+    // the previous read-window capacity as if it were still valid: the first
+    // read after reopening must explicitly restore the normal read mapping.
+    mapped_limit = 0;
 #else
     is_open = false;
 #endif
