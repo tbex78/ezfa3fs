@@ -1,53 +1,128 @@
-# EZ3FS cartridge archive format 1.2
+# EZ3FS packed archive format 1.2
 
-EZ3FS is an independent, archive-only format for the 32-MiB EZF Advance III
-NOR flash. It contains no EZ3 loader, menu, ROM catalog, partition table, or
-FAT filesystem. Host software accesses it through the cartridge's proprietary
-raw read/erase/program protocol.
+EZ3FS is a compact indexed archive designed for the 32-MiB EZ-Flash Advance
+III NOR cartridge. It is independent of the original EZ3 layout and contains
+no loader, menu, ROM catalog, partition table, FAT filesystem, or patched ROM
+metadata.
 
-All integers are unsigned and little-endian. Images are padded with `0xFF` to
-a 64-KiB programming boundary and may not exceed `0x02000000` bytes.
+EZ3FS 1.2 is the format emitted by EZ3FS application `0.30.2`. The application
+also reads format 1.0, format 1.1, and the legacy EZFS magic described below.
+It is incompatible with the transactional EZ3FS-LIVE format.
+
+All multibyte integers are unsigned and little-endian. Paths are relative and
+use `/` as their separator.
+
+## Image layout
+
+```text
+offset 0
++-------------------------------+
+| 64-byte header                |
++-------------------------------+
+| file_count × 288-byte entries |
++-------------------------------+
+| 0xFF padding to 64 KiB        |
++-------------------------------+  data_offset
+| packed file data              |
++-------------------------------+
+| 0xFF padding to 64 KiB        |
++-------------------------------+  image_size
+```
+
+The data area begins at the first 64-KiB boundary after the index. File data is
+stored consecutively in index order; individual files are not block-aligned.
+The complete image is padded with `0xFF` to a 64-KiB programming boundary and
+cannot exceed `0x02000000` bytes.
 
 ## Header
 
-The 64-byte header starts at byte zero.
+The header occupies bytes `0x00` through `0x3F`.
 
 | Offset | Size | Field |
 |---:|---:|---|
-| `0x00` | 8 | `45 5A 33 46 53 0D 0A 1A` (`EZ3FS`) magic |
-| `0x08` | 2 | format major (`1`) |
-| `0x0A` | 2 | format minor (`2`) |
-| `0x0C` | 4 | header size (`64`) |
-| `0x10` | 4 | index-entry size (`288`) |
-| `0x14` | 4 | file count |
-| `0x18` | 8 | index offset (`64`) |
-| `0x20` | 8 | data offset |
-| `0x28` | 8 | padded image size |
-| `0x30` | 4 | CRC-32 of all index entries |
-| `0x34` | 4 | header CRC-32, calculated with this field zero |
-| `0x38` | 8 | reserved, zero |
+| `0x00` | 8 | Magic `45 5A 33 46 53 0D 0A 1A` |
+| `0x08` | 2 | Format major: `1` |
+| `0x0A` | 2 | Format minor: `2` |
+| `0x0C` | 4 | Header size: `64` |
+| `0x10` | 4 | Index-entry size: `288` |
+| `0x14` | 4 | Entry count |
+| `0x18` | 8 | Index offset: `64` |
+| `0x20` | 8 | Data offset |
+| `0x28` | 8 | Padded image size |
+| `0x30` | 4 | IEEE CRC-32 of all index-entry bytes |
+| `0x34` | 4 | Header CRC-32 with this field set to zero |
+| `0x38` | 8 | Reserved; emitted as zero |
 
-The data offset is the first 64-KiB boundary following the index.
+The header CRC protects all 64 header bytes. The index CRC protects exactly
+`entry_count × entry_size` bytes beginning at `index_offset`.
 
 ## Index entry
 
+Each entry is 288 bytes.
+
 | Offset | Size | Field |
 |---:|---:|---|
-| `0x00` | 256 | NUL-terminated UTF-8 relative path |
-| `0x100` | 8 | data offset |
-| `0x108` | 8 | exact data size |
+| `0x00` | 256 | NUL-terminated relative path |
+| `0x100` | 8 | File-data offset |
+| `0x108` | 8 | Exact file-data size |
 | `0x110` | 4 | IEEE CRC-32 of file data |
-| `0x114` | 4 | flags: bit 0 denotes a directory |
-| `0x118` | 8 | modification time as Unix seconds; zero means unavailable |
+| `0x114` | 4 | Flags; bit 0 marks a directory |
+| `0x118` | 8 | Modification time in Unix seconds |
 
-Paths use `/`, must be relative, and may not contain empty, `.` or `..`
-components. File entries are packed in index order and must not overlap.
-Directory entries have zero offset, size, and CRC. The root directory is
-implicit and is never stored as an entry.
+A path is at most 255 bytes and cannot:
 
-Format 1.0 and 1.1 images remain readable. Version 1.0 only contains file
-entries and requires zero flags. Versions before 1.2 have no persisted
-modification time; hosts may display the mount time instead.
+- Be empty or absolute.
+- Contain `\` or an embedded NUL.
+- Contain empty, `.` or `..` components.
+- Duplicate another entry path.
 
-For migration, EZ3FS readers also accept the legacy eight-byte EZFS magic
-`45 5A 46 53 0D 0A 1A 0A`. Builders always emit the EZ3FS magic.
+The root directory is implicit and is never stored. Directory entries have
+zero data offset, size, and CRC. File extents must remain inside the declared
+image, must not overlap, and must not point into the header or index.
+
+A zero modification time means that the timestamp is unavailable. FUSE uses
+the mount time as a display fallback for entries without a stored timestamp.
+
+## Integrity and validation
+
+An image is accepted only when its structural fields, bounds, paths, flags,
+index CRC, header CRC, and file extents are valid. Full
+verification additionally calculates and checks every file-data CRC.
+
+Use:
+
+```sh
+./build/cmake/ez3fs verify IMAGE.ez3fs
+```
+
+Cartridge reads apply the same parser and verifier. A cartridge with an
+unrecognized flash identifier is accepted through the compatibility path only
+when a valid EZ3FS signature exists at offset zero.
+
+## Mutations and cartridge programming
+
+Packed EZ3FS is not an in-place writable filesystem. Image edit commands and
+writable image mounts rebuild the packed image, write a temporary image, and
+replace the original. The physical-cartridge workflow stages edits locally and
+then uses a complete erase/program/verify cycle.
+
+```sh
+./build/cmake/ez3fs card-write IMAGE.ez3fs
+```
+
+`card-write` validates the archive before requesting yes/no confirmation. It
+then erases all 32 MiB, programs the padded image at offset zero, and compares
+every programmed byte with the source image.
+
+For individual live cartridge updates, use EZ3FS-LIVE rather than this format.
+
+## Compatibility
+
+| Version | Reader behavior |
+|---|---|
+| 1.0 | File entries only; flags must be zero; no timestamp field |
+| 1.1 | Directory entries supported; no persisted timestamp |
+| 1.2 | Directory entries and modification timestamps supported |
+
+Readers also recognize the legacy eight-byte EZFS magic
+`45 5A 46 53 0D 0A 1A 0A`. Builders always emit the current EZ3FS magic.

@@ -1,147 +1,255 @@
 # EZ3FS
 
-EZ3FS is an independent indexed archive filesystem for the 32-MiB EZF Advance
-III NOR flash geometry. It contains no EZ3 loader, menu, ROM catalog, FAT
-volume, or GBA ROM patching. Current version: **0.30.2**.
+EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
+NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
+FAT partition, or ROM-patching workflow.
 
-Version 0.4.0 added read-only physical-cartridge inspection and extraction.
-Version 0.4.1 recognizes an EZ3FS signature as a safe fallback when a genuine
-EZ3 cartridge does not return one of the two previously captured flash IDs.
-Version 0.5.0 adds confirmed raw cartridge programming with full read-back
-verification.
-Version 0.6.0 adds read-only mounting directly from a physical cartridge.
-Version 0.7.0 stores modification timestamps and reports meaningful dates
-through FUSE/macFUSE.
-Version 0.8.0 adds verified physical-cartridge image backup with `card-pull`.
-Version 0.9.0 adds transactional writable cartridge mounting through a local
-staging image.
-Version 0.10.0 adds staged-image status and confirmed commit workflows.
-Version 0.11.0 adds recovery snapshots for interrupted writable mounts.
-The experimental EZ3FS-LIVE `1.0.0` subsystem is documented in
-[EZ3FS_LIVE_FORMAT.md](EZ3FS_LIVE_FORMAT.md); it currently runs only in the
-NOR-aware image backend. Use `live-*` commands for persistent 32-MiB image
-experiments; physical-cartridge commands are unchanged.
-See [EZ3FS_FORMAT.md](EZ3FS_FORMAT.md) for the binary format.
+Application version: **0.30.2**.
+
+Two incompatible formats are supported:
+
+| Format | Purpose | Cartridge updates |
+|---|---|---|
+| EZ3FS 1.2 (`.ez3fs`) | Compact indexed archive | Complete cartridge rewrite |
+| EZ3FS-LIVE 1.0.0 (`.ez3live`) | Transactional copy-on-write filesystem | Individual 64-KiB block transactions |
+
+See [EZ3FS_FORMAT.md](EZ3FS_FORMAT.md) and
+[EZ3FS_LIVE_FORMAT.md](EZ3FS_LIVE_FORMAT.md) for their binary layouts and
+consistency rules.
+
+## Project status
+
+The following operations have been tested on a physical cartridge:
+
+- Complete EZ3FS and EZ3FS-LIVE programming with byte-for-byte verification.
+- Reading, erasing, programming, and verifying individual cartridge blocks.
+- Reading and mounting cartridge contents through FUSE/macFUSE.
+- Direct writable EZ3FS-LIVE mounting from the command line and Finder.
+- Creating, replacing, reading, and deleting files.
+- Creating, traversing, renaming, and deleting directories.
+- Recovery from transient USB endpoint stalls and erase/program readback
+  mismatches through bounded verified retries.
+
+Direct writable mounting works but is deliberately slow. Every physical block
+transaction reconnects and performs a 64-KiB readback, and every FUSE write
+request currently creates a new copy of the complete file. Correctness and
+recoverability take priority over performance in this version.
+
+EZ3FS-LIVE does not yet implement garbage collection. Replaced and deleted
+file blocks are not reused, so repeated writes reduce the free-block count
+until the image is reformatted or rebuilt.
 
 ## Build
 
+The project requires a C++17 compiler and CMake 3.20 or newer. FUSE 3 and
+libusb support are enabled automatically when their `pkg-config` packages are
+available.
+
 ```sh
 cmake -S . -B build/cmake -DCMAKE_BUILD_TYPE=Release
-cmake --build build/cmake --target ez3fs
+cmake --build build/cmake --parallel
+ctest --test-dir build/cmake --output-on-failure
 ```
 
-Or:
+The resulting executable is:
+
+```sh
+./build/cmake/ez3fs --version
+```
+
+A direct Make build is also available:
 
 ```sh
 make
+./ez3fs --version
 ```
 
-FUSE mounting is enabled automatically when `pkg-config fuse3` is available.
-Physical-cartridge commands are enabled when `pkg-config libusb-1.0` is
-available. Other commands remain available when either dependency is absent.
+Commands that do not need FUSE or USB remain available when those optional
+dependencies are absent.
 
-## Image operations
+## EZ3FS packed images
+
+Create and edit a compact `.ez3fs` image:
 
 ```sh
-./ez3fs create cartridge.ez3fs
-./ez3fs mkdir cartridge.ez3fs documents
-./ez3fs add cartridge.ez3fs local.txt documents/local.txt
-./ez3fs rm cartridge.ez3fs documents/local.txt
-./ez3fs rmdir cartridge.ez3fs documents
-./ez3fs list cartridge.ez3fs
-./ez3fs verify cartridge.ez3fs
-./ez3fs extract cartridge.ez3fs output
+./build/cmake/ez3fs create cartridge.ez3fs
+./build/cmake/ez3fs mkdir cartridge.ez3fs documents
+./build/cmake/ez3fs add cartridge.ez3fs local.txt documents/local.txt
+./build/cmake/ez3fs list cartridge.ez3fs
+./build/cmake/ez3fs verify cartridge.ez3fs
+./build/cmake/ez3fs extract cartridge.ez3fs output
+./build/cmake/ez3fs rm cartridge.ez3fs documents/local.txt
+./build/cmake/ez3fs rmdir cartridge.ez3fs documents
 ```
 
-## FUSE/macFUSE
-
-Mounting is read-only by default:
-
-```sh
-mkdir mountpoint
-./ez3fs mount cartridge.ez3fs mountpoint
-```
-
-Writable mounting must be explicit:
-
-```sh
-./ez3fs mount cartridge.ez3fs mountpoint --writable --foreground
-```
-
-Changes are staged and committed to the image on metadata mutations, flush,
-`fsync`, and clean unmount.
-
-## Physical cartridge (read-only)
-
-Connect the EZ-Flash Advance III USB writer and use:
-
-```sh
-./ez3fs card-info
-./ez3fs card-list
-./ez3fs card-verify
-./ez3fs card-extract output
-./ez3fs card-pull working.ez3fs
-```
-
-These commands recognize an EZ3FS image beginning at cartridge offset zero.
-The inspection and extraction commands never program or erase cartridge
-memory. `card-pull` verifies the cartridge image before creating a new local
-image and refuses to overwrite an existing path. To erase the complete
-cartridge, program an image at offset zero, and
-verify every programmed byte:
-
-```sh
-./ez3fs card-write cartridge.ez3fs
-```
-
-The command validates the EZ3FS image before opening the USB device and
-requires the exact confirmation text `WRITE EZ3FS` before any modification.
-
-Mount the physical cartridge read-only through FUSE/macFUSE:
+Mount an image read-only, or explicitly mount it writable:
 
 ```sh
 mkdir -p mountpoint
-./ez3fs card-mount mountpoint
+./build/cmake/ez3fs mount cartridge.ez3fs mountpoint
+./build/cmake/ez3fs mount cartridge.ez3fs mountpoint --writable --foreground
 ```
 
-The image is read and verified before mounting, then the USB session is
-closed. Changes through this mount are rejected; use a local writable mount
-and `card-write` when you intentionally want to replace cartridge contents.
+Writable image mounts rebuild and atomically replace the local image after
+metadata mutations, `flush`, `fsync`, and clean unmount. They do not access a
+physical cartridge.
 
-For a writable Finder mount backed by a new local staging image:
+## Packed EZ3FS on a cartridge
+
+Read-only cartridge commands do not erase or program flash:
 
 ```sh
-./ez3fs card-mount mountpoint --writable working.ez3fs
+./build/cmake/ez3fs card-info
+./build/cmake/ez3fs card-list
+./build/cmake/ez3fs card-verify
+./build/cmake/ez3fs card-extract output
+./build/cmake/ez3fs card-pull cartridge-backup.ez3fs
+./build/cmake/ez3fs card-mount mountpoint
 ```
 
-All changes are committed to `working.ez3fs`, never directly to the cartridge.
-After a clean unmount, verify and explicitly program the staged result:
+`card-pull` verifies the archive and refuses to overwrite an existing output
+path. A read-only cartridge mount loads and verifies the image, closes the USB
+session, and then exposes the in-memory contents through FUSE.
+
+Program a packed image only when a complete cartridge replacement is intended:
 
 ```sh
-diskutil unmount mountpoint
-./ez3fs verify working.ez3fs
-./ez3fs card-write working.ez3fs
+./build/cmake/ez3fs card-write cartridge.ez3fs
 ```
 
-Alternatively, inspect the staged changes and commit them as one transaction:
+The image is validated before USB programming begins. The command displays a
+warning, asks for yes/no confirmation, erases the complete cartridge, programs
+the image at offset zero, and verifies every byte.
+
+### Staged writable cartridge workflow
+
+Packed EZ3FS does not support live block updates. Its writable cartridge
+workflow therefore copies the cartridge into a local staging image:
 
 ```sh
-./ez3fs card-status working.ez3fs
-./ez3fs card-commit working.ez3fs
+./build/cmake/ez3fs card-mount mountpoint \
+  --writable working.ez3fs --foreground
 ```
 
-`card-status` never modifies the cartridge. `card-commit` performs no write
-when the raw images already match; otherwise it displays the change summary,
-requires `COMMIT EZ3FS`, programs with read-back verification, and preserves
-the staging image as a recovery copy.
-
-Writable staged mounts create `STAGING.ez3fs.recovery.ez3fs` before mounting.
-The snapshot is removed after a clean unmount. If the mount is interrupted,
-recover the pre-edit image with:
+The cartridge is unchanged while mounted. Inspect or commit the staging image
+after unmounting:
 
 ```sh
-./ez3fs card-recover working.ez3fs
+./build/cmake/ez3fs card-status working.ez3fs
+./build/cmake/ez3fs card-commit working.ez3fs
 ```
 
-Recovery requires the exact confirmation text `RECOVER EZ3FS` and never
-accesses the cartridge.
+`card-status` is read-only. `card-commit` shows the added, modified, and
+deleted paths; if the raw images differ, it requests yes/no confirmation and
+performs a complete verified cartridge rewrite.
+
+Before a staged writable mount starts, EZ3FS creates
+`working.ez3fs.recovery.ez3fs`. It removes the snapshot after a clean unmount
+and preserves it after an interrupted mount. Restore the staging image with:
+
+```sh
+./build/cmake/ez3fs card-recover working.ez3fs
+```
+
+Recovery requests yes/no confirmation and only changes the local staging
+image. It never writes to the cartridge.
+
+## EZ3FS-LIVE images
+
+Create and modify an exact 32-MiB transactional image:
+
+```sh
+./build/cmake/ez3fs live-format cartridge.ez3live
+./build/cmake/ez3fs live-mkdir cartridge.ez3live documents
+./build/cmake/ez3fs live-put cartridge.ez3live local.txt documents/local.txt
+./build/cmake/ez3fs live-list cartridge.ez3live
+./build/cmake/ez3fs live-verify cartridge.ez3live
+./build/cmake/ez3fs live-get cartridge.ez3live documents/local.txt output.txt
+./build/cmake/ez3fs live-rm cartridge.ez3live documents/local.txt
+./build/cmake/ez3fs live-rmdir cartridge.ez3live documents
+```
+
+When `live-put` has no destination argument, the source path is used as the
+destination:
+
+```sh
+./build/cmake/ez3fs live-put cartridge.ez3live documents/readme.txt
+```
+
+Local EZ3FS-LIVE FUSE mounting is read-only:
+
+```sh
+./build/cmake/ez3fs live-mount cartridge.ez3live mountpoint --foreground
+```
+
+## EZ3FS-LIVE on a cartridge
+
+Program or pull a complete EZ3FS-LIVE image:
+
+```sh
+./build/cmake/ez3fs live-card-write cartridge.ez3live
+./build/cmake/ez3fs live-card-pull cartridge-backup.ez3live
+```
+
+`live-card-write` validates the exact 32-MiB image, asks for yes/no
+confirmation, replaces the complete cartridge, and verifies it.
+`live-card-pull` reads all 32 MiB, validates the newest generation and every
+file checksum, and writes the local output image.
+
+Mount the cartridge as a verified read-only snapshot:
+
+```sh
+./build/cmake/ez3fs live-card-mount mountpoint
+```
+
+For direct writes to cartridge flash, foreground mode is mandatory:
+
+```sh
+./build/cmake/ez3fs live-card-mount mountpoint \
+  --writable --foreground
+```
+
+The command asks for yes/no confirmation, scans the cartridge allocation,
+keeps the USB session open, and commits Finder or terminal mutations directly
+through copy-on-write transactions. Do not run another cartridge command or
+disconnect the writer while this mount is active.
+
+Unmount from another terminal before disconnecting:
+
+```sh
+diskutil unmount mountpoint       # macOS
+fusermount3 -u mountpoint         # Linux
+```
+
+macOS may create `.DS_Store` and `._*` AppleDouble files. They are ordinary
+EZ3FS-LIVE entries and consume flash blocks like other files. Close Finder
+windows before deleting them if Finder immediately recreates them.
+
+## Block diagnostics
+
+The following commands are intended for hardware diagnosis and development:
+
+```sh
+./build/cmake/ez3fs live-card-read-block 2 block-2.bin
+./build/cmake/ez3fs live-card-erase-plan 2
+./build/cmake/ez3fs live-card-erase-block 2
+./build/cmake/ez3fs live-card-program-block 2 block-2.bin
+```
+
+`live-card-erase-plan` is always a dry run. Direct erase and program commands
+are restricted to data blocks 2 through 511, request yes/no confirmation, and
+perform readback verification. Blocks 0 and 1 contain EZ3FS-LIVE metadata and
+cannot be modified by these diagnostic commands.
+
+## Safety notes
+
+- Keep a verified `card-pull` or `live-card-pull` backup before experiments.
+- Never disconnect the USB writer during erase, program, or writable mounting.
+- Use only one cartridge command or mount at a time.
+- A failed EZ3FS-LIVE transaction keeps the previous valid superblock
+  generation. Remounting selects the newest complete generation.
+- Physical writes are verified. Transient stalls and mismatches are retried up
+  to three times; an operation fails with an I/O error if verification still
+  does not match.
+- EZ3FS and EZ3FS-LIVE are incompatible. Use commands matching the format on
+  the cartridge.
