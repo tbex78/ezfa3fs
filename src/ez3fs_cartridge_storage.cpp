@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <iomanip>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -67,6 +69,27 @@ void putLe32(std::vector<std::uint8_t>& bytes, std::size_t offset,
 std::string usbError(const char* operation, int result)
 {
     return std::string(operation) + ": " + libusb_error_name(result);
+}
+
+bool hasEz3fsMagic(const std::uint8_t* bytes) noexcept
+{
+    static constexpr std::array<std::uint8_t,8> current =
+        {{'E','Z','3','F','S','\r','\n',0x1A}};
+    static constexpr std::array<std::uint8_t,8> legacy =
+        {{'E','Z','F','S','\r','\n',0x1A,'\n'}};
+    return std::equal(current.begin(),current.end(),bytes) ||
+           std::equal(legacy.begin(),legacy.end(),bytes);
+}
+
+std::string formatFlashId(const std::array<std::uint8_t,4>& id)
+{
+    std::ostringstream output;
+    output << std::hex << std::uppercase << std::setfill('0');
+    for (std::size_t i=0;i<id.size();++i) {
+        if (i) output << ' ';
+        output << std::setw(2) << static_cast<unsigned>(id[i]);
+    }
+    return output.str();
 }
 } // namespace
 
@@ -185,7 +208,18 @@ bool CartridgeStorage::Impl::initialize(std::string& error)
     const std::array<std::uint8_t,4> b8{{0x1C,0,0xB8,0}};
     const std::array<std::uint8_t,4> b9{{0x1C,0,0xB9,0}};
     if (flash_id != b8 && flash_id != b9) {
-        error = "unsupported cartridge flash identifier"; return false;
+        // Some genuine EZ3 units do not return either captured ID reliably.
+        // The historical reader therefore used content as a read-only fallback.
+        // Accept only an EZ3FS signature at offset zero; arbitrary cartridges
+        // still cannot enter the EZ3-specific mapping path.
+        std::array<std::uint8_t,8> header{};
+        if (!rawRead(0,header.data(),header.size(),error)) return false;
+        if (!hasEz3fsMagic(header.data())) {
+            error = "unsupported cartridge flash identifier: " +
+                    formatFlashId(flash_id) +
+                    "; no EZ3FS image found at offset 0";
+            return false;
+        }
     }
 
     const std::vector<std::uint8_t> c95 =
