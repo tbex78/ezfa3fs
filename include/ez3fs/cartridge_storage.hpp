@@ -4,10 +4,12 @@
 
 #include <array>
 #include <memory>
+#include <vector>
 
 namespace ez3fs {
 
 class CartridgeProgrammer;
+class CartridgeLiveDevice;
 
 class CartridgeStorage final : public ByteStorage {
 public:
@@ -26,9 +28,13 @@ public:
     std::uint64_t capacity() const noexcept override;
     bool read(std::uint64_t offset, std::uint8_t* destination,
               std::size_t size, std::string& error) override;
+    bool openForLiveWrite(std::string& error);
+    bool eraseLiveBlock(std::size_t block,std::string& error);
+    bool programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error);
 
 private:
     friend class CartridgeProgrammer;
+    friend class CartridgeLiveDevice;
     class Impl;
     std::unique_ptr<Impl> impl_;
 };

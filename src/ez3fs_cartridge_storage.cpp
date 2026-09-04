@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstring>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -31,6 +32,9 @@ public:
     void shutdown() noexcept;
     bool read(std::uint64_t offset, std::uint8_t* destination,
               std::size_t size, std::string& error);
+    bool eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error);
+    bool programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,
+                          std::ostream& progress,std::string& error);
     bool is_open = false;
     std::array<std::uint8_t, 4> flash_id{};
 
@@ -66,9 +70,6 @@ private:
     bool eraseAll(std::ostream& progress, std::string& error);
     bool programImage(const std::vector<std::uint8_t>& image,
                       std::ostream& progress, std::string& error);
-    bool eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error);
-    bool programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,
-                          std::ostream& progress,std::string& error);
 };
 
 #if defined(EZ3FS_HAS_LIBUSB)
@@ -550,6 +551,9 @@ CartridgeStorage::CartridgeStorage() : impl_(new Impl) {}
 CartridgeStorage::~CartridgeStorage() = default;
 bool CartridgeStorage::open(std::string& error) { return impl_->open(error); }
 bool CartridgeStorage::close(std::string& error) { return impl_->close(error); }
+bool CartridgeStorage::openForLiveWrite(std::string& error) { return impl_->openForProgramming(error); }
+bool CartridgeStorage::eraseLiveBlock(std::size_t block,std::string& error) { return impl_->eraseLiveBlock(block,std::cerr,error); }
+bool CartridgeStorage::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) { return impl_->programLiveBlock(block,bytes,std::cerr,error); }
 bool CartridgeStorage::isOpen() const noexcept { return impl_->is_open; }
 std::array<std::uint8_t,4> CartridgeStorage::flashId() const noexcept { return impl_->flash_id; }
 std::uint64_t CartridgeStorage::capacity() const noexcept { return cartridge_capacity; }
