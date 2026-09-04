@@ -4,7 +4,7 @@ EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
 NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
 FAT partition, or ROM-patching workflow.
 
-Application version: **0.33.0**.
+Application version: **0.34.0**.
 
 Two incompatible formats are supported:
 
@@ -173,6 +173,7 @@ Create and modify an exact 32-MiB transactional image:
 ./build/cmake/ez3fs live-rm cartridge.ez3live documents/local.txt
 ./build/cmake/ez3fs live-rmdir cartridge.ez3live documents
 ./build/cmake/ez3fs live-gc cartridge.ez3live
+./build/cmake/ez3fs live-compact cartridge.ez3live
 ./build/cmake/ez3fs live-space cartridge.ez3live
 ```
 
@@ -207,11 +208,15 @@ Reclaim unreferenced cartridge data blocks only while it is unmounted:
 
 ```sh
 ./build/cmake/ez3fs live-card-gc
+./build/cmake/ez3fs live-card-compact
 ./build/cmake/ez3fs live-card-space
 ```
 
-The command asks for confirmation, preserves every block referenced by the
-active generation, and verifies each physical erase.
+The mutating cartridge commands ask for confirmation and must run while the
+FUSE mount is unmounted. Garbage collection preserves every block referenced
+by the active generation and verifies each physical erase. Compaction first
+collects garbage, then transactionally relocates active file extents toward
+the start of the data area to create a larger contiguous free tail.
 
 `live-space` and `live-card-space` are read-only. They report active, erased,
 and reclaimable blocks together with the largest file extent available now

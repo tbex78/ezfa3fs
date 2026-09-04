@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.33.0`.
+`0.34.0`.
 
 ## Geometry and layout
 
@@ -126,6 +126,21 @@ blocks from erasure. Cartridge collection restarts the writer session between
 inspection and each erase because the USB bridge does not reliably accept a
 flash erase directly after a read transaction.
 
+`live-compact` and `live-card-compact` first perform the same garbage sweep,
+then relocate active file extents toward block 2. Each relocation is a
+transaction with this ordering:
+
+1. Read and checksum the source file.
+2. Program its new erased extent and verify the physical writes.
+3. Commit a manifest generation referencing the new extent.
+4. Commit the same manifest to the other superblock.
+5. Erase and verify the old extent.
+
+The source remains intact until both metadata blocks reference the verified
+destination. A power loss before the first commit leaves the old generation
+active; a power loss later leaves either the old or new data as harmless
+unreferenced garbage. The cartridge command requires an unmounted filesystem.
+
 `live-list` reports an available-block estimate. Unknown remnants from an
 interrupted write are removed from that estimate when allocation probes them
 or when garbage collection scans the complete data area.
@@ -149,6 +164,7 @@ space indicates fragmentation caused by active file placement.
 ./build/cmake/ez3fs live-rm cartridge.ez3live documents/README.md
 ./build/cmake/ez3fs live-rmdir cartridge.ez3live documents
 ./build/cmake/ez3fs live-gc cartridge.ez3live
+./build/cmake/ez3fs live-compact cartridge.ez3live
 ./build/cmake/ez3fs live-space cartridge.ez3live
 ```
 
@@ -177,6 +193,7 @@ cartridge:
 ```sh
 ./build/cmake/ez3fs live-card-write cartridge.ez3live
 ./build/cmake/ez3fs live-card-gc
+./build/cmake/ez3fs live-card-compact
 ./build/cmake/ez3fs live-card-space
 ```
 
@@ -234,9 +251,9 @@ entries if Finder recreates them immediately.
 
 ## Current limitations
 
-- Garbage collection reclaims unreferenced blocks but does not relocate active
-  extents, so severe active-data fragmentation can still prevent a large
-  contiguous allocation.
+- Compaction is best-effort: a file can move only when a sufficiently large
+  erased extent already exists below its current extent. Pathological layouts
+  may therefore retain some fragmentation.
 - Each flushed logical file is written to a new contiguous extent.
 - Each committed mutation writes a new superblock generation.
 - Physical erase/program readback still bounds maximum write speed.
