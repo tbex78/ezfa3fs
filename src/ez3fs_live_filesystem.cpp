@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <set>
 
@@ -30,6 +32,23 @@ bool validPath(const std::string& path) {
 }
 
 NorFlash::NorFlash():bytes_(capacity,0xFF) {}
+
+bool NorFlash::load(const std::string& path,std::string& error) {
+    std::ifstream input(path,std::ios::binary);
+    if(!input){error="could not open live image: "+path;return false;}
+    std::vector<std::uint8_t> bytes(std::istreambuf_iterator<char>(input),{});
+    if(!input.good()&&!input.eof()){error="could not read live image: "+path;return false;}
+    if(bytes.size()!=capacity){error="live image must be exactly 32 MiB";return false;}
+    bytes_=std::move(bytes);error.clear();return true;
+}
+
+bool NorFlash::save(const std::string& path,std::string& error) const {
+    std::ofstream output(path,std::ios::binary|std::ios::trunc);
+    if(!output){error="could not open live image for writing: "+path;return false;}
+    output.write(reinterpret_cast<const char*>(bytes_.data()),static_cast<std::streamsize>(bytes_.size()));
+    if(!output){error="could not write live image: "+path;return false;}
+    error.clear();return true;
+}
 
 bool NorFlash::read(std::size_t offset,std::uint8_t* destination,std::size_t size,
                     std::string& error) const {

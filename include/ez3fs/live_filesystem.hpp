@@ -20,6 +20,8 @@ public:
     static constexpr std::size_t capacity = block_size*block_count;
 
     NorFlash();
+    bool load(const std::string& path,std::string& error);
+    bool save(const std::string& path,std::string& error) const;
     bool read(std::size_t offset,std::uint8_t* destination,std::size_t size,
               std::string& error) const;
     bool program(std::size_t offset,const std::uint8_t* source,std::size_t size,

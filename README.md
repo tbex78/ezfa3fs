@@ -2,7 +2,7 @@
 
 EZ3FS is an independent indexed archive filesystem for the 32-MiB EZF Advance
 III NOR flash geometry. It contains no EZ3 loader, menu, ROM catalog, FAT
-volume, or GBA ROM patching. Current version: **0.11.0**.
+volume, or GBA ROM patching. Current version: **0.12.0**.
 
 Version 0.4.0 added read-only physical-cartridge inspection and extraction.
 Version 0.4.1 recognizes an EZ3FS signature as a safe fallback when a genuine
@@ -19,7 +19,8 @@ Version 0.10.0 adds staged-image status and confirmed commit workflows.
 Version 0.11.0 adds recovery snapshots for interrupted writable mounts.
 The experimental EZ3FS-LIVE `1.0.0` subsystem is documented in
 [EZ3FS_LIVE_FORMAT.md](EZ3FS_LIVE_FORMAT.md); it currently runs only in the
-NOR-aware simulator and does not alter physical-cartridge commands.
+NOR-aware image backend. Use `live-*` commands for persistent 32-MiB image
+experiments; physical-cartridge commands are unchanged.
 See [EZ3FS_FORMAT.md](EZ3FS_FORMAT.md) for the binary format.
 
 ## Build
