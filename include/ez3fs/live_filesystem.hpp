@@ -66,6 +66,12 @@ struct SpaceReport final {
     std::size_t largest_post_gc_extent = 0;
 };
 
+struct CompactionReport final {
+    std::size_t garbage_blocks_reclaimed = 0;
+    std::size_t files_relocated = 0;
+    std::size_t blocks_relocated = 0;
+};
+
 class Filesystem final {
 public:
     using ScanProgress = std::function<void(std::size_t,std::size_t)>;
@@ -90,6 +96,8 @@ public:
                         ScanProgress progress = {});
     bool inspectSpace(SpaceReport& report,std::string& error,
                       ScanProgress progress = {}) const;
+    bool compact(CompactionReport& report,std::string& error,
+                 ScanProgress progress = {});
     const std::vector<Entry>& entries() const noexcept { return entries_; }
     std::uint64_t generation() const noexcept { return generation_; }
     std::size_t freeBlocks() const noexcept;
@@ -98,6 +106,10 @@ private:
     bool commit(std::string& error);
     bool findBlankExtent(std::size_t block_count,std::size_t& first_block,
                          std::string& error);
+    bool findBlankExtentBefore(std::size_t limit,std::size_t block_count,
+                               std::size_t& first_block,std::string& error);
+    bool programExtent(std::size_t first_block,
+                       const std::vector<std::uint8_t>& bytes,std::string& error);
     bool blockReferenced(std::size_t block) const noexcept;
     bool parentExists(const std::string& path) const;
     Entry* find(const std::string& path);

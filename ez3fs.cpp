@@ -57,6 +57,7 @@ void usage() {
   ez3fs live-rm IMAGE.ez3live FILE
   ez3fs live-rmdir IMAGE.ez3live DIRECTORY
   ez3fs live-gc IMAGE.ez3live
+  ez3fs live-compact IMAGE.ez3live
   ez3fs live-space IMAGE.ez3live
   ez3fs live-mount IMAGE.ez3live MOUNTPOINT [--foreground]
   ez3fs live-card-mount MOUNTPOINT [--foreground]
@@ -64,6 +65,7 @@ void usage() {
   ez3fs live-card-pull IMAGE.ez3live
   ez3fs live-card-write IMAGE.ez3live
   ez3fs live-card-gc
+  ez3fs live-card-compact
   ez3fs live-card-space
   ez3fs live-card-read-block BLOCK OUTPUT.bin
   ez3fs live-card-erase-plan BLOCK
@@ -84,6 +86,16 @@ void usage() {
 )";
 }
 bool confirm(const std::string& prompt) { std::cout<<prompt<<" [y/N]: "<<std::flush;std::string answer;std::getline(std::cin,answer);return answer=="y"||answer=="Y"||answer=="yes"||answer=="YES"; }
+ez3fs::live::Filesystem::ScanProgress progressReporter(std::string label) {
+    return [label=std::move(label),displayed=101u](std::size_t completed,
+                                                   std::size_t total) mutable {
+        const auto percent=total==0?100u:static_cast<unsigned>(completed*100/total);
+        if(percent==displayed)return;
+        displayed=percent;
+        std::cerr<<'\r'<<label<<": "<<percent<<'%'<<std::flush;
+        if(completed==total)std::cerr<<'\n';
+    };
+}
 bool loadArchive(const fs::path& p,ez3fs::Archive& a) {
     std::vector<std::uint8_t> b; if(!readFile(p,b)){std::cerr<<"Could not read image: "<<p<<'\n';return false;}
     std::string e; if(!a.open(std::move(b),e)){std::cerr<<e<<'\n';return false;} return true;
@@ -381,6 +393,22 @@ int liveGarbageCollect(const fs::path& image) {
     }
     std::cout<<"Reclaimed "<<reclaimed<<" EZ3FS-LIVE block(s) in "<<image<<".\n";return 0;
 }
+void printLiveCompaction(const ez3fs::live::CompactionReport& report) {
+    std::cout<<"Garbage blocks reclaimed: "<<report.garbage_blocks_reclaimed<<'\n'
+             <<"Files relocated:          "<<report.files_relocated<<'\n'
+             <<"Data blocks relocated:    "<<report.blocks_relocated<<'\n';
+}
+int liveCompact(const fs::path& image) {
+    ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);
+    if(!loadLive(image,flash,filesystem))return 1;
+    std::string error;ez3fs::live::CompactionReport report;
+    if(!filesystem.verify(error)||!filesystem.compact(report,error)||
+       !flash.save(image.string(),error)) {
+        std::cerr<<error<<'\n';return 1;
+    }
+    std::cout<<"Compacted and verified "<<image<<".\n";
+    printLiveCompaction(report);return 0;
+}
 void printLiveSpace(const ez3fs::live::Filesystem& filesystem,
                     const ez3fs::live::SpaceReport& report) {
     constexpr std::size_t kib_per_block=ez3fs::live::NorFlash::block_size/1024;
@@ -411,13 +439,7 @@ int liveCardSpace() {
     if(!ez3fs::live::Filesystem::open(device,filesystem,error)){
         std::string ignored;storage.close(ignored);std::cerr<<error<<'\n';return 1;
     }
-    unsigned displayed=101;
-    const auto progress=[&displayed](std::size_t completed,std::size_t total) {
-        const auto percent=total==0?100u:static_cast<unsigned>(completed*100/total);
-        if(percent==displayed)return;displayed=percent;
-        std::cerr<<"\rInspecting EZ3FS-LIVE space: "<<percent<<'%'<<std::flush;
-        if(completed==total)std::cerr<<'\n';
-    };
+    const auto progress=progressReporter("Inspecting EZ3FS-LIVE space");
     ez3fs::live::SpaceReport report;const bool inspected=filesystem.inspectSpace(report,error,progress);
     std::string close_error;const bool closed=storage.close(close_error);
     if(!inspected||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;}
@@ -429,17 +451,25 @@ int liveCardGarbageCollect() {
     if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
     ez3fs::LiveCartridgeSession cartridge;std::string error;
     if(!cartridge.open(error)){std::cerr<<error<<'\n';return 1;}
-    unsigned displayed=101;
-    const auto progress=[&displayed](std::size_t completed,std::size_t total) {
-        const auto percent=total==0?100u:static_cast<unsigned>(completed*100/total);
-        if(percent==displayed)return;displayed=percent;
-        std::cerr<<"\rCollecting EZ3FS-LIVE garbage: "<<percent<<'%'<<std::flush;
-        if(completed==total)std::cerr<<'\n';
-    };
+    const auto progress=progressReporter("Collecting EZ3FS-LIVE garbage");
     std::size_t reclaimed=0;const bool collected=cartridge.filesystem().collectGarbage(reclaimed,error,progress);
     std::string close_error;const bool closed=cartridge.close(close_error);
     if(!collected||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;}
     std::cout<<"Reclaimed and verified "<<reclaimed<<" cartridge block(s).\n";return 0;
+}
+int liveCardCompact() {
+    std::cout<<"WARNING: this will relocate EZ3FS-LIVE files and erase their old cartridge blocks.\n"
+             <<"Unmount the cartridge before continuing.\n";
+    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    ez3fs::LiveCartridgeSession cartridge;std::string error;
+    if(!cartridge.open(error)){std::cerr<<error<<'\n';return 1;}
+    ez3fs::live::CompactionReport report;
+    const auto compacted=cartridge.filesystem().compact(
+        report,error,progressReporter("Preparing EZ3FS-LIVE compaction"));
+    std::string close_error;const bool closed=cartridge.close(close_error);
+    if(!compacted||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;}
+    std::cout<<"Compacted and verified the EZ3FS-LIVE cartridge.\n";
+    printLiveCompaction(report);return 0;
 }
 int liveCardPull(const fs::path& image) { ez3fs::CartridgeStorage storage;std::string error;
     if(!storage.open(error)){std::cerr<<error<<'\n';return 1;} ez3fs::live::NorFlash flash;
@@ -546,6 +576,7 @@ int main(int argc,char** argv) {
     if(argc==4&&std::string(argv[1])=="live-rm")return liveRemove(argv[2],argv[3],false);
     if(argc==4&&std::string(argv[1])=="live-rmdir")return liveRemove(argv[2],argv[3],true);
     if(argc==3&&std::string(argv[1])=="live-gc")return liveGarbageCollect(argv[2]);
+    if(argc==3&&std::string(argv[1])=="live-compact")return liveCompact(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-space")return liveSpace(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-card-pull")return liveCardPull(argv[2]);
     if(argc==4&&std::string(argv[1])=="live-card-read-block")return liveCardReadBlock(argv[2],argv[3]);
@@ -554,6 +585,7 @@ int main(int argc,char** argv) {
     if(argc==4&&std::string(argv[1])=="live-card-program-block")return liveCardProgramBlock(argv[2],argv[3]);
     if(argc==3&&std::string(argv[1])=="live-card-write")return liveCardWrite(argv[2]);
     if(argc==2&&std::string(argv[1])=="live-card-gc")return liveCardGarbageCollect();
+    if(argc==2&&std::string(argv[1])=="live-card-compact")return liveCardCompact();
     if(argc==2&&std::string(argv[1])=="live-card-space")return liveCardSpace();
     usage();return 1;
 }

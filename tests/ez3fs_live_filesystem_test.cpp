@@ -15,6 +15,8 @@ public:
     }
     bool program(std::size_t offset,const std::uint8_t* source,std::size_t size,
                  std::string& error) override {
+        ++program_count;
+        if(program_count==failed_program_call)flash_.failNextProgramAfter(8);
         return flash_.program(offset,source,size,error);
     }
     bool eraseBlock(std::size_t block,std::string& error) override {
@@ -23,15 +25,52 @@ public:
     bool prepareForErase(std::string& error) override {
         ++prepare_erase_count;error.clear();return true;
     }
+    void failProgramCall(std::size_t call) noexcept { failed_program_call=call; }
     mutable std::size_t read_count = 0;
+    std::size_t program_count = 0;
     std::size_t prepare_erase_count = 0;
 private:
     ez3fs::live::NorFlash& flash_;
+    std::size_t failed_program_call = 0;
 };
+
+void verifyInterruptedCompaction(std::size_t failure_offset,
+                                 std::uint32_t recovered_block,
+                                 std::uint64_t generation_advance) {
+    ez3fs::live::NorFlash flash;std::string error;
+    require(ez3fs::live::Filesystem::format(flash,error));
+    CountingDevice device(flash);ez3fs::live::Filesystem filesystem(device);
+    require(ez3fs::live::Filesystem::open(device,filesystem,error));
+    require(filesystem.putFile("movable",{'a'},1,error));
+    require(filesystem.putFile("fixed",{'b'},1,error));
+    require(filesystem.putFile("movable",{'c'},2,error));
+    std::size_t reclaimed=0;require(filesystem.collectGarbage(reclaimed,error));
+    require(reclaimed==1);
+    const auto generation=filesystem.generation();
+    device.failProgramCall(device.program_count+failure_offset);
+    ez3fs::live::CompactionReport report;
+    require(!filesystem.compact(report,error));
+
+    CountingDevice recovered_device(flash);ez3fs::live::Filesystem recovered(recovered_device);
+    require(ez3fs::live::Filesystem::open(recovered_device,recovered,error));
+    require(recovered.generation()==generation+generation_advance);
+    const auto entry=std::find_if(recovered.entries().begin(),recovered.entries().end(),
+        [](const ez3fs::live::Entry& candidate){return candidate.name=="movable";});
+    require(entry!=recovered.entries().end()&&entry->first_block==recovered_block);
+    std::vector<std::uint8_t> bytes;
+    require(recovered.readFile("movable",bytes,error));
+    require(bytes==std::vector<std::uint8_t>({'c'}));
+    require(recovered.verify(error));
+}
 }
 
 int main()
 {
+    // Losing power while either metadata generation is being updated leaves a
+    // complete source or destination extent referenced by the newest valid one.
+    verifyInterruptedCompaction(2,4,0);
+    verifyInterruptedCompaction(3,2,1);
+
     ez3fs::live::NorFlash flash;std::string error;
     require(ez3fs::live::Filesystem::format(flash,error));
     CountingDevice device(flash);ez3fs::live::Filesystem filesystem(device);
@@ -93,6 +132,24 @@ int main()
     const auto recycled=std::find_if(reopened.entries().begin(),reopened.entries().end(),
         [](const ez3fs::live::Entry& entry){return entry.name=="docs/recycled.txt";});
     require(recycled!=reopened.entries().end()&&recycled->first_block==2);
+    const auto generation_before_compaction=reopened.generation();
+    ez3fs::live::CompactionReport compaction;
+    require(reopened.compact(compaction,error));
+    require(compaction.garbage_blocks_reclaimed==0);
+    require(compaction.files_relocated==1);
+    require(compaction.blocks_relocated==1);
+    require(reopened.generation()==generation_before_compaction+2);
+    const auto compacted_recovered=std::find_if(reopened.entries().begin(),reopened.entries().end(),
+        [](const ez3fs::live::Entry& entry){return entry.name=="docs/recovered.txt";});
+    require(compacted_recovered!=reopened.entries().end()&&compacted_recovered->first_block==6);
+    require(reopened_device.prepare_erase_count==reclaimed+1);
+    require(reopened.verify(error));
+    ez3fs::live::SpaceReport compacted_space;
+    require(reopened.inspectSpace(compacted_space,error));
+    require(compacted_space.active_blocks==5);
+    require(compacted_space.reclaimable_blocks==0);
+    require(compacted_space.largest_erased_extent==505);
+    require(compacted_space.largest_post_gc_extent==505);
     require(!reopened.createDirectory("docs/readme.txt",error));
     require(reopened.removeFile("docs/readme.txt",error));
     require(reopened.removeFile("docs/large.bin",error));

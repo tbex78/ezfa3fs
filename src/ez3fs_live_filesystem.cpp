@@ -247,6 +247,43 @@ bool Filesystem::findBlankExtent(std::size_t block_count,
     return false;
 }
 
+bool Filesystem::findBlankExtentBefore(std::size_t limit,
+                                       std::size_t block_count,
+                                       std::size_t& first_block,
+                                       std::string& error) {
+    if(block_count==0||limit<=2||block_count>limit-2){error.clear();return false;}
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);std::size_t run=0,run_start=2;
+    error.clear();
+    for(std::size_t block=2;block<limit;++block) {
+        if(blockReferenced(block)||unavailable_blocks_[block]){run=0;continue;}
+        if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
+            error="could not inspect compaction destination block "+std::to_string(block)+": "+error;return false;
+        }
+        const bool blank=std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;});
+        if(!blank){unavailable_blocks_[block]=true;run=0;continue;}
+        if(run==0)run_start=block;
+        if(++run==block_count){first_block=run_start;error.clear();return true;}
+    }
+    error.clear();return false;
+}
+
+bool Filesystem::programExtent(std::size_t first_block,
+                               const std::vector<std::uint8_t>& bytes,
+                               std::string& error) {
+    const auto blocks=(bytes.size()+NorFlash::block_size-1)/NorFlash::block_size;
+    for(std::size_t i=0;i<blocks;++i) {
+        std::vector<std::uint8_t> block(NorFlash::block_size,0xFF);
+        const auto begin=i*NorFlash::block_size;
+        const auto count=std::min(NorFlash::block_size,bytes.size()-begin);
+        std::copy_n(bytes.data()+begin,count,block.data());
+        if(!flash_.program((first_block+i)*NorFlash::block_size,block.data(),block.size(),error)) {
+            for(std::size_t leaked=0;leaked<=i;++leaked)unavailable_blocks_[first_block+leaked]=true;
+            next_free_block_=first_block+i+1;return false;
+        }
+    }
+    next_free_block_=first_block+blocks;error.clear();return true;
+}
+
 bool Filesystem::createDirectory(const std::string& path,std::string& error) {
     if(!validPath(path)||!parentExists(path)||find(path)){error="invalid or existing live directory path";return false;}
     const auto old=entries_;entries_.push_back({path,0,0,0,0,0,true});
@@ -260,17 +297,7 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
     std::size_t first_block=0;if(!findBlankExtent(blocks,first_block,error))return false;
     const auto old=entries_;auto* existing=find(path);next_free_block_=first_block;
     if(existing&&existing->directory){error="live path is a directory";return false;}
-    for(std::size_t i=0;i<blocks;++i){
-        std::vector<std::uint8_t> block(NorFlash::block_size,0xFF);const auto begin=i*NorFlash::block_size;const auto count=std::min(NorFlash::block_size,bytes.size()-begin);
-        std::copy_n(bytes.data()+begin,count,block.data());
-        if(!flash_.program(next_free_block_*NorFlash::block_size,block.data(),block.size(),error)){
-            // A failed NOR transaction may have programmed a prefix. Never
-            // reuse that physical block, even though the manifest is rolled back.
-            unavailable_blocks_[next_free_block_]=true;
-            ++next_free_block_;entries_=old;return false;
-        }
-        ++next_free_block_;
-    }
+    if(!programExtent(first_block,bytes,error)){entries_=old;return false;}
     Entry replacement{path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),static_cast<std::uint32_t>(first_block),static_cast<std::uint32_t>(blocks),false};
     if(existing)*existing=replacement;else entries_.push_back(std::move(replacement));
     if(commit(error))return true;entries_=old;return false;
@@ -308,6 +335,52 @@ bool Filesystem::collectGarbage(std::size_t& reclaimed_blocks,
         unavailable_blocks_[block]=false;++reclaimed_blocks;
     }
     next_free_block_=first_data_block;error.clear();return true;
+}
+
+bool Filesystem::compact(CompactionReport& report,std::string& error,
+                         ScanProgress progress) {
+    report={};
+    if(!collectGarbage(report.garbage_blocks_reclaimed,error,progress))return false;
+    for(;;) {
+        std::vector<std::size_t> candidates;
+        for(std::size_t i=0;i<entries_.size();++i)
+            if(!entries_[i].directory&&entries_[i].block_count)candidates.push_back(i);
+        std::sort(candidates.begin(),candidates.end(),[this](std::size_t left,std::size_t right){
+            return entries_[left].first_block>entries_[right].first_block;
+        });
+        bool relocated=false;
+        for(const auto index:candidates) {
+            const Entry original=entries_[index];std::size_t destination=0;
+            if(!findBlankExtentBefore(original.first_block,original.block_count,destination,error)) {
+                if(!error.empty())return false;
+                continue;
+            }
+            std::vector<std::uint8_t> bytes;
+            if(!readFile(original.name,bytes,error))return false;
+            if(!programExtent(destination,bytes,error))return false;
+            entries_[index].first_block=static_cast<std::uint32_t>(destination);
+            if(!commit(error)) {
+                entries_[index]=original;
+                for(std::size_t i=0;i<original.block_count;++i)unavailable_blocks_[destination+i]=true;
+                error="could not commit compacted live extent: "+error;return false;
+            }
+            // The second identical manifest generation makes both valid
+            // superblocks reference the destination before the source is erased.
+            if(!commit(error)){error="could not synchronize compacted live metadata: "+error;return false;}
+            for(std::size_t i=0;i<original.block_count;++i) {
+                const auto block=static_cast<std::size_t>(original.first_block)+i;
+                unavailable_blocks_[block]=true;
+                if(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error)) {
+                    error="could not erase relocated source block "+std::to_string(block)+": "+error;return false;
+                }
+                unavailable_blocks_[block]=false;
+            }
+            ++report.files_relocated;report.blocks_relocated+=original.block_count;
+            next_free_block_=2;relocated=true;break;
+        }
+        if(!relocated)break;
+    }
+    error.clear();return true;
 }
 
 bool Filesystem::removeFile(const std::string& path,std::string& error) {
