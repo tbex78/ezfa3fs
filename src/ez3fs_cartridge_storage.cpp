@@ -420,6 +420,7 @@ bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& prog
     std::vector<std::uint8_t> command={0x5A,0xA5,0x96,0,static_cast<std::uint8_t>(local),static_cast<std::uint8_t>(local>>8),static_cast<std::uint8_t>(local>>16),static_cast<std::uint8_t>(local>>24),0,0,0,0,0};
     std::vector<std::uint8_t> response;if(!out(command,error)||!in(response,command.size(),error))return false;
     if(response.size()!=command.size()||!std::equal(command.begin(),command.begin()+12,response.begin())||response[12]!=0){error="cartridge live block erase failed";return false;}
+    progress<<"Erase response status: 0x"<<std::hex<<static_cast<unsigned>(response[12])<<std::dec<<"\n";
     if(!finishWriteOperation(error))return false;progress<<"Erased cartridge block "<<block<<".\n";return true;
 }
 #else
@@ -590,7 +591,9 @@ bool CartridgeProgrammer::eraseLiveBlock(std::size_t block,std::ostream& progres
     if(!storage_.open(error))return false;
     std::vector<std::uint8_t> bytes(0x10000);const bool read=storage_.read(block*0x10000,bytes.data(),bytes.size(),error);std::string close_error;const bool closed=storage_.close(close_error);
     if(!read||!closed){if(error.empty())error=close_error;return false;}
-    if(!std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;})){error="live block erase readback is not blank";return false;}
+    progress<<"Erase readback CRC32: 0x"<<std::hex<<ez3fs::Crc32::calculate(bytes.data(),bytes.size())<<std::dec<<"\n";
+    const auto first_nonblank=std::find_if(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte!=0xFF;});
+    if(first_nonblank!=bytes.end()){progress<<"First non-FF byte: 0x"<<std::hex<<static_cast<std::size_t>(first_nonblank-bytes.begin())<<" value 0x"<<static_cast<unsigned>(*first_nonblank)<<std::dec<<"\n";error="live block erase readback is not blank";return false;}
     progress<<"Verified erased cartridge block "<<block<<".\n";return true;
 }
 
