@@ -72,9 +72,15 @@ struct CompactionReport final {
     std::size_t blocks_relocated = 0;
 };
 
+enum class MaintenanceAction {
+    garbage_collection,
+    compaction
+};
+
 class Filesystem final {
 public:
     using ScanProgress = std::function<void(std::size_t,std::size_t)>;
+    using MaintenanceObserver = std::function<void(MaintenanceAction)>;
 
     explicit Filesystem(BlockDevice& flash) : flash_(flash) {}
     static bool format(BlockDevice& flash,std::string& error);
@@ -83,7 +89,8 @@ public:
 
     bool createDirectory(const std::string& path,std::string& error);
     bool putFile(const std::string& path,const std::vector<std::uint8_t>& bytes,
-                 std::uint64_t modified_time,std::string& error);
+                 std::uint64_t modified_time,std::string& error,
+                 MaintenanceObserver maintenance = {});
     bool removeFile(const std::string& path,std::string& error);
     bool removeDirectory(const std::string& path,std::string& error);
     bool rename(const std::string& from,const std::string& to,std::string& error);
@@ -103,13 +110,18 @@ public:
     std::size_t freeBlocks() const noexcept;
 
 private:
+    enum class ExtentSearchResult { found,no_extent,error };
     bool commit(std::string& error);
-    bool findBlankExtent(std::size_t block_count,std::size_t& first_block,
-                         std::string& error);
+    ExtentSearchResult findBlankExtent(std::size_t block_count,
+                                       std::size_t& first_block,
+                                       std::string& error);
+    bool allocateExtent(std::size_t block_count,std::size_t& first_block,
+                        std::string& error,const MaintenanceObserver& maintenance);
     bool findBlankExtentBefore(std::size_t limit,std::size_t block_count,
                                std::size_t& first_block,std::string& error);
     bool programExtent(std::size_t first_block,
                        const std::vector<std::uint8_t>& bytes,std::string& error);
+    bool compactFiles(CompactionReport& report,std::string& error);
     bool blockReferenced(std::size_t block) const noexcept;
     bool parentExists(const std::string& path) const;
     Entry* find(const std::string& path);

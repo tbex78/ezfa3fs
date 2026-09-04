@@ -48,10 +48,7 @@ public:
     MountBackend& backend() noexcept{return *backend_;}
     std::mutex& mutex() noexcept{return mutex_;}
     std::uint64_t mountedAt() const noexcept{return mounted_at_;}
-    bool commit() {
-        std::string error;if(backend_->commit(error))return true;
-        std::cerr<<"EZ3FS commit failed: "<<error<<'\n';return false;
-    }
+    bool commit(std::string& error) { return backend_->commit(error); }
 private:
     std::unique_ptr<MountBackend> backend_;
     std::mutex mutex_;
@@ -70,9 +67,14 @@ int mutationFailure(MountSession& value,const std::string& error) {
        error.find("readback")!=std::string::npos)return -EIO;
     return -EINVAL;
 }
+int commitSession(MountSession& value) {
+    std::string error;
+    if(value.commit(error))return 0;
+    return mutationFailure(value,error);
+}
 int finishMutation(bool changed,const std::string& error) {
     if(!changed)return mutationFailure(session(),error);
-    return session().commit()?0:-EIO;
+    return commitSession(session());
 }
 
 int ez3fsGetattr(const char* path,struct stat* status,struct fuse_file_info*) {
@@ -123,10 +125,10 @@ int ez3fsRmdir(const char* path) {std::lock_guard<std::mutex> lock(session().mut
 int ez3fsRename(const char* from,const char* to,unsigned flags) {if(flags!=0)return -EINVAL;
     std::lock_guard<std::mutex> lock(session().mutex());std::string error;
     const bool changed=session().backend().rename(from,to,error);return finishMutation(changed,error);}
-int ez3fsFlush(const char*,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return session().commit()?0:-EIO;}
-int ez3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return session().commit()?0:-EIO;}
-int ez3fsRelease(const char*,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return session().commit()?0:-EIO;}
-void ez3fsDestroy(void* private_data) {auto* mounted=static_cast<MountSession*>(private_data);std::lock_guard<std::mutex> lock(mounted->mutex());mounted->commit();}
+int ez3fsFlush(const char*,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSession(session());}
+int ez3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSession(session());}
+int ez3fsRelease(const char*,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSession(session());}
+void ez3fsDestroy(void* private_data) {auto* mounted=static_cast<MountSession*>(private_data);std::lock_guard<std::mutex> lock(mounted->mutex());std::string error;if(!mounted->commit(error))std::cerr<<"EZ3FS commit failed: "<<error<<'\n';}
 int ez3fsStatfs(const char*,struct statvfs* status) {std::lock_guard<std::mutex> lock(session().mutex());
     std::memset(status,0,sizeof(*status));status->f_bsize=4096;status->f_frsize=4096;
     status->f_blocks=session().backend().capacityBytes()/4096;status->f_bfree=session().backend().freeBytes()/4096;
@@ -180,7 +182,13 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground) {
     }
     LiveCartridgeSession cartridge;std::string error;
     if(!cartridge.open(error)){std::cerr<<error<<'\n';return 1;}
-    MountSession mounted(std::make_unique<LiveMountBackend>(cartridge.filesystem()));
+    const auto maintenance=[](live::MaintenanceAction action) {
+        std::cerr<<"EZ3FS-LIVE automatic "
+                 <<(action==live::MaintenanceAction::garbage_collection?
+                    "garbage collection":"compaction")
+                 <<" started; the current write will resume when it completes.\n";
+    };
+    MountSession mounted(std::make_unique<LiveMountBackend>(cartridge.filesystem(),maintenance));
     const int result=runMount(mounted,mountpoint,foreground,"ez3fs-live-card");
     if(!cartridge.close(error)){std::cerr<<"Could not close live cartridge session: "<<error<<'\n';return 1;}
     return result;

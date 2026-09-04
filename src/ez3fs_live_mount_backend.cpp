@@ -48,11 +48,17 @@ bool LiveMountBackend::stageFile(const std::string& path,PendingFile*& pending,
     pending=&pending_files_.emplace(path,std::move(staged)).first->second;error.clear();return true;
 }
 
+bool LiveMountBackend::persistFile(const std::string& path,
+                                   const PendingFile& pending,
+                                   std::string& error) {
+    return filesystem_.putFile(path,pending.bytes,pending.modified_time,error,
+                               maintenance_observer_);
+}
+
 bool LiveMountBackend::commit(std::string& error) {
     while(!pending_files_.empty()) {
         auto current=pending_files_.begin();
-        if(!filesystem_.putFile(current->first,current->second.bytes,
-                                current->second.modified_time,error))return false;
+        if(!persistFile(current->first,current->second,error))return false;
         pending_files_.erase(current);
     }
     error.clear();return true;

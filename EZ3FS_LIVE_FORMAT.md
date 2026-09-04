@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.34.0`.
+`0.35.0`.
 
 ## Geometry and layout
 
@@ -151,6 +151,13 @@ programmed blocks; it also reports the largest contiguous erased extent before
 and after garbage collection. A smaller post-GC extent than total available
 space indicates fragmentation caused by active file placement.
 
+File allocation normally uses the first suitable erased extent without a
+full-device maintenance scan. If allocation fails, the writer automatically
+collects garbage and retries. When the remaining capacity is sufficient but
+fragmented, it transactionally compacts active extents and retries once more.
+Command-line and writable FUSE callers report these maintenance transitions;
+a final allocation failure is exposed as out-of-space.
+
 ## Local image commands
 
 ```sh
@@ -221,6 +228,9 @@ inherited across FUSE daemonization:
 After yes/no confirmation, the writable mount scans allocation with visible
 progress, verifies the filesystem, and retains exclusive access to the USB
 writer. Terminal and Finder operations are committed directly to flash.
+Garbage collection and compaction are invoked automatically if an ordinary
+copy-on-write allocation cannot proceed, so manual maintenance is not required
+for correctness during a mounted write.
 
 Unmount from another terminal before disconnecting the writer:
 

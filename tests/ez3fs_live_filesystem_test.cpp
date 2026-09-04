@@ -62,6 +62,62 @@ void verifyInterruptedCompaction(std::size_t failure_offset,
     require(bytes==std::vector<std::uint8_t>({'c'}));
     require(recovered.verify(error));
 }
+
+std::vector<std::uint8_t> blockData(std::size_t blocks,std::uint8_t value) {
+    return std::vector<std::uint8_t>(blocks*ez3fs::live::NorFlash::block_size,value);
+}
+
+void verifyAutomaticGarbageCollection() {
+    ez3fs::live::NorFlash flash;std::string error;
+    require(ez3fs::live::Filesystem::format(flash,error));
+    CountingDevice device(flash);ez3fs::live::Filesystem filesystem(device);
+    require(ez3fs::live::Filesystem::open(device,filesystem,error));
+    require(filesystem.putFile("replaceable",blockData(255,0x11),1,error));
+    require(filesystem.putFile("replaceable",blockData(255,0x22),2,error));
+    std::vector<ez3fs::live::MaintenanceAction> actions;
+    require(filesystem.putFile("replaceable",blockData(255,0x33),3,error,
+        [&](ez3fs::live::MaintenanceAction action){actions.push_back(action);}));
+    require(actions==std::vector<ez3fs::live::MaintenanceAction>{
+        ez3fs::live::MaintenanceAction::garbage_collection});
+    const auto entry=std::find_if(filesystem.entries().begin(),filesystem.entries().end(),
+        [](const ez3fs::live::Entry& candidate){return candidate.name=="replaceable";});
+    require(entry!=filesystem.entries().end()&&entry->first_block==2);
+    actions.clear();
+    require(!filesystem.putFile("too-large",blockData(256,0x44),4,error,
+        [&](ez3fs::live::MaintenanceAction action){actions.push_back(action);}));
+    require(error.find("out of free blocks")!=std::string::npos);
+    require(actions==std::vector<ez3fs::live::MaintenanceAction>{
+        ez3fs::live::MaintenanceAction::garbage_collection});
+    require(filesystem.verify(error));
+}
+
+void verifyAutomaticCompaction() {
+    ez3fs::live::NorFlash flash;std::string error;
+    require(ez3fs::live::Filesystem::format(flash,error));
+    CountingDevice device(flash);ez3fs::live::Filesystem filesystem(device);
+    require(ez3fs::live::Filesystem::open(device,filesystem,error));
+    const auto extent=blockData(100,0x44);
+    require(filesystem.putFile("first",extent,1,error));
+    require(filesystem.putFile("hole",extent,1,error));
+    require(filesystem.putFile("movable",extent,1,error));
+    require(filesystem.removeFile("hole",error));
+    std::size_t reclaimed=0;require(filesystem.collectGarbage(reclaimed,error));
+    require(reclaimed==100);
+
+    std::vector<ez3fs::live::MaintenanceAction> actions;
+    require(filesystem.putFile("large",blockData(220,0x55),2,error,
+        [&](ez3fs::live::MaintenanceAction action){actions.push_back(action);}));
+    require(actions==std::vector<ez3fs::live::MaintenanceAction>{
+        ez3fs::live::MaintenanceAction::garbage_collection,
+        ez3fs::live::MaintenanceAction::compaction});
+    const auto moved=std::find_if(filesystem.entries().begin(),filesystem.entries().end(),
+        [](const ez3fs::live::Entry& candidate){return candidate.name=="movable";});
+    const auto large=std::find_if(filesystem.entries().begin(),filesystem.entries().end(),
+        [](const ez3fs::live::Entry& candidate){return candidate.name=="large";});
+    require(moved!=filesystem.entries().end()&&moved->first_block==102);
+    require(large!=filesystem.entries().end()&&large->first_block==202);
+    require(filesystem.verify(error));
+}
 }
 
 int main()
@@ -70,6 +126,8 @@ int main()
     // complete source or destination extent referenced by the newest valid one.
     verifyInterruptedCompaction(2,4,0);
     verifyInterruptedCompaction(3,2,1);
+    verifyAutomaticGarbageCollection();
+    verifyAutomaticCompaction();
 
     ez3fs::live::NorFlash flash;std::string error;
     require(ez3fs::live::Filesystem::format(flash,error));

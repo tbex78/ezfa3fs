@@ -4,7 +4,7 @@ EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
 NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
 FAT partition, or ROM-patching workflow.
 
-Application version: **0.34.0**.
+Application version: **0.35.0**.
 
 Two incompatible formats are supported:
 
@@ -238,8 +238,12 @@ For direct writes to cartridge flash, foreground mode is mandatory:
 
 The command asks for yes/no confirmation, scans the cartridge allocation,
 keeps the USB session open, and commits Finder or terminal mutations directly
-through copy-on-write transactions. Do not run another cartridge command or
-disconnect the writer while this mount is active.
+through copy-on-write transactions. If a write cannot find an erased extent,
+the filesystem automatically collects garbage and, when necessary, compacts
+active extents before retrying. The terminal reports when this slower
+maintenance path begins. `ENOSPC` is returned only when no sufficient extent
+can be made available. Do not run another cartridge command or disconnect the
+writer while this mount is active.
 
 Unmount from another terminal before disconnecting:
 

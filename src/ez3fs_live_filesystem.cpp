@@ -218,11 +218,10 @@ bool Filesystem::inspectSpace(SpaceReport& report,std::string& error,
     error.clear();return true;
 }
 
-bool Filesystem::findBlankExtent(std::size_t block_count,
-                                 std::size_t& first_block,
-                                 std::string& error) {
-    if(block_count==0){first_block=next_free_block_;error.clear();return true;}
-    if(block_count>freeBlocks()){error="live filesystem is out of free blocks; garbage collection is required";return false;}
+Filesystem::ExtentSearchResult Filesystem::findBlankExtent(
+    std::size_t block_count,std::size_t& first_block,std::string& error) {
+    if(block_count==0){first_block=next_free_block_;error.clear();return ExtentSearchResult::found;}
+    if(block_count>freeBlocks()){error.clear();return ExtentSearchResult::no_extent;}
     std::vector<std::uint8_t> bytes(NorFlash::block_size);
     const auto inspect=[&](std::size_t begin,std::size_t end)->bool {
         std::size_t run=0,run_start=begin;
@@ -239,11 +238,37 @@ bool Filesystem::findBlankExtent(std::size_t block_count,
         return false;
     };
     error.clear();
-    if(inspect(next_free_block_,NorFlash::block_count)){error.clear();return true;}
-    if(!error.empty())return false;
-    if(next_free_block_>2&&inspect(2,next_free_block_)){error.clear();return true;}
-    if(!error.empty())return false;
-    error="live filesystem has no contiguous erased extent large enough for the file; garbage collection is required";
+    if(inspect(next_free_block_,NorFlash::block_count)){error.clear();return ExtentSearchResult::found;}
+    if(!error.empty())return ExtentSearchResult::error;
+    if(next_free_block_>2&&inspect(2,next_free_block_)){error.clear();return ExtentSearchResult::found;}
+    if(!error.empty())return ExtentSearchResult::error;
+    error.clear();return ExtentSearchResult::no_extent;
+}
+
+bool Filesystem::allocateExtent(std::size_t block_count,std::size_t& first_block,
+                                std::string& error,
+                                const MaintenanceObserver& maintenance) {
+    auto result=findBlankExtent(block_count,first_block,error);
+    if(result==ExtentSearchResult::found)return true;
+    if(result==ExtentSearchResult::error)return false;
+
+    if(maintenance)maintenance(MaintenanceAction::garbage_collection);
+    std::size_t reclaimed=0;
+    if(!collectGarbage(reclaimed,error))return false;
+    result=findBlankExtent(block_count,first_block,error);
+    if(result==ExtentSearchResult::found)return true;
+    if(result==ExtentSearchResult::error)return false;
+    if(block_count>freeBlocks()) {
+        error="live filesystem is out of free blocks";return false;
+    }
+
+    if(maintenance)maintenance(MaintenanceAction::compaction);
+    CompactionReport report;
+    if(!compactFiles(report,error))return false;
+    result=findBlankExtent(block_count,first_block,error);
+    if(result==ExtentSearchResult::found)return true;
+    if(result==ExtentSearchResult::error)return false;
+    error="live filesystem is out of free blocks: automatic compaction could not create a contiguous extent";
     return false;
 }
 
@@ -291,12 +316,14 @@ bool Filesystem::createDirectory(const std::string& path,std::string& error) {
 }
 
 bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>& bytes,
-                         std::uint64_t modified_time,std::string& error) {
+                         std::uint64_t modified_time,std::string& error,
+                         MaintenanceObserver maintenance) {
     if(!validPath(path)||!parentExists(path)){error="invalid live file path";return false;}
+    if(const auto* existing=find(path);existing&&existing->directory){error="live path is a directory";return false;}
     const auto blocks=(bytes.size()+NorFlash::block_size-1)/NorFlash::block_size;
-    std::size_t first_block=0;if(!findBlankExtent(blocks,first_block,error))return false;
+    std::size_t first_block=0;
+    if(!allocateExtent(blocks,first_block,error,maintenance))return false;
     const auto old=entries_;auto* existing=find(path);next_free_block_=first_block;
-    if(existing&&existing->directory){error="live path is a directory";return false;}
     if(!programExtent(first_block,bytes,error)){entries_=old;return false;}
     Entry replacement{path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),static_cast<std::uint32_t>(first_block),static_cast<std::uint32_t>(blocks),false};
     if(existing)*existing=replacement;else entries_.push_back(std::move(replacement));
@@ -315,7 +342,8 @@ bool Filesystem::collectGarbage(std::size_t& reclaimed_blocks,
                 error="could not inspect garbage-collection block "+std::to_string(block)+": "+error;return false;
             }
             const bool blank=std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;});
-            if(!blank)garbage.push_back(block);
+            if(blank)unavailable_blocks_[block]=false;
+            else garbage.push_back(block);
         }
         if(progress)progress(block-first_data_block+1,total);
     }
@@ -341,6 +369,10 @@ bool Filesystem::compact(CompactionReport& report,std::string& error,
                          ScanProgress progress) {
     report={};
     if(!collectGarbage(report.garbage_blocks_reclaimed,error,progress))return false;
+    return compactFiles(report,error);
+}
+
+bool Filesystem::compactFiles(CompactionReport& report,std::string& error) {
     for(;;) {
         std::vector<std::size_t> candidates;
         for(std::size_t i=0;i<entries_.size();++i)

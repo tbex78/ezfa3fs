@@ -4,12 +4,16 @@
 #include "ez3fs/mount_backend.hpp"
 
 #include <map>
+#include <utility>
 
 namespace ez3fs {
 
 class LiveMountBackend final : public MountBackend {
 public:
-    explicit LiveMountBackend(live::Filesystem& filesystem) : filesystem_(filesystem) {}
+    explicit LiveMountBackend(
+        live::Filesystem& filesystem,
+        live::Filesystem::MaintenanceObserver maintenance_observer = {})
+        : filesystem_(filesystem),maintenance_observer_(std::move(maintenance_observer)) {}
     bool lookup(const std::string& path,MountNode& node) const override;
     bool list(const std::string& path,std::vector<std::string>& children) const override;
     bool read(const std::string& path,std::size_t offset,std::size_t size,std::vector<std::uint8_t>& bytes) const override;
@@ -32,7 +36,10 @@ private:
     };
     static std::string normalize(const std::string& path);
     bool stageFile(const std::string& path,PendingFile*& pending,std::string& error);
+    bool persistFile(const std::string& path,const PendingFile& pending,
+                     std::string& error);
     live::Filesystem& filesystem_;
+    live::Filesystem::MaintenanceObserver maintenance_observer_;
     std::map<std::string,PendingFile> pending_files_;
 };
 

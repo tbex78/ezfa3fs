@@ -96,6 +96,12 @@ ez3fs::live::Filesystem::ScanProgress progressReporter(std::string label) {
         if(completed==total)std::cerr<<'\n';
     };
 }
+void reportAutomaticMaintenance(ez3fs::live::MaintenanceAction action) {
+    std::cerr<<"EZ3FS-LIVE automatic "
+             <<(action==ez3fs::live::MaintenanceAction::garbage_collection?
+                "garbage collection":"compaction")
+             <<" started; the write will resume when it completes.\n";
+}
 bool loadArchive(const fs::path& p,ez3fs::Archive& a) {
     std::vector<std::uint8_t> b; if(!readFile(p,b)){std::cerr<<"Could not read image: "<<p<<'\n';return false;}
     std::string e; if(!a.open(std::move(b),e)){std::cerr<<e<<'\n';return false;} return true;
@@ -378,7 +384,9 @@ int liveMkdir(const fs::path& image,const std::string& path) { ez3fs::live::NorF
     if(!filesystem.createDirectory(path,error)||!flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}return 0; }
 int livePut(const fs::path& image,const fs::path& source,const std::string& destination) { if(!fs::is_regular_file(source)){std::cerr<<"Input is not a regular file: "<<source<<'\n';return 1;}
     std::vector<std::uint8_t> bytes;if(!readFile(source,bytes)){std::cerr<<"Could not read input: "<<source<<'\n';return 1;}ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;
-    if(!filesystem.putFile(destination,bytes,fileModifiedTime(source),error)||!flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}return 0; }
+    if(!filesystem.putFile(destination,bytes,fileModifiedTime(source),error,
+                           reportAutomaticMaintenance)||
+       !flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}return 0; }
 int liveGet(const fs::path& image,const std::string& source,const fs::path& output) { ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;std::vector<std::uint8_t> bytes;
     if(!filesystem.readFile(source,bytes,error)||!writeFile(output,bytes.data(),bytes.size())){if(error.empty())error="could not write output file";std::cerr<<error<<'\n';return 1;}return 0; }
 int liveRemove(const fs::path& image,const std::string& path,bool directory) { ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;
