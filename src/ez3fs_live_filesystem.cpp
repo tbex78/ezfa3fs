@@ -211,6 +211,13 @@ bool Filesystem::removeDirectory(const std::string& path,std::string& error) {
     if(std::any_of(entries_.begin(),entries_.end(),[&](const Entry& e){return e.name.rfind(prefix,0)==0;})){error="live directory is not empty";return false;}
     entries_.erase(it);if(commit(error))return true;entries_=old;return false;
 }
+bool Filesystem::rename(const std::string& from,const std::string& to,std::string& error) {
+    auto* source=find(from);if(!source||find(to)||!validPath(to)||!parentExists(to)){error="invalid live rename";return false;}
+    const auto old=entries_;
+    if(source->directory){const auto prefix=from+'/';for(auto& entry:entries_)if(entry.name==from||entry.name.rfind(prefix,0)==0)entry.name=to+entry.name.substr(from.size());}
+    else source->name=to;
+    if(commit(error))return true;entries_=old;return false;
+}
 
 bool Filesystem::readFile(const std::string& path,std::vector<std::uint8_t>& bytes,
                           std::string& error) const {

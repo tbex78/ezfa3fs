@@ -18,7 +18,7 @@ public:
     bool truncate(const std::string& path,std::size_t size,std::string& error) override;
     bool removeFile(const std::string& path,std::string& error) override { return filesystem_.removeFile(path,error); }
     bool removeDirectory(const std::string& path,std::string& error) override { return filesystem_.removeDirectory(path,error); }
-    bool rename(const std::string&,const std::string&,std::string& error) override { error="live rename is not implemented";return false; }
+    bool rename(const std::string& from,const std::string& to,std::string& error) override { return filesystem_.rename(from,to,error); }
     bool commit(std::string& error) override { error.clear();return true; }
 private:
     live::Filesystem& filesystem_;

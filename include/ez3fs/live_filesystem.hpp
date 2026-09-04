@@ -66,6 +66,7 @@ public:
                  std::uint64_t modified_time,std::string& error);
     bool removeFile(const std::string& path,std::string& error);
     bool removeDirectory(const std::string& path,std::string& error);
+    bool rename(const std::string& from,const std::string& to,std::string& error);
     bool readFile(const std::string& path,std::vector<std::uint8_t>& bytes,
                   std::string& error) const;
     bool verify(std::string& error) const;
