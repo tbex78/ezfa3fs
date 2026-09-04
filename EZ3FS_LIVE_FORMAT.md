@@ -17,11 +17,16 @@ ez3fs live-verify cartridge.ez3live
 ez3fs live-get cartridge.ez3live docs/README.md recovered.md
 ez3fs live-rm cartridge.ez3live docs/README.md
 ez3fs live-rmdir cartridge.ez3live docs
+ez3fs live-card-write cartridge.ez3live
 ```
 
 Mutating commands commit the image before exiting, so changes survive separate
 processes. The image is exactly 32 MiB and is not compatible with packed
 `.ez3fs` images.
+
+`live-card-write` is destructive: it erases and replaces the complete
+cartridge after validating the image and requiring the confirmation phrase
+`WRITE EZ3FS-LIVE`.
 
 The cartridge is divided into 512 blocks of 64 KiB. Blocks 0 and 1 are
 generation-numbered redundant superblocks. File data starts at block 2 and is
