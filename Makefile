@@ -14,7 +14,7 @@ LIBUSB_LIBS = `if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists l
 LIBUSB_DEFINE = `if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libusb-1.0 >/dev/null 2>&1; then printf '%s\n' '-DEZ3FS_HAS_LIBUSB=1'; fi`
 
 all: $(PROGRAM)
-$(PROGRAM): $(SOURCES) include/ez3fs/archive.hpp include/ez3fs/virtual_filesystem.hpp include/ez3fs/fuse_mount.hpp include/ez3fs/version.hpp
+$(PROGRAM): $(SOURCES) include/ez3fs/archive.hpp include/ez3fs/virtual_filesystem.hpp include/ez3fs/fuse_mount.hpp include/ez3fs/cartridge_storage.hpp include/ez3fs/cartridge_programmer.hpp include/ez3fs/version.hpp
 	$(CXX) $(CPPFLAGS) $(FUSE3_CFLAGS) $(FUSE3_DEFINE) $(LIBUSB_CFLAGS) $(LIBUSB_DEFINE) $(CXXFLAGS) $(WARNFLAGS) $(SOURCES) $(LDFLAGS) $(FUSE3_LIBS) $(LIBUSB_LIBS) $(LDLIBS) -o $@
 
 test:

@@ -7,6 +7,8 @@
 
 namespace ez3fs {
 
+class CartridgeProgrammer;
+
 class CartridgeStorage final : public ByteStorage {
 public:
     static constexpr std::uint64_t cartridge_capacity = 0x02000000u;
@@ -26,6 +28,7 @@ public:
               std::size_t size, std::string& error) override;
 
 private:
+    friend class CartridgeProgrammer;
     class Impl;
     std::unique_ptr<Impl> impl_;
 };

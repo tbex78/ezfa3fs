@@ -1,6 +1,7 @@
 #include "ez3fs/archive.hpp"
 #include "ez3fs/byte_storage.hpp"
 #include "ez3fs/cartridge_storage.hpp"
+#include "ez3fs/cartridge_programmer.hpp"
 #include "ez3fs/fuse_mount.hpp"
 #include "ez3fs/version.hpp"
 #include <filesystem>
@@ -19,7 +20,7 @@ bool writeFile(const fs::path& p,const std::uint8_t* d,std::size_t n) {
     std::ofstream out(p,std::ios::binary|std::ios::trunc); if(!out)return false;
     out.write(reinterpret_cast<const char*>(d),static_cast<std::streamsize>(n)); return out.good();
 }
-void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs card-info\n  ez3fs card-list\n  ez3fs card-verify\n  ez3fs card-extract OUTPUT_DIRECTORY\n  ez3fs --version\n"; }
+void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs card-info\n  ez3fs card-list\n  ez3fs card-verify\n  ez3fs card-extract OUTPUT_DIRECTORY\n  ez3fs card-write IMAGE.ez3fs\n  ez3fs --version\n"; }
 bool loadArchive(const fs::path& p,ez3fs::Archive& a) {
     std::vector<std::uint8_t> b; if(!readFile(p,b)){std::cerr<<"Could not read image: "<<p<<'\n';return false;}
     std::string e; if(!a.open(std::move(b),e)){std::cerr<<e<<'\n';return false;} return true;
@@ -90,6 +91,20 @@ int cardInfo() { return withCartridge([](const ez3fs::CartridgeStorage& storage,
 int cardList() { return withCartridge([](const ez3fs::CartridgeStorage&,const ez3fs::Archive& archive){printEntries(archive);return 0;}); }
 int cardVerify() { return withCartridge([](const ez3fs::CartridgeStorage&,const ez3fs::Archive& archive){return verifyArchive(archive);}); }
 int cardExtract(const fs::path& destination) { return withCartridge([&](const ez3fs::CartridgeStorage&,const ez3fs::Archive& archive){return extractArchive(archive,destination);}); }
+int cardWrite(const fs::path& path) {
+    ez3fs::Archive archive;if(!loadArchive(path,archive))return 1;std::string error;
+    if(!archive.verify(error)){std::cerr<<error<<'\n';return 1;}
+    std::cout<<"WARNING: this will erase the complete 32-MiB cartridge and program\n"
+             <<archive.image().size()<<" bytes from "<<path<<".\n"
+             <<"Type WRITE EZ3FS to continue: "<<std::flush;
+    std::string confirmation;std::getline(std::cin,confirmation);
+    if(confirmation!="WRITE EZ3FS"){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    ez3fs::CartridgeProgrammer programmer;
+    if(!programmer.programAndVerify(archive.image(),std::cout,error)){
+        std::cerr<<"Cartridge programming failed: "<<error<<'\n';return 1;
+    }
+    std::cout<<"Programmed and verified the EZ3FS image successfully.\n";return 0;
+}
 
 bool replaceImage(const fs::path& path,const std::vector<ez3fs::InputFile>& contents) {
     ez3fs::ArchiveImage image;std::string error;
@@ -158,5 +173,6 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="card-list")return cardList();
     if(argc==2&&std::string(argv[1])=="card-verify")return cardVerify();
     if(argc==3&&std::string(argv[1])=="card-extract")return cardExtract(argv[2]);
+    if(argc==3&&std::string(argv[1])=="card-write")return cardWrite(argv[2]);
     usage();return 1;
 }

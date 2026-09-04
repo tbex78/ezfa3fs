@@ -1,4 +1,5 @@
 #include "ez3fs/cartridge_storage.hpp"
+#include "ez3fs/cartridge_programmer.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -20,9 +21,11 @@ namespace ez3fs {
 
 class CartridgeStorage::Impl final {
 public:
+    friend class CartridgeProgrammer;
     ~Impl() { shutdown(); }
 
     bool open(std::string& error);
+    bool openForProgramming(std::string& error);
     bool close(std::string& error);
     void shutdown() noexcept;
     bool read(std::uint64_t offset, std::uint8_t* destination,
@@ -47,14 +50,21 @@ private:
     bool tx92(std::uint8_t first, std::uint8_t second, std::string& error,
               std::uint32_t word_address = 0);
     bool waitReady(unsigned attempts, std::string& error);
-    bool initialize(std::string& error);
+    bool initialize(std::string& error, bool allow_erased);
     bool probePrefix(std::string& error);
     bool readFlashId(std::array<std::uint8_t, 4>& id, std::string& error);
     bool prepareMapping(std::uint64_t end, std::string& error);
     bool mappingBody(std::uint32_t limit, std::string& error);
     bool rawRead(std::uint32_t offset, std::uint8_t* destination,
                  std::size_t size, std::string& error);
+    bool tx92One(std::uint8_t selector, std::uint8_t value,
+                 std::string& error);
+    bool selectWriteWindow(unsigned window, std::string& error);
+    bool finishWriteOperation(std::string& error);
 #endif
+    bool eraseAll(std::ostream& progress, std::string& error);
+    bool programImage(const std::vector<std::uint8_t>& image,
+                      std::ostream& progress, std::string& error);
 };
 
 #if defined(EZ3FS_HAS_LIBUSB)
@@ -180,7 +190,7 @@ bool CartridgeStorage::Impl::readFlashId(
     return true;
 }
 
-bool CartridgeStorage::Impl::initialize(std::string& error)
+bool CartridgeStorage::Impl::initialize(std::string& error, bool allow_erased)
 {
     const std::vector<std::uint8_t> c97 =
         {0x5A,0xA5,0x97,0,0,0,0,0,0,0,0,0,0};
@@ -214,7 +224,9 @@ bool CartridgeStorage::Impl::initialize(std::string& error)
         // still cannot enter the EZ3-specific mapping path.
         std::array<std::uint8_t,8> header{};
         if (!rawRead(0,header.data(),header.size(),error)) return false;
-        if (!hasEz3fsMagic(header.data())) {
+        const bool erased = std::all_of(header.begin(),header.end(),
+            [](std::uint8_t byte){return byte==0xFF;});
+        if (!hasEz3fsMagic(header.data()) && !(allow_erased && erased)) {
             error = "unsupported cartridge flash identifier: " +
                     formatFlashId(flash_id) +
                     "; no EZ3FS image found at offset 0";
@@ -282,6 +294,123 @@ bool CartridgeStorage::Impl::rawRead(std::uint32_t offset,
     }
     return true;
 }
+
+bool CartridgeStorage::Impl::tx92One(std::uint8_t selector,
+                                     std::uint8_t value,
+                                     std::string& error)
+{
+    const std::vector<std::uint8_t> command =
+        {0x5A,0xA5,0x92,0x01,selector,0,0,0,0x01,0,0,0,0};
+    return commandEcho(command,{value},error);
+}
+
+bool CartridgeStorage::Impl::selectWriteWindow(unsigned window,
+                                                std::string& error)
+{
+    if (window>3) { error="invalid cartridge flash window"; return false; }
+    const auto mode=static_cast<std::uint8_t>(window==0?0:2);
+    const auto high=static_cast<std::uint8_t>(window*0x40);
+    if (!tx92(0x55,0xAA,error) || !tx92(mode,0,error) ||
+        !tx92(0,high,error) || !tx92(0,0,error)) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(125));
+    return tx92(0xAA,0x55,error) && tx92(0,0,error) &&
+           tx92(0,0,error) && tx92(0,0,error) &&
+           tx92One(0,0xAA,error) && tx92One(0,0x55,error) &&
+           tx92One(1,0x06,error);
+}
+
+bool CartridgeStorage::Impl::finishWriteOperation(std::string& error)
+{
+    return tx92(0xFF,0xFF,error) && tx92One(1,0x04,error) &&
+           tx92One(0,0,error) && tx92One(0,0,error);
+}
+
+bool CartridgeStorage::Impl::eraseAll(std::ostream& progress,
+                                      std::string& error)
+{
+    std::vector<std::uint32_t> even;
+    for (std::uint32_t address=0;address<=0x8000;address+=0x1000)
+        even.push_back(address);
+    for (std::uint32_t address=0x10000;address<=0x3F8000;address+=0x8000)
+        even.push_back(address);
+    std::vector<std::uint32_t> odd;
+    for (std::uint32_t address=0;address<=0x3F8000;address+=0x8000)
+        odd.push_back(address);
+    for (std::uint32_t address=0x3F9000;address<=0x3FF000;address+=0x1000)
+        odd.push_back(address);
+
+    const std::size_t total=2*(even.size()+odd.size());
+    std::size_t completed=0;
+    for (unsigned window=0;window<4;++window) {
+        if (window!=0 && !finishWriteOperation(error)) return false;
+        if (!selectWriteWindow(window,error)) return false;
+        const auto& addresses=(window%2==0)?even:odd;
+        for (const auto address:addresses) {
+            std::vector<std::uint8_t> command =
+                {0x5A,0xA5,0x96,0,
+                 static_cast<std::uint8_t>(address),
+                 static_cast<std::uint8_t>(address>>8),
+                 static_cast<std::uint8_t>(address>>16),
+                 static_cast<std::uint8_t>(address>>24),0,0,0,0,0};
+            std::vector<std::uint8_t> response;
+            if (!out(command,error) || !in(response,command.size(),error)) return false;
+            if (!std::equal(command.begin(),command.begin()+12,response.begin()) ||
+                response[12]!=0) {
+                error="cartridge erase command failed in window "+
+                      std::to_string(window);return false;
+            }
+            ++completed;
+            if (completed%16==0 || completed==total)
+                progress << "\rErasing " << completed << '/' << total << std::flush;
+        }
+    }
+    progress << '\n';
+    return finishWriteOperation(error);
+}
+
+bool CartridgeStorage::Impl::programImage(
+    const std::vector<std::uint8_t>& image,std::ostream& progress,
+    std::string& error)
+{
+    constexpr std::size_t window_size=0x800000;
+    constexpr std::size_t block_size=0x10000;
+    if (!selectWriteWindow(0,error)) return false;
+    for (std::size_t offset=0;offset<image.size();offset+=block_size) {
+        if (offset!=0 && offset%window_size==0) {
+            if (!finishWriteOperation(error) ||
+                !selectWriteWindow(static_cast<unsigned>(offset/window_size),error))
+                return false;
+        }
+        const auto size=std::min(block_size,image.size()-offset);
+        const auto local=static_cast<std::uint32_t>(offset%window_size);
+        std::vector<std::uint8_t> command =
+            {0x5A,0xA5,0x92,0,0,0,0,0,0,0,0,0,0x41};
+        putLe32(command,4,local/2);putLe32(command,8,static_cast<std::uint32_t>(size));
+        if (!out(command,error)) return false;
+        std::this_thread::sleep_for(std::chrono::microseconds(750));
+        std::vector<std::uint8_t> data(image.begin()+static_cast<std::ptrdiff_t>(offset),
+                                       image.begin()+static_cast<std::ptrdiff_t>(offset+size));
+        if (!out(data,error)) return false;
+        std::vector<std::uint8_t> response;
+        if (!in(response,command.size(),error)) return false;
+        command[12]=0;
+        if (response!=command) { error="cartridge program completion mismatch";return false; }
+        progress << "\rProgramming " << offset+size << '/' << image.size() << std::flush;
+    }
+    progress << '\n';
+    return finishWriteOperation(error);
+}
+#else
+bool CartridgeStorage::Impl::eraseAll(std::ostream&,std::string& error)
+{
+    error="EZ3FS was built without libusb support";return false;
+}
+
+bool CartridgeStorage::Impl::programImage(
+    const std::vector<std::uint8_t>&,std::ostream&,std::string& error)
+{
+    error="EZ3FS was built without libusb support";return false;
+}
 #endif
 
 bool CartridgeStorage::Impl::open(std::string& error)
@@ -301,9 +430,30 @@ bool CartridgeStorage::Impl::open(std::string& error)
     result = libusb_claim_interface(handle,0);
     if (result != 0) { error = usbError("could not claim USB interface 0",result); shutdown(); return false; }
     claimed = true;
-    if (!initialize(error)) { shutdown(); return false; }
+    if (!initialize(error,false)) { shutdown(); return false; }
     is_open = true;
     return true;
+#endif
+}
+
+bool CartridgeStorage::Impl::openForProgramming(std::string& error)
+{
+#if !defined(EZ3FS_HAS_LIBUSB)
+    error="EZ3FS was built without libusb support";return false;
+#else
+    error.clear();shutdown();
+    int result=libusb_init(&context);
+    if(result!=0){error=usbError("libusb initialization failed",result);shutdown();return false;}
+    handle=libusb_open_device_with_vid_pid(context,0x0E6A,0x5088);
+    if(!handle){error="EZ-Flash Advance III USB device not found";shutdown();return false;}
+#if defined(__linux__)
+    libusb_set_auto_detach_kernel_driver(handle,1);
+#endif
+    result=libusb_claim_interface(handle,0);
+    if(result!=0){error=usbError("could not claim USB interface 0",result);shutdown();return false;}
+    claimed=true;
+    if(!initialize(error,true)){shutdown();return false;}
+    is_open=true;return true;
 #endif
 }
 
@@ -367,5 +517,39 @@ std::uint64_t CartridgeStorage::capacity() const noexcept { return cartridge_cap
 bool CartridgeStorage::read(std::uint64_t offset,std::uint8_t* destination,
                             std::size_t size,std::string& error)
 { return impl_->read(offset,destination,size,error); }
+
+bool CartridgeProgrammer::programAndVerify(
+    const std::vector<std::uint8_t>& image,std::ostream& progress,
+    std::string& error)
+{
+    Archive validated;
+    if(!validated.open(image,error) || !validated.verify(error)) return false;
+    if(!storage_.impl_->openForProgramming(error)) return false;
+    progress << "Erasing the complete 32-MiB cartridge...\n";
+    if(!storage_.impl_->eraseAll(progress,error) ||
+       !storage_.impl_->programImage(image,progress,error)) {
+        std::string ignored;storage_.close(ignored);return false;
+    }
+    if(!storage_.close(error)) return false;
+
+    progress << "Reopening cartridge for byte-for-byte verification...\n";
+    if(!storage_.open(error)) return false;
+    std::vector<std::uint8_t> block(ImageBuilder::program_block_size);
+    for(std::size_t offset=0;offset<image.size();offset+=block.size()) {
+        if(!storage_.read(offset,block.data(),block.size(),error)) {
+            std::string ignored;storage_.close(ignored);return false;
+        }
+        const auto mismatch=std::mismatch(block.begin(),block.end(),image.begin()+
+            static_cast<std::ptrdiff_t>(offset));
+        if(mismatch.first!=block.end()) {
+            error="read-back mismatch at cartridge byte "+
+                  std::to_string(offset+static_cast<std::size_t>(mismatch.first-block.begin()));
+            std::string ignored;storage_.close(ignored);return false;
+        }
+        progress << "\rVerifying " << offset+block.size() << '/' << image.size() << std::flush;
+    }
+    progress << '\n';
+    return storage_.close(error);
+}
 
 } // namespace ez3fs

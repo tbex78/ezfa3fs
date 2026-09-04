@@ -21,7 +21,7 @@ private:
 };
 }
 int main() {
-    require(ez3fs::project_version=="0.4.1");
+    require(ez3fs::project_version=="0.5.0");
     const std::vector<ez3fs::InputFile> files{{"hello.txt",{'h','e','l','l','o'}},{"folder/data.bin",{0,0x7F,0xFF}}};
     ez3fs::ArchiveImage image;std::string error;require(ez3fs::ImageBuilder{}.build(files,image,error));
     require(error.empty());require(image.bytes.size()==0x20000);
