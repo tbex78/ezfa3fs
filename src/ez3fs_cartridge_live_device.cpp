@@ -1,0 +1,22 @@
+#include "ez3fs/cartridge_live_device.hpp"
+#include "ez3fs/cartridge_programmer.hpp"
+
+#include <algorithm>
+#include <iostream>
+#include <vector>
+
+namespace ez3fs {
+namespace { constexpr std::size_t block_size=live::NorFlash::block_size; }
+
+bool CartridgeLiveDevice::read(std::size_t offset,std::uint8_t* destination,std::size_t size,std::string& error) const {
+    return const_cast<CartridgeStorage&>(storage_).read(offset,destination,size,error);
+}
+bool CartridgeLiveDevice::program(std::size_t offset,const std::uint8_t* source,std::size_t size,std::string& error) {
+    if(offset%block_size||size!=block_size||offset>=live::NorFlash::capacity){error="cartridge live programming requires one aligned 64-KiB block";return false;}
+    std::vector<std::uint8_t> bytes(source,source+size);CartridgeProgrammer programmer;return programmer.programLiveBlock(offset/block_size,bytes,std::cerr,error);
+}
+bool CartridgeLiveDevice::eraseBlock(std::size_t block,std::string& error) {
+    if(block<2||block>=live::NorFlash::block_count){error="cartridge live erase only permits blocks 2 through 511";return false;}
+    CartridgeProgrammer programmer;return programmer.eraseLiveBlock(block,std::cerr,error);
+}
+} // namespace ez3fs
