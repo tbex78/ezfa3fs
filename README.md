@@ -2,13 +2,14 @@
 
 EZ3FS is an independent indexed archive filesystem for the 32-MiB EZF Advance
 III NOR flash geometry. It contains no EZ3 loader, menu, ROM catalog, FAT
-volume, or GBA ROM patching. Current version: **0.5.0**.
+volume, or GBA ROM patching. Current version: **0.6.0**.
 
 Version 0.4.0 added read-only physical-cartridge inspection and extraction.
 Version 0.4.1 recognizes an EZ3FS signature as a safe fallback when a genuine
 EZ3 cartridge does not return one of the two previously captured flash IDs.
 Version 0.5.0 adds confirmed raw cartridge programming with full read-back
 verification.
+Version 0.6.0 adds read-only mounting directly from a physical cartridge.
 See [EZ3FS_FORMAT.md](EZ3FS_FORMAT.md) for the binary format.
 
 ## Build
@@ -81,3 +82,14 @@ verify every programmed byte:
 
 The command validates the EZ3FS image before opening the USB device and
 requires the exact confirmation text `WRITE EZ3FS` before any modification.
+
+Mount the physical cartridge read-only through FUSE/macFUSE:
+
+```sh
+mkdir -p mountpoint
+./ez3fs card-mount mountpoint
+```
+
+The image is read and verified before mounting, then the USB session is
+closed. Changes through this mount are rejected; use a local writable mount
+and `card-write` when you intentionally want to replace cartridge contents.

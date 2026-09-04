@@ -8,6 +8,7 @@
 #include <iostream>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #if defined(EZ3FS_HAS_FUSE3)
@@ -44,19 +45,23 @@ class MountSession final {
 public:
     MountSession(fs::path image,std::vector<InputFile> contents,bool writable)
         :image_(std::move(image)),filesystem_(std::move(contents),writable) {}
+    explicit MountSession(std::vector<InputFile> contents)
+        :filesystem_(std::move(contents),false) {}
     VirtualFilesystem& filesystem() noexcept{return filesystem_;}
     std::mutex& mutex() noexcept{return mutex_;}
     bool commit() {
-        if(!filesystem_.dirty())return true;ArchiveImage built;std::string error;
+        if(!filesystem_.dirty())return true;
+        if(!image_){std::cerr<<"EZ3FS in-memory mount cannot be committed.\n";return false;}
+        ArchiveImage built;std::string error;
         if(!ImageBuilder{}.build(filesystem_.contents(),built,error)){std::cerr<<"EZ3FS commit failed: "<<error<<'\n';return false;}
-        fs::path temporary=image_;temporary += ".fuse.tmp";
+        fs::path temporary=*image_;temporary += ".fuse.tmp";
         if(fs::exists(temporary)||!writeImage(temporary,built.bytes)){std::cerr<<"EZ3FS commit could not create "<<temporary<<'\n';return false;}
-        std::error_code ec;fs::rename(temporary,image_,ec);
+        std::error_code ec;fs::rename(temporary,*image_,ec);
         if(ec){fs::remove(temporary);std::cerr<<"EZ3FS commit could not replace image: "<<ec.message()<<'\n';return false;}
         filesystem_.markClean();return true;
     }
 private:
-    fs::path image_;
+    std::optional<fs::path> image_;
     VirtualFilesystem filesystem_;
     std::mutex mutex_;
 };
@@ -120,6 +125,19 @@ fuse_operations operations() {fuse_operations value{};value.getattr=ez3fsGetattr
     value.read=ez3fsRead;value.mkdir=ez3fsMkdir;value.create=ez3fsCreate;value.write=ez3fsWrite;value.truncate=ez3fsTruncate;
     value.unlink=ez3fsUnlink;value.rmdir=ez3fsRmdir;value.rename=ez3fsRename;value.flush=ez3fsFlush;value.fsync=ez3fsFsync;
     value.destroy=ez3fsDestroy;value.statfs=ez3fsStatfs;return value;}
+int runMount(MountSession& mounted,const std::string& mountpoint,
+             bool foreground,const std::string& filesystem_name) {
+    auto callbacks=operations();
+    std::vector<std::string> arguments{"ez3fs","-o","fsname="+filesystem_name};
+#if defined(__APPLE__)
+    if(filesystem_name=="ez3fs-card") {
+        arguments.push_back("-o");arguments.push_back("volname=EZ3FS Cartridge");
+    }
+#endif
+    if(foreground)arguments.push_back("-f");arguments.push_back(mountpoint);
+    std::vector<char*> argv;for(auto& argument:arguments)argv.push_back(argument.data());
+    return fuse_main(static_cast<int>(argv.size()),argv.data(),&callbacks,&mounted);
+}
 } // namespace
 
 int mountImage(const std::string& image,const std::string& mountpoint,bool writable,bool foreground) {
@@ -127,13 +145,20 @@ int mountImage(const std::string& image,const std::string& mountpoint,bool writa
     if(path_error){std::cerr<<"Could not resolve image path: "<<path_error.message()<<'\n';return 1;}
     std::vector<std::uint8_t> bytes;if(!readImage(absolute_image,bytes)){std::cerr<<"Could not read image: "<<absolute_image<<'\n';return 1;}
     Archive archive;std::string error;if(!archive.open(std::move(bytes),error)||!archive.verify(error)){std::cerr<<error<<'\n';return 1;}
-    MountSession mounted(absolute_image,archive.contents(),writable);auto callbacks=operations();
-    std::vector<std::string> arguments{"ez3fs","-o","fsname=ez3fs"};if(foreground)arguments.push_back("-f");arguments.push_back(mountpoint);
-    std::vector<char*> argv;for(auto& argument:arguments)argv.push_back(argument.data());
-    return fuse_main(static_cast<int>(argv.size()),argv.data(),&callbacks,&mounted);
+    MountSession mounted(absolute_image,archive.contents(),writable);
+    return runMount(mounted,mountpoint,foreground,"ez3fs");
+}
+int mountArchive(const Archive& archive,const std::string& mountpoint,
+                 bool foreground,const std::string& filesystem_name) {
+    std::string error;if(!archive.verify(error)){std::cerr<<error<<'\n';return 1;}
+    MountSession mounted(archive.contents());
+    return runMount(mounted,mountpoint,foreground,filesystem_name);
 }
 #else
 int mountImage(const std::string&,const std::string&,bool,bool) {
+    std::cerr<<"FUSE 3 support was not available when ez3fs was built.\n";return 1;
+}
+int mountArchive(const Archive&,const std::string&,bool,const std::string&) {
     std::cerr<<"FUSE 3 support was not available when ez3fs was built.\n";return 1;
 }
 #endif
