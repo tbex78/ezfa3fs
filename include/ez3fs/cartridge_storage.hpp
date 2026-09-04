@@ -41,6 +41,11 @@ private:
     bool readLiveBlockAfterWrite(std::size_t block,
                                  std::vector<std::uint8_t>& bytes,
                                  std::string& error,bool reopen_first);
+    bool verifyLiveBlockAfterWrite(std::size_t block,
+                                   const std::vector<std::uint8_t>& expected,
+                                   const char* operation,
+                                   const std::string& operation_error,
+                                   bool reopen_first,std::string& error);
     class Impl;
     std::unique_ptr<Impl> impl_;
 };

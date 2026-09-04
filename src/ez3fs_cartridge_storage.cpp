@@ -469,7 +469,18 @@ bool CartridgeStorage::Impl::programLiveBlock(std::size_t block,const std::vecto
     if(!selectWriteWindow(window,error))return false;
     std::vector<std::uint8_t> command={0x5A,0xA5,0x92,0,0,0,0,0,0,0,0,0,0x41};putLe32(command,4,local);putLe32(command,8,static_cast<std::uint32_t>(bytes.size()));
     if(!out(command,error))return false;std::this_thread::sleep_for(std::chrono::microseconds(750));if(!out(bytes,error))return false;std::vector<std::uint8_t> response;
-    if(!in(response,command.size(),error))return false;command[12]=0;if(response!=command){error="cartridge live block program completion mismatch";return false;}
+    if(!in(response,command.size(),error))return false;command[12]=0;
+    if(response!=command){
+        const auto mismatch=std::mismatch(response.begin(),response.end(),command.begin());
+        std::ostringstream detail;detail<<"cartridge live block program completion mismatch";
+        if(mismatch.first!=response.end())
+            detail<<" at byte 0x"<<std::hex
+                  <<static_cast<std::size_t>(mismatch.first-response.begin())
+                  <<" (received 0x"<<static_cast<unsigned>(*mismatch.first)
+                  <<", expected 0x"<<static_cast<unsigned>(*mismatch.second)<<')'
+                  <<std::dec;
+        error=detail.str();return false;
+    }
     if(!finishWriteOperation(error))return false;progress<<"Programmed cartridge block "<<block<<".\n";return true;
 }
 #else
@@ -621,23 +632,49 @@ bool CartridgeStorage::readLiveBlockAfterWrite(std::size_t block,
     }
     error.clear();return true;
 }
+bool CartridgeStorage::verifyLiveBlockAfterWrite(
+    std::size_t block,const std::vector<std::uint8_t>& expected,
+    const char* operation,const std::string& operation_error,
+    bool reopen_first,std::string& error) {
+    constexpr unsigned verification_attempts=3;
+    std::string verification_error;
+    for(unsigned attempt=1;attempt<=verification_attempts;++attempt) {
+        std::vector<std::uint8_t> readback;
+        std::string read_error;
+        if(readLiveBlockAfterWrite(block,readback,read_error,
+                                   reopen_first||attempt>1)) {
+            const auto mismatch=std::mismatch(readback.begin(),readback.end(),
+                                              expected.begin());
+            if(mismatch.first==readback.end()){error.clear();return true;}
+            std::ostringstream detail;
+            detail<<operation<<" readback block "<<block
+                  <<" differs at byte 0x"<<std::hex
+                  <<static_cast<std::size_t>(mismatch.first-readback.begin())
+                  <<" (read 0x"<<static_cast<unsigned>(*mismatch.first)
+                  <<", expected 0x"<<static_cast<unsigned>(*mismatch.second)
+                  <<')'<<std::dec;
+            verification_error=detail.str();
+        } else {
+            verification_error=read_error;
+        }
+        if(attempt<verification_attempts)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    error=operation_error;
+    if(!error.empty()&&!verification_error.empty())error+="; ";
+    error+=verification_error;
+    return false;
+}
 bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& error) {
     constexpr unsigned attempts=3;
+    const std::vector<std::uint8_t> erased(live::NorFlash::block_size,0xFF);
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
         std::string operation_error;const bool completed=impl_->eraseLiveBlock(block,std::cerr,operation_error,true);
-        std::vector<std::uint8_t> readback;
         // Metadata occupies the flash's boot sectors.  The cartridge can keep
         // returning the pre-write/erased view there until the USB session is
         // reopened, even after a successful write-window completion.
-        if(!readLiveBlockAfterWrite(block,readback,error,!completed||block<2))return false;
-        const auto programmed=std::find_if(readback.begin(),readback.end(),[](std::uint8_t byte){return byte!=0xFF;});
-        if(programmed==readback.end()){error.clear();return true;}
-        std::ostringstream detail;
-        if(!completed&&!operation_error.empty())detail<<operation_error<<"; ";
-        detail<<"erase readback block "<<block<<" is not blank at byte 0x"<<std::hex
-              <<static_cast<std::size_t>(programmed-readback.begin())<<" (0x"
-              <<static_cast<unsigned>(*programmed)<<')'<<std::dec;
-        error=detail.str();
+        if(verifyLiveBlockAfterWrite(block,erased,"erase",operation_error,
+                                     !completed||block<2,error))return true;
         if(attempt<attempts)std::cerr<<"Retrying live block erase (attempt "<<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
     }
     return false;
@@ -646,17 +683,8 @@ bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::v
     constexpr unsigned attempts=3;
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
         std::string operation_error;const bool completed=impl_->programLiveBlock(block,bytes,std::cerr,operation_error,true);
-        std::vector<std::uint8_t> readback;
-        if(!readLiveBlockAfterWrite(block,readback,error,!completed||block<2))return false;
-        const auto mismatch=std::mismatch(readback.begin(),readback.end(),bytes.begin());
-        if(mismatch.first==readback.end()){error.clear();return true;}
-        std::ostringstream detail;
-        if(!completed&&!operation_error.empty())detail<<operation_error<<"; ";
-        detail<<"program readback block "<<block<<" differs at byte 0x"<<std::hex
-              <<static_cast<std::size_t>(mismatch.first-readback.begin())<<" (read 0x"
-              <<static_cast<unsigned>(*mismatch.first)<<", expected 0x"
-              <<static_cast<unsigned>(*mismatch.second)<<')'<<std::dec;
-        error=detail.str();
+        if(verifyLiveBlockAfterWrite(block,bytes,"program",operation_error,
+                                     !completed||block<2,error))return true;
         if(attempt==attempts)return false;
         std::cerr<<"Retrying live block program (attempt "<<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
         std::string erase_error;

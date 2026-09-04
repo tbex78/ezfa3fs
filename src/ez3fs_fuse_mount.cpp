@@ -3,7 +3,7 @@
 #include "ez3fs/live_cartridge_session.hpp"
 #include "ez3fs/live_mount_backend.hpp"
 #include "ez3fs/mount_backend.hpp"
-#include "ez3fs/timestamp.hpp"
+#include "ez3fs/mount_session.hpp"
 #include "ez3fs/virtual_mount_backend.hpp"
 #include <cerrno>
 #include <cstring>
@@ -41,30 +41,9 @@ bool readImage(const fs::path& path,std::vector<std::uint8_t>& bytes) {
     std::ifstream input(path,std::ios::binary);if(!input)return false;
     bytes.assign(std::istreambuf_iterator<char>(input),{});return input.good()||input.eof();
 }
-class MountSession final {
-public:
-    explicit MountSession(std::unique_ptr<MountBackend> backend)
-        :backend_(std::move(backend)),mounted_at_(currentUnixTimestamp()) {}
-    MountBackend& backend() noexcept{return *backend_;}
-    std::mutex& mutex() noexcept{return mutex_;}
-    std::uint64_t mountedAt() const noexcept{return mounted_at_;}
-    bool commit(std::string& error) {
-        if(commit_failed_){error=commit_error_;return false;}
-        if(backend_->commit(error))return true;
-        commit_failed_=true;commit_error_=error;return false;
-    }
-    bool commitFailed() const noexcept { return commit_failed_; }
-private:
-    std::unique_ptr<MountBackend> backend_;
-    std::mutex mutex_;
-    std::uint64_t mounted_at_;
-    bool commit_failed_ = false;
-    std::string commit_error_;
-};
-
 MountSession& session(){return *static_cast<MountSession*>(fuse_get_context()->private_data);}
 int mutationFailure(MountSession& value,const std::string& error) {
-    if(!error.empty())std::cerr<<"EZ3FS mutation failed: "<<error<<'\n';
+    if(value.shouldReportFailure(error))std::cerr<<"EZ3FS mutation failed: "<<error<<'\n';
     if(!value.backend().writable())return -EROFS;
     if(error.find("out of free blocks")!=std::string::npos)return -ENOSPC;
     if(error.find("not empty")!=std::string::npos)return -ENOTEMPTY;
@@ -73,6 +52,11 @@ int mutationFailure(MountSession& value,const std::string& error) {
     if(error.find("USB ")!=std::string::npos||error.find("cartridge")!=std::string::npos||
        error.find("readback")!=std::string::npos)return -EIO;
     return -EINVAL;
+}
+int beginMutation(MountSession& value) {
+    std::string error;
+    if(value.mutationAllowed(error))return 0;
+    return mutationFailure(value,error);
 }
 int commitSession(MountSession& value) {
     std::string error;
@@ -99,7 +83,11 @@ int ez3fsReaddir(const char* path,void* buffer,fuse_fill_dir_t filler,off_t,stru
 }
 int ez3fsOpen(const char* path,struct fuse_file_info* info) {
     std::lock_guard<std::mutex> lock(session().mutex());MountNode node;if(!session().backend().lookup(path,node)||node.directory)return -ENOENT;
-    if((info->flags&O_ACCMODE)!=O_RDONLY&&!session().backend().writable())return -EROFS;return 0;
+    if((info->flags&O_ACCMODE)!=O_RDONLY) {
+        if(!session().backend().writable())return -EROFS;
+        if(const int failure=beginMutation(session());failure!=0)return failure;
+    }
+    return 0;
 }
 int ez3fsChmod(const char* path,mode_t,struct fuse_file_info*) {
     std::lock_guard<std::mutex> lock(session().mutex());MountNode node;
@@ -107,30 +95,31 @@ int ez3fsChmod(const char* path,mode_t,struct fuse_file_info*) {
     // EZ3FS formats do not store Unix permission bits. Accept chmod on a
     // writable mount so standard copy tools can finish, while getattr keeps
     // exposing the filesystem's fixed 0644/0755 policy.
-    return session().backend().writable()?0:-EROFS;
+    if(!session().backend().writable())return -EROFS;
+    return beginMutation(session());
 }
 int ez3fsRead(const char* path,char* buffer,size_t size,off_t offset,struct fuse_file_info*) {
     if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().mutex());std::vector<std::uint8_t> bytes;
     if(!session().backend().read(path,static_cast<std::size_t>(offset),size,bytes))return -ENOENT;
     std::memcpy(buffer,bytes.data(),bytes.size());return static_cast<int>(bytes.size());
 }
-int ez3fsMkdir(const char* path,mode_t) {std::lock_guard<std::mutex> lock(session().mutex());std::string error;
+int ez3fsMkdir(const char* path,mode_t) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().createDirectory(path,error);return finishMutation(changed,error);}
-int ez3fsCreate(const char* path,mode_t,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());std::string error;
+int ez3fsCreate(const char* path,mode_t,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().createFile(path,error);return changed?0:mutationFailure(session(),error);}
 int ez3fsWrite(const char* path,const char* buffer,size_t size,off_t offset,struct fuse_file_info*) {
-    if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().mutex());std::string error;
+    if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     return session().backend().write(path,static_cast<std::size_t>(offset),reinterpret_cast<const std::uint8_t*>(buffer),size,error)?static_cast<int>(size):mutationFailure(session(),error);
 }
 int ez3fsTruncate(const char* path,off_t size,struct fuse_file_info*) {if(size<0)return -EINVAL;
-    std::lock_guard<std::mutex> lock(session().mutex());std::string error;
+    std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().truncate(path,static_cast<std::size_t>(size),error);return changed?0:mutationFailure(session(),error);}
-int ez3fsUnlink(const char* path) {std::lock_guard<std::mutex> lock(session().mutex());std::string error;
+int ez3fsUnlink(const char* path) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().removeFile(path,error);return finishMutation(changed,error);}
-int ez3fsRmdir(const char* path) {std::lock_guard<std::mutex> lock(session().mutex());std::string error;
+int ez3fsRmdir(const char* path) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().removeDirectory(path,error);return finishMutation(changed,error);}
 int ez3fsRename(const char* from,const char* to,unsigned flags) {if(flags!=0)return -EINVAL;
-    std::lock_guard<std::mutex> lock(session().mutex());std::string error;
+    std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().rename(from,to,error);return finishMutation(changed,error);}
 int ez3fsFlush(const char*,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSession(session());}
 int ez3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSession(session());}
