@@ -309,6 +309,13 @@ bool Filesystem::programExtent(std::size_t first_block,
     next_free_block_=first_block+blocks;error.clear();return true;
 }
 
+bool Filesystem::canCreateFile(const std::string& path,std::string& error) const {
+    if(!validPath(path)||!parentExists(path)||find(path)) {
+        error="invalid or existing live file path";return false;
+    }
+    error.clear();return true;
+}
+
 bool Filesystem::createDirectory(const std::string& path,std::string& error) {
     if(!validPath(path)||!parentExists(path)||find(path)){error="invalid or existing live directory path";return false;}
     const auto old=entries_;entries_.push_back({path,0,0,0,0,0,true});

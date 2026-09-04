@@ -663,6 +663,14 @@ bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::v
         if(!eraseLiveFilesystemBlock(block,erase_error)) {
             error+="; retry erase failed: "+erase_error;return false;
         }
+        // Erase verification leaves the bridge in its read mapping. A fresh
+        // writer session is required before replaying the program command;
+        // otherwise real hardware can acknowledge neither command nor data
+        // and leave the block completely blank.
+        std::string restart_error;
+        if(!restartLiveWriteSession(restart_error)) {
+            error+="; retry writer restart failed: "+restart_error;return false;
+        }
     }
     return false;
 }

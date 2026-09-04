@@ -9,7 +9,13 @@ int main() {
     ez3fs::LiveMountBackend backend(filesystem);
     require(backend.capacityBytes()==ez3fs::live::NorFlash::capacity);
     require(backend.createDirectory("/docs",error));
+    const auto generation_before_create=filesystem.generation();
     require(backend.createFile("/docs/test.txt",error));
+    require(filesystem.generation()==generation_before_create);
+    require(backend.entryCount()==2);
+    std::vector<std::string> children;
+    require(backend.list("/docs",children));
+    require(children==std::vector<std::string>{"test.txt"});
     const auto generation_before_write=filesystem.generation();
     const std::uint8_t data[]={'o','k'};
     require(backend.write("/docs/test.txt",0,data,2,error));
@@ -23,6 +29,12 @@ int main() {
     require(filesystem.generation()>generation_before_write);
     require(filesystem.readFile("docs/test.txt",output,error));
     require(output==std::vector<std::uint8_t>({'o','k'}));
+    const auto generation_before_transient=filesystem.generation();
+    require(backend.createFile("/docs/transient.txt",error));
+    require(backend.removeFile("/docs/transient.txt",error));
+    require(filesystem.generation()==generation_before_transient);
+    require(!backend.lookup("/docs/transient.txt",node));
+    require(!backend.createFile("/missing/test.txt",error));
     require(backend.rename("/docs/test.txt","/docs/renamed.txt",error));
     require(backend.truncate("/docs/renamed.txt",1,error));
     require(backend.removeFile("/docs/renamed.txt",error));

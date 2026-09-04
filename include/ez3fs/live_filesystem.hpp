@@ -87,6 +87,7 @@ public:
     static bool open(BlockDevice& flash,Filesystem& filesystem,std::string& error,
                      ScanProgress progress = {});
 
+    bool canCreateFile(const std::string& path,std::string& error) const;
     bool createDirectory(const std::string& path,std::string& error);
     bool putFile(const std::string& path,const std::vector<std::uint8_t>& bytes,
                  std::uint64_t modified_time,std::string& error,

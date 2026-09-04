@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.35.0`.
+`0.35.1`.
 
 ## Geometry and layout
 
@@ -231,6 +231,13 @@ writer. Terminal and Finder operations are committed directly to flash.
 Garbage collection and compaction are invoked automatically if an ordinary
 copy-on-write allocation cannot proceed, so manual maintenance is not required
 for correctness during a mounted write.
+
+New FUSE files remain in the mount backend's pending state until flush, fsync,
+or release successfully commits their contents. After a commit failure, the
+mount session reports the same failure to later lifecycle callbacks without
+replaying the flash transaction during teardown. macOS cartridge mounts use a
+600-second daemon timeout and suppress AppleDouble and Apple extended-attribute
+traffic.
 
 Unmount from another terminal before disconnecting the writer:
 

@@ -28,7 +28,7 @@ public:
     bool commit(std::string& error) override;
     std::uint64_t capacityBytes() const noexcept override { return live::NorFlash::capacity; }
     std::uint64_t freeBytes() const override { return filesystem_.freeBlocks()*live::NorFlash::block_size; }
-    std::size_t entryCount() const noexcept override { return filesystem_.entries().size(); }
+    std::size_t entryCount() const noexcept override;
 private:
     struct PendingFile final {
         std::vector<std::uint8_t> bytes;

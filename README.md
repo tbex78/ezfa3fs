@@ -4,7 +4,7 @@ EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
 NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
 FAT partition, or ROM-patching workflow.
 
-Application version: **0.35.0**.
+Application version: **0.35.1**.
 
 Two incompatible formats are supported:
 
@@ -244,6 +244,11 @@ active extents before retrying. The terminal reports when this slower
 maintenance path begins. `ENOSPC` is returned only when no sufficient extent
 can be made available. Do not run another cartridge command or disconnect the
 writer while this mount is active.
+
+On macOS, writable cartridge mounts use a 600-second daemon timeout for long
+flash transactions and suppress AppleDouble, `.DS_Store`, and Apple extended
+attributes. Newly created files remain pending until their contents flush
+successfully, so a failed copy does not leave a committed zero-byte file.
 
 Unmount from another terminal before disconnecting:
 
