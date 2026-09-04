@@ -122,7 +122,10 @@ bool CartridgeStorage::Impl::out(const std::vector<std::uint8_t>& bytes,
     const int result = libusb_bulk_transfer(handle, 0x02,
         const_cast<unsigned char*>(bytes.data()), static_cast<int>(bytes.size()),
         &transferred, timeout_ms);
-    if (result != 0) { error = usbError("USB OUT failed", result); return false; }
+    if (result != 0) {
+        if(result==LIBUSB_ERROR_PIPE)(void)libusb_clear_halt(handle,0x02);
+        error = usbError("USB OUT failed", result); return false;
+    }
     if (transferred != static_cast<int>(bytes.size())) {
         error = "USB OUT returned a short transfer"; return false;
     }
@@ -136,7 +139,10 @@ bool CartridgeStorage::Impl::in(std::vector<std::uint8_t>& bytes,
     int transferred = 0;
     const int result = libusb_bulk_transfer(handle, 0x81, bytes.data(),
         static_cast<int>(size), &transferred, timeout_ms);
-    if (result != 0) { error = usbError("USB IN failed", result); return false; }
+    if (result != 0) {
+        if(result==LIBUSB_ERROR_PIPE)(void)libusb_clear_halt(handle,0x81);
+        error = usbError("USB IN failed", result); return false;
+    }
     if (transferred != static_cast<int>(size)) {
         error = "USB IN returned a short transfer"; return false;
     }
@@ -562,8 +568,44 @@ bool CartridgeStorage::close(std::string& error) { return impl_->close(error); }
 bool CartridgeStorage::openForLiveWrite(std::string& error) { return impl_->openForProgramming(error); }
 bool CartridgeStorage::eraseLiveBlock(std::size_t block,std::string& error) { return impl_->eraseLiveBlock(block,std::cerr,error); }
 bool CartridgeStorage::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) { return impl_->programLiveBlock(block,bytes,std::cerr,error); }
-bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& error) { return impl_->eraseLiveBlock(block,std::cerr,error,true); }
-bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) { return impl_->programLiveBlock(block,bytes,std::cerr,error,true); }
+bool CartridgeStorage::readLiveBlockAfterWrite(std::size_t block,
+                                               std::vector<std::uint8_t>& bytes,
+                                               std::string& error) {
+    std::string close_error;const bool closed=close(close_error);
+    std::string reopen_error;
+    if(!openForLiveWrite(reopen_error)) {
+        error="could not reopen cartridge after live write: "+reopen_error;
+        if(!closed&&!close_error.empty())error+="; close also failed: "+close_error;
+        return false;
+    }
+    bytes.resize(live::NorFlash::block_size);
+    if(!read(block*live::NorFlash::block_size,bytes.data(),bytes.size(),error)) {
+        error="could not verify live cartridge block "+std::to_string(block)+": "+error;
+        return false;
+    }
+    error.clear();return true;
+}
+bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& error) {
+    std::string operation_error;const bool completed=impl_->eraseLiveBlock(block,std::cerr,operation_error,true);
+    std::vector<std::uint8_t> readback;
+    if(!readLiveBlockAfterWrite(block,readback,error))return false;
+    const auto programmed=std::find_if(readback.begin(),readback.end(),[](std::uint8_t byte){return byte!=0xFF;});
+    if(programmed!=readback.end()) {
+        error=completed?"live filesystem erase readback is not blank":operation_error+"; erase readback is not blank";
+        return false;
+    }
+    error.clear();return true;
+}
+bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) {
+    std::string operation_error;const bool completed=impl_->programLiveBlock(block,bytes,std::cerr,operation_error,true);
+    std::vector<std::uint8_t> readback;
+    if(!readLiveBlockAfterWrite(block,readback,error))return false;
+    if(readback!=bytes) {
+        error=completed?"live filesystem program readback mismatch":operation_error+"; program readback mismatch";
+        return false;
+    }
+    error.clear();return true;
+}
 bool CartridgeStorage::isOpen() const noexcept { return impl_->is_open; }
 std::array<std::uint8_t,4> CartridgeStorage::flashId() const noexcept { return impl_->flash_id; }
 std::uint64_t CartridgeStorage::capacity() const noexcept { return cartridge_capacity; }
