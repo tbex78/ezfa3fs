@@ -14,5 +14,5 @@ pcap/
 *.ez3fs.tmp
 *.ez3fs.bak
 *.ez3fs.fuse.tmp
-*.ez3live
+*.ez3live*
 .DS_Store
