@@ -615,7 +615,10 @@ bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& e
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
         std::string operation_error;const bool completed=impl_->eraseLiveBlock(block,std::cerr,operation_error,true);
         std::vector<std::uint8_t> readback;
-        if(!readLiveBlockAfterWrite(block,readback,error,!completed))return false;
+        // Metadata occupies the flash's boot sectors.  The cartridge can keep
+        // returning the pre-write/erased view there until the USB session is
+        // reopened, even after a successful write-window completion.
+        if(!readLiveBlockAfterWrite(block,readback,error,!completed||block<2))return false;
         const auto programmed=std::find_if(readback.begin(),readback.end(),[](std::uint8_t byte){return byte!=0xFF;});
         if(programmed==readback.end()){error.clear();return true;}
         std::ostringstream detail;
@@ -633,7 +636,7 @@ bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::v
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
         std::string operation_error;const bool completed=impl_->programLiveBlock(block,bytes,std::cerr,operation_error,true);
         std::vector<std::uint8_t> readback;
-        if(!readLiveBlockAfterWrite(block,readback,error,!completed))return false;
+        if(!readLiveBlockAfterWrite(block,readback,error,!completed||block<2))return false;
         const auto mismatch=std::mismatch(readback.begin(),readback.end(),bytes.begin());
         if(mismatch.first==readback.end()){error.clear();return true;}
         std::ostringstream detail;
