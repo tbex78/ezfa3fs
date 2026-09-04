@@ -3,6 +3,7 @@
 #include "ez3fs/archive.hpp"
 #include "ez3fs/byte_storage.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -76,6 +77,8 @@ public:
     bool readFileRange(const std::string& path,std::size_t offset,std::size_t size,
                        std::vector<std::uint8_t>& bytes,std::string& error) const;
     bool verify(std::string& error) const;
+    bool collectGarbage(std::size_t& reclaimed_blocks,std::string& error,
+                        ScanProgress progress = {});
     const std::vector<Entry>& entries() const noexcept { return entries_; }
     std::uint64_t generation() const noexcept { return generation_; }
     std::size_t freeBlocks() const noexcept;
@@ -84,6 +87,7 @@ private:
     bool commit(std::string& error);
     bool findBlankExtent(std::size_t block_count,std::size_t& first_block,
                          std::string& error);
+    bool blockReferenced(std::size_t block) const noexcept;
     bool parentExists(const std::string& path) const;
     Entry* find(const std::string& path);
     const Entry* find(const std::string& path) const;
@@ -92,6 +96,7 @@ private:
     std::uint64_t generation_ = 0;
     std::size_t active_superblock_ = 0;
     std::size_t next_free_block_ = 2;
+    std::array<bool,NorFlash::block_count> unavailable_blocks_{};
 };
 
 } // namespace ez3fs::live

@@ -4,7 +4,7 @@ EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
 NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
 FAT partition, or ROM-patching workflow.
 
-Application version: **0.31.0**.
+Application version: **0.32.0**.
 
 Two incompatible formats are supported:
 
@@ -36,9 +36,9 @@ reconnecting. Metadata verification and USB-error recovery still reopen the
 device when required. Every programmed or erased block retains readback
 verification.
 
-EZ3FS-LIVE does not yet implement garbage collection. Replaced and deleted
-file blocks are not reused, so repeated writes reduce the free-block count
-until the image is reformatted or rebuilt.
+EZ3FS-LIVE garbage collection can reclaim unreferenced blocks left by file
+replacement, deletion, or interrupted writes. Active extents and both
+metadata superblocks are never erased by the collector.
 
 Unix permission bits are not part of either image format. FUSE exposes fixed
 `0755` directory and `0644` file modes; `chmod` on a writable mount is
@@ -172,6 +172,7 @@ Create and modify an exact 32-MiB transactional image:
 ./build/cmake/ez3fs live-get cartridge.ez3live documents/local.txt output.txt
 ./build/cmake/ez3fs live-rm cartridge.ez3live documents/local.txt
 ./build/cmake/ez3fs live-rmdir cartridge.ez3live documents
+./build/cmake/ez3fs live-gc cartridge.ez3live
 ```
 
 When `live-put` has no destination argument, the source path is used as the
@@ -200,6 +201,15 @@ Program or pull a complete EZ3FS-LIVE image:
 confirmation, replaces the complete cartridge, and verifies it.
 `live-card-pull` reads all 32 MiB, validates the newest generation and every
 file checksum, and writes the local output image.
+
+Reclaim unreferenced cartridge data blocks only while it is unmounted:
+
+```sh
+./build/cmake/ez3fs live-card-gc
+```
+
+The command asks for confirmation, preserves every block referenced by the
+active generation, and verifies each physical erase.
 
 Mount the cartridge as a verified read-only snapshot:
 

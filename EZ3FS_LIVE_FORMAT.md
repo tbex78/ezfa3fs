@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.31.0`.
+`0.32.0`.
 
 ## Geometry and layout
 
@@ -21,12 +21,12 @@ of 64 KiB:
 | Logical blocks | Purpose |
 |---:|---|
 | 0 and 1 | Alternating generation-numbered superblocks |
-| 2 through 511 | Append-only file data |
+| 2 through 511 | Copy-on-write file data and reclaimable space |
 
 ```text
 block 0          superblock generation A
 block 1          superblock generation B
-blocks 2..511    append-only file extents and unused 0xFF blocks
+blocks 2..511    copy-on-write file extents and unused 0xFF blocks
 ```
 
 The cartridge's physical bottom-boot erase geometry is not completely
@@ -85,12 +85,13 @@ remain within the 512-block image, and are protected by their stored CRC-32.
 
 A file create or replacement follows this sequence:
 
-1. Allocate never-before-used data blocks from the free tail.
+1. Locate a contiguous erased extent that does not overlap an active file.
 2. Program complete 64-KiB blocks, padding the final block with `0xFF`.
 3. Build a manifest containing the new file extent.
 4. Erase the inactive superblock.
 5. Program the inactive superblock with generation + 1.
-6. Reopen, read back, and verify each physical block transaction.
+6. Read back and verify every physical block transaction, reopening the USB
+   session for metadata or error recovery when required.
 
 Directory changes, renames, and deletions only need a new manifest generation.
 The previously active superblock remains valid until the replacement
@@ -107,18 +108,23 @@ the previous committed filesystem state.
 
 ## Allocation and recovery
 
-Data allocation is append-only. Replacing or deleting a file makes its old
-extent unreachable but does not erase or reuse it. Mounting derives an initial
-allocation cursor from committed entries without scanning the free tail.
+Normal data allocation is copy-on-write. Replacing or deleting a file makes
+its old extent unreachable without erasing it immediately. Mounting derives
+an initial allocation cursor from committed entries without scanning the free tail.
 Before programming a file, the allocator searches for a contiguous erased
 extent and skips programmed blocks leaked by interrupted writes. This prevents
 unsafe NOR `0 -> 1` programming attempts while avoiding a full allocation scan
 at mount time.
 
-`live-list` reports the remaining free tail blocks. There is no garbage
-collector in format/application version 1.0.0/0.31.0. Space is recovered only
-by creating a fresh image or rebuilding and completely rewriting the
-cartridge.
+`live-gc` and `live-card-gc` sweep blocks 2 through 511, erase only blocks not
+referenced by the selected committed generation, and make the resulting holes
+available to the circular contiguous-extent allocator. The cartridge command
+must run while the filesystem is unmounted. An interrupted collection is safe
+to repeat because active extents and metadata blocks are never erase targets.
+
+`live-list` reports an available-block estimate. Unknown remnants from an
+interrupted write are removed from that estimate when allocation probes them
+or when garbage collection scans the complete data area.
 
 ## Local image commands
 
@@ -132,6 +138,7 @@ cartridge.
 ./build/cmake/ez3fs live-get cartridge.ez3live documents/README.md recovered.md
 ./build/cmake/ez3fs live-rm cartridge.ez3live documents/README.md
 ./build/cmake/ez3fs live-rmdir cartridge.ez3live documents
+./build/cmake/ez3fs live-gc cartridge.ez3live
 ```
 
 `live-format` creates an exact 32-MiB image. Mutating image commands persist a
@@ -158,6 +165,7 @@ cartridge:
 
 ```sh
 ./build/cmake/ez3fs live-card-write cartridge.ez3live
+./build/cmake/ez3fs live-card-gc
 ```
 
 `live-card-write` validates the image before asking for yes/no confirmation.
@@ -214,10 +222,12 @@ entries if Finder recreates them immediately.
 
 ## Current limitations
 
-- No garbage collection or reuse of obsolete data blocks.
-- Each FUSE write request rewrites the complete logical file to new blocks.
-- Each mutation commits a new superblock generation.
-- Safety reconnects and readback make direct writable mounts slow.
+- Garbage collection reclaims unreferenced blocks but does not relocate active
+  extents, so severe active-data fragmentation can still prevent a large
+  contiguous allocation.
+- Each flushed logical file is written to a new contiguous extent.
+- Each committed mutation writes a new superblock generation.
+- Physical erase/program readback still bounds maximum write speed.
 - No concurrent cartridge commands while a direct mount is active.
 - No FAT compatibility, partition table, EZ3 menu, or original loader support.
 - Packed EZ3FS and EZ3FS-LIVE images cannot be interchanged.

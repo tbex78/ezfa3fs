@@ -7,6 +7,7 @@
 #include "ez3fs/fuse_mount.hpp"
 #include "ez3fs/new_image_file.hpp"
 #include "ez3fs/live_filesystem.hpp"
+#include "ez3fs/live_cartridge_session.hpp"
 #include "ez3fs/version.hpp"
 #include <chrono>
 #include <filesystem>
@@ -54,11 +55,13 @@ void usage() {
   ez3fs live-get IMAGE.ez3live FILE OUTPUT_FILE
   ez3fs live-rm IMAGE.ez3live FILE
   ez3fs live-rmdir IMAGE.ez3live DIRECTORY
+  ez3fs live-gc IMAGE.ez3live
   ez3fs live-mount IMAGE.ez3live MOUNTPOINT [--foreground]
   ez3fs live-card-mount MOUNTPOINT [--foreground]
   ez3fs live-card-mount MOUNTPOINT --writable --foreground
   ez3fs live-card-pull IMAGE.ez3live
   ez3fs live-card-write IMAGE.ez3live
+  ez3fs live-card-gc
   ez3fs live-card-read-block BLOCK OUTPUT.bin
   ez3fs live-card-erase-plan BLOCK
   ez3fs live-card-erase-block BLOCK
@@ -365,6 +368,34 @@ int liveGet(const fs::path& image,const std::string& source,const fs::path& outp
     if(!filesystem.readFile(source,bytes,error)||!writeFile(output,bytes.data(),bytes.size())){if(error.empty())error="could not write output file";std::cerr<<error<<'\n';return 1;}return 0; }
 int liveRemove(const fs::path& image,const std::string& path,bool directory) { ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;
     if(!(directory?filesystem.removeDirectory(path,error):filesystem.removeFile(path,error))||!flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}return 0; }
+int liveGarbageCollect(const fs::path& image) {
+    ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);
+    if(!loadLive(image,flash,filesystem))return 1;std::string error;
+    if(!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}
+    std::size_t reclaimed=0;
+    if(!filesystem.collectGarbage(reclaimed,error)||!flash.save(image.string(),error)){
+        std::cerr<<error<<'\n';return 1;
+    }
+    std::cout<<"Reclaimed "<<reclaimed<<" EZ3FS-LIVE block(s) in "<<image<<".\n";return 0;
+}
+int liveCardGarbageCollect() {
+    std::cout<<"WARNING: this will erase unreferenced EZ3FS-LIVE data blocks on the cartridge.\n"
+             <<"Unmount the cartridge before continuing.\n";
+    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    ez3fs::LiveCartridgeSession cartridge;std::string error;
+    if(!cartridge.open(error)){std::cerr<<error<<'\n';return 1;}
+    unsigned displayed=101;
+    const auto progress=[&displayed](std::size_t completed,std::size_t total) {
+        const auto percent=total==0?100u:static_cast<unsigned>(completed*100/total);
+        if(percent==displayed)return;displayed=percent;
+        std::cerr<<"\rCollecting EZ3FS-LIVE garbage: "<<percent<<'%'<<std::flush;
+        if(completed==total)std::cerr<<'\n';
+    };
+    std::size_t reclaimed=0;const bool collected=cartridge.filesystem().collectGarbage(reclaimed,error,progress);
+    std::string close_error;const bool closed=cartridge.close(close_error);
+    if(!collected||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;}
+    std::cout<<"Reclaimed and verified "<<reclaimed<<" cartridge block(s).\n";return 0;
+}
 int liveCardPull(const fs::path& image) { ez3fs::CartridgeStorage storage;std::string error;
     if(!storage.open(error)){std::cerr<<error<<'\n';return 1;} ez3fs::live::NorFlash flash;
     const bool loaded=flash.load(storage,error);std::string close_error;const bool closed=storage.close(close_error);
@@ -469,11 +500,13 @@ int main(int argc,char** argv) {
     if(argc==5&&std::string(argv[1])=="live-get")return liveGet(argv[2],argv[3],argv[4]);
     if(argc==4&&std::string(argv[1])=="live-rm")return liveRemove(argv[2],argv[3],false);
     if(argc==4&&std::string(argv[1])=="live-rmdir")return liveRemove(argv[2],argv[3],true);
+    if(argc==3&&std::string(argv[1])=="live-gc")return liveGarbageCollect(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-card-pull")return liveCardPull(argv[2]);
     if(argc==4&&std::string(argv[1])=="live-card-read-block")return liveCardReadBlock(argv[2],argv[3]);
     if(argc==3&&std::string(argv[1])=="live-card-erase-plan")return liveCardErasePlan(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-card-erase-block")return liveCardEraseBlock(argv[2]);
     if(argc==4&&std::string(argv[1])=="live-card-program-block")return liveCardProgramBlock(argv[2],argv[3]);
     if(argc==3&&std::string(argv[1])=="live-card-write")return liveCardWrite(argv[2]);
+    if(argc==2&&std::string(argv[1])=="live-card-gc")return liveCardGarbageCollect();
     usage();return 1;
 }

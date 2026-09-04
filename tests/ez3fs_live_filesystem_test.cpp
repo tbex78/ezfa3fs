@@ -69,9 +69,20 @@ int main()
     const auto recovered=std::find_if(reopened.entries().begin(),reopened.entries().end(),
         [](const ez3fs::live::Entry& entry){return entry.name=="docs/recovered.txt";});
     require(recovered!=reopened.entries().end()&&recovered->first_block==7);
+    std::size_t reclaimed=0,progress_completed=0,progress_total=0;
+    require(reopened.collectGarbage(reclaimed,error,
+        [&](std::size_t completed,std::size_t total){progress_completed=completed;progress_total=total;}));
+    require(reclaimed==2);
+    require(progress_completed==510&&progress_total==510);
+    require(reopened.verify(error));
+    require(reopened.putFile("docs/recycled.txt",{'z'},1238,error));
+    const auto recycled=std::find_if(reopened.entries().begin(),reopened.entries().end(),
+        [](const ez3fs::live::Entry& entry){return entry.name=="docs/recycled.txt";});
+    require(recycled!=reopened.entries().end()&&recycled->first_block==2);
     require(!reopened.createDirectory("docs/readme.txt",error));
     require(reopened.removeFile("docs/readme.txt",error));
     require(reopened.removeFile("docs/large.bin",error));
     require(reopened.removeFile("docs/recovered.txt",error));
+    require(reopened.removeFile("docs/recycled.txt",error));
     require(reopened.removeDirectory("docs",error));
 }

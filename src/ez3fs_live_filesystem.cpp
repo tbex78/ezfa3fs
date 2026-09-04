@@ -141,7 +141,7 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
         if(!found||generation>newest){found=true;newest=generation;chosen=block;entries=std::move(parsed);}
     }
     if(!found){error="no valid EZ3FS-LIVE superblock found";return false;}
-    result.entries_=std::move(entries);result.generation_=newest;result.active_superblock_=chosen;result.next_free_block_=2;
+    result.entries_=std::move(entries);result.generation_=newest;result.active_superblock_=chosen;result.next_free_block_=2;result.unavailable_blocks_.fill(false);
     for(const auto& entry:result.entries_)result.next_free_block_=std::max(result.next_free_block_,static_cast<std::size_t>(entry.first_block+entry.block_count));
     error.clear();return true;
 }
@@ -175,25 +175,46 @@ bool Filesystem::commit(std::string& error) {
     active_superblock_=target;++generation_;error.clear();return true;
 }
 
-std::size_t Filesystem::freeBlocks() const noexcept{return NorFlash::block_count-next_free_block_;}
+bool Filesystem::blockReferenced(std::size_t block) const noexcept {
+    if(block<2)return true;
+    return std::any_of(entries_.begin(),entries_.end(),[block](const Entry& entry){
+        return !entry.directory&&block>=entry.first_block&&
+               block<static_cast<std::size_t>(entry.first_block)+entry.block_count;
+    });
+}
+
+std::size_t Filesystem::freeBlocks() const noexcept {
+    std::size_t count=0;
+    for(std::size_t block=2;block<NorFlash::block_count;++block)
+        if(!blockReferenced(block)&&!unavailable_blocks_[block])++count;
+    return count;
+}
 
 bool Filesystem::findBlankExtent(std::size_t block_count,
                                  std::size_t& first_block,
                                  std::string& error) {
     if(block_count==0){first_block=next_free_block_;error.clear();return true;}
     if(block_count>freeBlocks()){error="live filesystem is out of free blocks; garbage collection is required";return false;}
-    std::vector<std::uint8_t> bytes(NorFlash::block_size);std::size_t run=0;std::size_t run_start=next_free_block_;
-    for(std::size_t block=next_free_block_;block<NorFlash::block_count;++block) {
-        if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
-            error="could not inspect live allocation block "+std::to_string(block)+": "+error;return false;
-        }
-        const bool blank=std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;});
-        if(blank) {
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);
+    const auto inspect=[&](std::size_t begin,std::size_t end)->bool {
+        std::size_t run=0,run_start=begin;
+        for(std::size_t block=begin;block<end;++block) {
+            if(blockReferenced(block)||unavailable_blocks_[block]){run=0;continue;}
+            if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
+                error="could not inspect live allocation block "+std::to_string(block)+": "+error;return false;
+            }
+            const bool blank=std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;});
+            if(!blank){unavailable_blocks_[block]=true;run=0;continue;}
             if(run==0)run_start=block;
-            if(++run==block_count){first_block=run_start;error.clear();return true;}
-        } else run=0;
-    }
-    next_free_block_=NorFlash::block_count;
+            if(++run==block_count){first_block=run_start;return true;}
+        }
+        return false;
+    };
+    error.clear();
+    if(inspect(next_free_block_,NorFlash::block_count)){error.clear();return true;}
+    if(!error.empty())return false;
+    if(next_free_block_>2&&inspect(2,next_free_block_)){error.clear();return true;}
+    if(!error.empty())return false;
     error="live filesystem has no contiguous erased extent large enough for the file; garbage collection is required";
     return false;
 }
@@ -217,6 +238,7 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
         if(!flash_.program(next_free_block_*NorFlash::block_size,block.data(),block.size(),error)){
             // A failed NOR transaction may have programmed a prefix. Never
             // reuse that physical block, even though the manifest is rolled back.
+            unavailable_blocks_[next_free_block_]=true;
             ++next_free_block_;entries_=old;return false;
         }
         ++next_free_block_;
@@ -224,6 +246,32 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
     Entry replacement{path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),static_cast<std::uint32_t>(first_block),static_cast<std::uint32_t>(blocks),false};
     if(existing)*existing=replacement;else entries_.push_back(std::move(replacement));
     if(commit(error))return true;entries_=old;return false;
+}
+
+bool Filesystem::collectGarbage(std::size_t& reclaimed_blocks,
+                                std::string& error,ScanProgress progress) {
+    reclaimed_blocks=0;constexpr std::size_t first_data_block=2;
+    constexpr std::size_t total=NorFlash::block_count-first_data_block;
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);
+    if(progress)progress(0,total);
+    for(std::size_t block=first_data_block;block<NorFlash::block_count;++block) {
+        if(!blockReferenced(block)) {
+            if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
+                error="could not inspect garbage-collection block "+std::to_string(block)+": "+error;return false;
+            }
+            const bool blank=std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;});
+            if(!blank) {
+                unavailable_blocks_[block]=true;
+                if(!flash_.eraseBlock(block,error)) {
+                    error="could not reclaim live block "+std::to_string(block)+": "+error;return false;
+                }
+                ++reclaimed_blocks;
+            }
+            unavailable_blocks_[block]=false;
+        }
+        if(progress)progress(block-first_data_block+1,total);
+    }
+    next_free_block_=first_data_block;error.clear();return true;
 }
 
 bool Filesystem::removeFile(const std::string& path,std::string& error) {
