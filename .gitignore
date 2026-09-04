@@ -1,0 +1,15 @@
+# Preserved reverse-engineering and local artifact directories
+archive/
+assets/
+build/
+experiments/
+misc/
+notes/
+pcap/
+
+/ez3fs
+*.ez3fs
+*.ez3fs.tmp
+*.ez3fs.bak
+*.ez3fs.fuse.tmp
+.DS_Store
