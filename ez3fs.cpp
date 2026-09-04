@@ -1,4 +1,5 @@
 #include "ez3fs/archive.hpp"
+#include "ez3fs/archive_comparison.hpp"
 #include "ez3fs/byte_storage.hpp"
 #include "ez3fs/cartridge_storage.hpp"
 #include "ez3fs/cartridge_programmer.hpp"
@@ -31,7 +32,7 @@ std::uint64_t fileModifiedTime(const fs::path& path) {
     const auto seconds=system_time.time_since_epoch().count();
     return seconds>0?static_cast<std::uint64_t>(seconds):0;
 }
-void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs card-info\n  ez3fs card-list\n  ez3fs card-verify\n  ez3fs card-extract OUTPUT_DIRECTORY\n  ez3fs card-pull OUTPUT.ez3fs\n  ez3fs card-write IMAGE.ez3fs\n  ez3fs card-mount MOUNTPOINT [--foreground]\n  ez3fs card-mount MOUNTPOINT --writable STAGING.ez3fs [--foreground]\n  ez3fs --version\n"; }
+void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs card-info\n  ez3fs card-list\n  ez3fs card-verify\n  ez3fs card-extract OUTPUT_DIRECTORY\n  ez3fs card-pull OUTPUT.ez3fs\n  ez3fs card-write IMAGE.ez3fs\n  ez3fs card-status STAGING.ez3fs\n  ez3fs card-commit STAGING.ez3fs\n  ez3fs card-mount MOUNTPOINT [--foreground]\n  ez3fs card-mount MOUNTPOINT --writable STAGING.ez3fs [--foreground]\n  ez3fs --version\n"; }
 bool loadArchive(const fs::path& p,ez3fs::Archive& a) {
     std::vector<std::uint8_t> b; if(!readFile(p,b)){std::cerr<<"Could not read image: "<<p<<'\n';return false;}
     std::string e; if(!a.open(std::move(b),e)){std::cerr<<e<<'\n';return false;} return true;
@@ -129,6 +130,56 @@ int cardWrite(const fs::path& path) {
     }
     std::cout<<"Programmed and verified the EZ3FS image successfully.\n";return 0;
 }
+bool compareWithCartridge(const fs::path& staging_path,ez3fs::Archive& staging,
+                          ez3fs::ArchiveComparison& comparison) {
+    if(!loadArchive(staging_path,staging))return false;std::string error;
+    if(!staging.verify(error)){std::cerr<<error<<'\n';return false;}
+    ez3fs::CartridgeStorage storage;ez3fs::Archive cartridge;
+    if(!loadCartridge(storage,cartridge))return false;
+    if(!cartridge.verify(error)){
+        std::cerr<<error<<'\n';std::string ignored;storage.close(ignored);return false;}
+    if(!closeCartridge(storage))return false;
+    comparison=ez3fs::ArchiveComparator{}.compare(cartridge,staging);return true;
+}
+const char* changeLabel(ez3fs::ChangeKind kind) {
+    switch(kind){case ez3fs::ChangeKind::added:return "added   ";
+        case ez3fs::ChangeKind::modified:return "modified";
+        case ez3fs::ChangeKind::deleted:return "deleted ";
+        case ez3fs::ChangeKind::unchanged:return "unchanged";}
+    return "unknown ";
+}
+void printComparison(const ez3fs::ArchiveComparison& comparison) {
+    for(const auto& change:comparison.changes)
+        if(change.kind!=ez3fs::ChangeKind::unchanged)
+            std::cout<<changeLabel(change.kind)<<"  "<<change.path<<'\n';
+    std::cout<<"Summary: "<<comparison.count(ez3fs::ChangeKind::added)<<" added, "
+             <<comparison.count(ez3fs::ChangeKind::modified)<<" modified, "
+             <<comparison.count(ez3fs::ChangeKind::deleted)<<" deleted, "
+             <<comparison.count(ez3fs::ChangeKind::unchanged)<<" unchanged.\n"
+             <<"Raw image: "<<(comparison.image_identical?"identical":"different")<<".\n";
+}
+int cardStatus(const fs::path& staging_path) {
+    ez3fs::Archive staging;ez3fs::ArchiveComparison comparison;
+    if(!compareWithCartridge(staging_path,staging,comparison))return 1;
+    printComparison(comparison);return 0;
+}
+int cardCommit(const fs::path& staging_path) {
+    ez3fs::Archive staging;ez3fs::ArchiveComparison comparison;
+    if(!compareWithCartridge(staging_path,staging,comparison))return 1;
+    printComparison(comparison);
+    if(!comparison.requiresCommit()){
+        std::cout<<"Cartridge already matches the staging image; nothing to commit.\n";return 0;}
+    std::cout<<"WARNING: committing will erase and replace the complete cartridge.\n"
+             <<"Type COMMIT EZ3FS to continue: "<<std::flush;
+    std::string confirmation;std::getline(std::cin,confirmation);
+    if(confirmation!="COMMIT EZ3FS"){
+        std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    std::string error;ez3fs::CartridgeProgrammer programmer;
+    if(!programmer.programAndVerify(staging.image(),std::cout,error)){
+        std::cerr<<"Cartridge commit failed: "<<error<<'\n';return 1;}
+    std::cout<<"Committed and verified "<<staging_path<<". The staging image was preserved.\n";
+    return 0;
+}
 int cardMount(int argc,char** argv) {
     if(argc<3||argc>6){usage();return 1;}bool foreground=false,writable=false;fs::path staging;
     for(int i=3;i<argc;++i){const std::string option(argv[i]);
@@ -223,6 +274,8 @@ int main(int argc,char** argv) {
     if(argc==3&&std::string(argv[1])=="card-extract")return cardExtract(argv[2]);
     if(argc==3&&std::string(argv[1])=="card-pull")return cardPull(argv[2]);
     if(argc==3&&std::string(argv[1])=="card-write")return cardWrite(argv[2]);
+    if(argc==3&&std::string(argv[1])=="card-status")return cardStatus(argv[2]);
+    if(argc==3&&std::string(argv[1])=="card-commit")return cardCommit(argv[2]);
     if(argc>=2&&std::string(argv[1])=="card-mount")return cardMount(argc,argv);
     usage();return 1;
 }
