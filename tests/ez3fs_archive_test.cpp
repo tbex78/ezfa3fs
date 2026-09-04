@@ -21,11 +21,15 @@ private:
 };
 }
 int main() {
-    require(ez3fs::project_version=="0.6.0");
-    const std::vector<ez3fs::InputFile> files{{"hello.txt",{'h','e','l','l','o'}},{"folder/data.bin",{0,0x7F,0xFF}}};
+    require(ez3fs::project_version=="0.8.0");
+    const std::vector<ez3fs::InputFile> files{
+        {"hello.txt",{'h','e','l','l','o'},false,1700000000},
+        {"folder/data.bin",{0,0x7F,0xFF},false,1700000001}};
     ez3fs::ArchiveImage image;std::string error;require(ez3fs::ImageBuilder{}.build(files,image,error));
     require(error.empty());require(image.bytes.size()==0x20000);
     ez3fs::Archive archive;require(archive.open(image.bytes,error));require(archive.entries().size()==2);require(archive.verify(error));
+    require(archive.entries()[0].modified_time==1700000000);
+    require(archive.entries()[1].modified_time==1700000001);
     MemoryStorage storage(image.bytes);ez3fs::Archive loaded;
     require(ez3fs::ArchiveLoader{}.load(storage,loaded,error));require(loaded.verify(error));
     const std::vector<std::uint8_t> expected_magic{'E','Z','3','F','S','\r','\n',0x1A};

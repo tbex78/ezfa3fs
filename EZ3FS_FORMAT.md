@@ -1,4 +1,4 @@
-# EZ3FS cartridge archive format 1.1
+# EZ3FS cartridge archive format 1.2
 
 EZ3FS is an independent, archive-only format for the 32-MiB EZF Advance III
 NOR flash. It contains no EZ3 loader, menu, ROM catalog, partition table, or
@@ -16,7 +16,7 @@ The 64-byte header starts at byte zero.
 |---:|---:|---|
 | `0x00` | 8 | `45 5A 33 46 53 0D 0A 1A` (`EZ3FS`) magic |
 | `0x08` | 2 | format major (`1`) |
-| `0x0A` | 2 | format minor (`1`) |
+| `0x0A` | 2 | format minor (`2`) |
 | `0x0C` | 4 | header size (`64`) |
 | `0x10` | 4 | index-entry size (`288`) |
 | `0x14` | 4 | file count |
@@ -38,15 +38,16 @@ The data offset is the first 64-KiB boundary following the index.
 | `0x108` | 8 | exact data size |
 | `0x110` | 4 | IEEE CRC-32 of file data |
 | `0x114` | 4 | flags: bit 0 denotes a directory |
-| `0x118` | 8 | reserved, zero |
+| `0x118` | 8 | modification time as Unix seconds; zero means unavailable |
 
 Paths use `/`, must be relative, and may not contain empty, `.` or `..`
 components. File entries are packed in index order and must not overlap.
 Directory entries have zero offset, size, and CRC. The root directory is
 implicit and is never stored as an entry.
 
-Format 1.0 images remain readable. They only contain file entries; the flags
-field was required to be zero.
+Format 1.0 and 1.1 images remain readable. Version 1.0 only contains file
+entries and requires zero flags. Versions before 1.2 have no persisted
+modification time; hosts may display the mount time instead.
 
 For migration, EZ3FS readers also accept the legacy eight-byte EZFS magic
 `45 5A 46 53 0D 0A 1A 0A`. Builders always emit the EZ3FS magic.

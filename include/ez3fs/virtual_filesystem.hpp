@@ -6,7 +6,11 @@
 #include <vector>
 
 namespace ez3fs {
-struct NodeInfo { bool directory=false; std::uint64_t size=0; };
+struct NodeInfo {
+    bool directory=false;
+    std::uint64_t size=0;
+    std::uint64_t modified_time=0;
+};
 
 class VirtualFilesystem final {
 public:

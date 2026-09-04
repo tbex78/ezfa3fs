@@ -1,6 +1,7 @@
 #include "ez3fs/fuse_mount.hpp"
 #include "ez3fs/archive.hpp"
 #include "ez3fs/virtual_filesystem.hpp"
+#include "ez3fs/timestamp.hpp"
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
@@ -44,11 +45,13 @@ bool writeImage(const fs::path& path,const std::vector<std::uint8_t>& bytes) {
 class MountSession final {
 public:
     MountSession(fs::path image,std::vector<InputFile> contents,bool writable)
-        :image_(std::move(image)),filesystem_(std::move(contents),writable) {}
+        :image_(std::move(image)),filesystem_(std::move(contents),writable),
+         mounted_at_(currentUnixTimestamp()) {}
     explicit MountSession(std::vector<InputFile> contents)
-        :filesystem_(std::move(contents),false) {}
+        :filesystem_(std::move(contents),false),mounted_at_(currentUnixTimestamp()) {}
     VirtualFilesystem& filesystem() noexcept{return filesystem_;}
     std::mutex& mutex() noexcept{return mutex_;}
+    std::uint64_t mountedAt() const noexcept{return mounted_at_;}
     bool commit() {
         if(!filesystem_.dirty())return true;
         if(!image_){std::cerr<<"EZ3FS in-memory mount cannot be committed.\n";return false;}
@@ -64,6 +67,7 @@ private:
     std::optional<fs::path> image_;
     VirtualFilesystem filesystem_;
     std::mutex mutex_;
+    std::uint64_t mounted_at_;
 };
 
 MountSession& session(){return *static_cast<MountSession*>(fuse_get_context()->private_data);}
@@ -76,7 +80,9 @@ int finishMutation(bool changed) {
 int ez3fsGetattr(const char* path,struct stat* status,struct fuse_file_info*) {
     std::lock_guard<std::mutex> lock(session().mutex());NodeInfo info;if(!session().filesystem().lookup(path,info))return -ENOENT;
     std::memset(status,0,sizeof(*status));status->st_mode=(info.directory?S_IFDIR|0755:S_IFREG|0644);
-    status->st_nlink=info.directory?2:1;status->st_size=static_cast<off_t>(info.size);status->st_uid=getuid();status->st_gid=getgid();return 0;
+    status->st_nlink=info.directory?2:1;status->st_size=static_cast<off_t>(info.size);status->st_uid=getuid();status->st_gid=getgid();
+    const auto timestamp=static_cast<time_t>(info.modified_time?info.modified_time:session().mountedAt());
+    status->st_atime=timestamp;status->st_mtime=timestamp;status->st_ctime=timestamp;return 0;
 }
 int ez3fsReaddir(const char* path,void* buffer,fuse_fill_dir_t filler,off_t,struct fuse_file_info*,enum fuse_readdir_flags) {
     std::lock_guard<std::mutex> lock(session().mutex());std::vector<std::string> children;

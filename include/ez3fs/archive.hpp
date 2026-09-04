@@ -8,6 +8,7 @@ struct InputFile {
     std::string name;
     std::vector<std::uint8_t> bytes;
     bool directory = false;
+    std::uint64_t modified_time = 0;
 };
 struct ArchiveEntry {
     std::string name;
@@ -15,6 +16,7 @@ struct ArchiveEntry {
     std::uint64_t size = 0;
     std::uint32_t crc32 = 0;
     bool directory = false;
+    std::uint64_t modified_time = 0;
 };
 struct ArchiveImage {
     std::vector<std::uint8_t> bytes;
@@ -46,7 +48,7 @@ public:
     explicit ArchiveEditor(std::vector<InputFile> contents);
     bool createDirectory(const std::string& path, std::string& error);
     bool putFile(const std::string& path, std::vector<std::uint8_t> bytes,
-                 std::string& error);
+                 std::string& error, std::uint64_t modified_time = 0);
     bool removeFile(const std::string& path, std::string& error);
     bool removeDirectory(const std::string& path, std::string& error);
     const std::vector<InputFile>& contents() const noexcept { return contents_; }

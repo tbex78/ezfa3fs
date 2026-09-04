@@ -4,6 +4,7 @@
 #include "ez3fs/cartridge_programmer.hpp"
 #include "ez3fs/fuse_mount.hpp"
 #include "ez3fs/version.hpp"
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -20,7 +21,19 @@ bool writeFile(const fs::path& p,const std::uint8_t* d,std::size_t n) {
     std::ofstream out(p,std::ios::binary|std::ios::trunc); if(!out)return false;
     out.write(reinterpret_cast<const char*>(d),static_cast<std::streamsize>(n)); return out.good();
 }
-void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs card-info\n  ez3fs card-list\n  ez3fs card-verify\n  ez3fs card-extract OUTPUT_DIRECTORY\n  ez3fs card-write IMAGE.ez3fs\n  ez3fs card-mount MOUNTPOINT [--foreground]\n  ez3fs --version\n"; }
+bool pathOccupied(const fs::path& path,std::error_code& error) {
+    const auto status=fs::symlink_status(path,error);
+    return !error&&status.type()!=fs::file_type::not_found;
+}
+std::uint64_t fileModifiedTime(const fs::path& path) {
+    std::error_code error;const auto file_time=fs::last_write_time(path,error);
+    if(error)return 0;
+    const auto system_time=std::chrono::time_point_cast<std::chrono::seconds>(
+        file_time-fs::file_time_type::clock::now()+std::chrono::system_clock::now());
+    const auto seconds=system_time.time_since_epoch().count();
+    return seconds>0?static_cast<std::uint64_t>(seconds):0;
+}
+void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs card-info\n  ez3fs card-list\n  ez3fs card-verify\n  ez3fs card-extract OUTPUT_DIRECTORY\n  ez3fs card-pull OUTPUT.ez3fs\n  ez3fs card-write IMAGE.ez3fs\n  ez3fs card-mount MOUNTPOINT [--foreground]\n  ez3fs --version\n"; }
 bool loadArchive(const fs::path& p,ez3fs::Archive& a) {
     std::vector<std::uint8_t> b; if(!readFile(p,b)){std::cerr<<"Could not read image: "<<p<<'\n';return false;}
     std::string e; if(!a.open(std::move(b),e)){std::cerr<<e<<'\n';return false;} return true;
@@ -32,6 +45,7 @@ int createImage(int argc,char** argv) {
         const auto name=p.filename().generic_string();
         if(!names.insert(name).second){std::cerr<<"Duplicate archive filename: "<<name<<'\n';return 1;}
         ez3fs::InputFile f{name,{}}; if(!readFile(p,f.bytes)){std::cerr<<"Could not read input: "<<p<<'\n';return 1;}
+        f.modified_time=fileModifiedTime(p);
         files.push_back(std::move(f));
     }
     ez3fs::ArchiveImage image; std::string error;
@@ -91,6 +105,33 @@ int cardInfo() { return withCartridge([](const ez3fs::CartridgeStorage& storage,
 int cardList() { return withCartridge([](const ez3fs::CartridgeStorage&,const ez3fs::Archive& archive){printEntries(archive);return 0;}); }
 int cardVerify() { return withCartridge([](const ez3fs::CartridgeStorage&,const ez3fs::Archive& archive){return verifyArchive(archive);}); }
 int cardExtract(const fs::path& destination) { return withCartridge([&](const ez3fs::CartridgeStorage&,const ez3fs::Archive& archive){return extractArchive(archive,destination);}); }
+int cardPull(const fs::path& destination) {
+    std::error_code path_error;
+    if(pathOccupied(destination,path_error)||path_error){
+        std::cerr<<"Refusing to overwrite destination: "<<destination<<'\n';return 1;}
+    ez3fs::CartridgeStorage storage;ez3fs::Archive archive;
+    if(!loadCartridge(storage,archive))return 1;
+    std::string error;if(!archive.verify(error)){
+        std::cerr<<error<<'\n';std::string ignored;storage.close(ignored);return 1;}
+    if(!closeCartridge(storage))return 1;
+
+    fs::path temporary=destination;temporary += ".pull.tmp";
+    path_error.clear();
+    if(pathOccupied(destination,path_error)||path_error){
+        std::cerr<<"Destination or temporary output already exists; nothing was written.\n";return 1;}
+    path_error.clear();
+    if(pathOccupied(temporary,path_error)||path_error){
+        std::cerr<<"Destination or temporary output already exists; nothing was written.\n";return 1;}
+    if(!writeFile(temporary,archive.image().data(),archive.image().size())){
+        std::error_code cleanup_error;fs::remove(temporary,cleanup_error);
+        std::cerr<<"Could not write pulled image: "<<temporary<<'\n';return 1;}
+    fs::rename(temporary,destination,path_error);
+    if(path_error){
+        std::error_code cleanup_error;fs::remove(temporary,cleanup_error);
+        std::cerr<<"Could not finalize pulled image: "<<path_error.message()<<'\n';return 1;}
+    std::cout<<"Pulled and verified "<<archive.image().size()<<" bytes to "<<destination<<".\n";
+    return 0;
+}
 int cardWrite(const fs::path& path) {
     ez3fs::Archive archive;if(!loadArchive(path,archive))return 1;std::string error;
     if(!archive.verify(error)){std::cerr<<error<<'\n';return 1;}
@@ -153,7 +194,8 @@ int makeDirectory(const fs::path& image,const std::string& path) {
 int addFile(const fs::path& image,const fs::path& source,const std::string& destination) {
     if(!fs::is_regular_file(source)){std::cerr<<"Input is not a regular file: "<<source<<'\n';return 1;}
     std::vector<std::uint8_t> bytes;if(!readFile(source,bytes)){std::cerr<<"Could not read input: "<<source<<'\n';return 1;}
-    return editImage(image,[&](ez3fs::ArchiveEditor& editor,std::string& error){return editor.putFile(destination,std::move(bytes),error);});
+    const auto modified_time=fileModifiedTime(source);
+    return editImage(image,[&](ez3fs::ArchiveEditor& editor,std::string& error){return editor.putFile(destination,std::move(bytes),error,modified_time);});
 }
 int removeFile(const fs::path& image,const std::string& path) {
     return editImage(image,[&](ez3fs::ArchiveEditor& editor,std::string& error){return editor.removeFile(path,error);});
@@ -184,6 +226,7 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="card-list")return cardList();
     if(argc==2&&std::string(argv[1])=="card-verify")return cardVerify();
     if(argc==3&&std::string(argv[1])=="card-extract")return cardExtract(argv[2]);
+    if(argc==3&&std::string(argv[1])=="card-pull")return cardPull(argv[2]);
     if(argc==3&&std::string(argv[1])=="card-write")return cardWrite(argv[2]);
     if(argc>=2&&std::string(argv[1])=="card-mount")return cardMount(argc,argv);
     usage();return 1;

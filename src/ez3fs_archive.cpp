@@ -1,4 +1,5 @@
 #include "ez3fs/archive.hpp"
+#include "ez3fs/timestamp.hpp"
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -12,7 +13,7 @@ constexpr std::size_t header_size = 64;
 constexpr std::size_t entry_size = 288;
 constexpr std::size_t name_size = 256;
 constexpr std::uint32_t directory_flag = 1;
-constexpr std::uint16_t current_format_minor = 1;
+constexpr std::uint16_t current_format_minor = 2;
 
 template<typename T> void writeLe(std::vector<std::uint8_t>& b, std::size_t o, T v) {
     for (std::size_t i=0; i<sizeof(T); ++i) b[o+i]=static_cast<std::uint8_t>(v>>(i*8));
@@ -84,11 +85,12 @@ bool ImageBuilder::build(const std::vector<InputFile>& files, ArchiveImage& resu
         writeLe<std::uint64_t>(result.bytes,base+264,f.bytes.size());
         writeLe<std::uint32_t>(result.bytes,base+272,crc);
         writeLe<std::uint32_t>(result.bytes,base+276,f.directory?directory_flag:0u);
+        writeLe<std::uint64_t>(result.bytes,base+280,f.modified_time);
         if (!f.directory) {
             std::copy(f.bytes.begin(),f.bytes.end(),result.bytes.begin()+static_cast<std::ptrdiff_t>(file_offset));
             file_offset+=f.bytes.size();
         }
-        result.entries.push_back({f.name,offset,f.bytes.size(),crc,f.directory});
+        result.entries.push_back({f.name,offset,f.bytes.size(),crc,f.directory,f.modified_time});
     }
     writeLe<std::uint32_t>(result.bytes,48,Crc32::calculate(result.bytes.data()+header_size,index_bytes));
     writeLe<std::uint32_t>(result.bytes,52,0u);
@@ -127,13 +129,14 @@ bool Archive::open(std::vector<std::uint8_t> image, std::string& error) {
         const std::string name(image.begin()+base,terminator); const auto offset=readLe<std::uint64_t>(image,base+256);
         const auto size=readLe<std::uint64_t>(image,base+264); const auto crc=readLe<std::uint32_t>(image,base+272);
         const auto flags=readLe<std::uint32_t>(image,base+276); const bool directory=(flags&directory_flag)!=0;
+        const auto modified_time=format_minor>=2?readLe<std::uint64_t>(image,base+280):0;
         if (!validName(name)||!names.insert(name).second||flags>directory_flag||
             (format_minor==0&&flags!=0)||
             (directory&&(offset!=0||size!=0||crc!=0))||
             (!directory&&(offset<previous_end||offset>image_size||size>image_size-offset))) {
             error="invalid EZ3FS file entry"; return false;
         }
-        entries_.push_back({name,offset,size,crc,directory});
+        entries_.push_back({name,offset,size,crc,directory,modified_time});
         if (!directory) previous_end=offset+size;
     }
     image_=std::move(image); return true;
@@ -157,7 +160,7 @@ std::vector<InputFile> Archive::contents() const {
         if (!entry.directory)
             bytes.assign(image_.begin()+static_cast<std::ptrdiff_t>(entry.offset),
                          image_.begin()+static_cast<std::ptrdiff_t>(entry.offset+entry.size));
-        result.push_back({entry.name,std::move(bytes),entry.directory});
+        result.push_back({entry.name,std::move(bytes),entry.directory,entry.modified_time});
     }
     return result;
 }
@@ -179,18 +182,23 @@ bool ArchiveEditor::createDirectory(const std::string& path,std::string& error) 
     if (std::any_of(contents_.begin(),contents_.end(),[&](const InputFile& item){return item.name==path;})) {
         error="archive path already exists: "+path; return false;
     }
-    contents_.push_back({path,{},true}); error.clear(); return true;
+    contents_.push_back({path,{},true,currentUnixTimestamp()}); error.clear(); return true;
 }
 
-bool ArchiveEditor::putFile(const std::string& path,std::vector<std::uint8_t> bytes,std::string& error) {
+bool ArchiveEditor::putFile(const std::string& path,std::vector<std::uint8_t> bytes,
+                            std::string& error,std::uint64_t modified_time) {
     if (!validName(path)) { error="invalid file path: "+path; return false; }
     if (!parentExists(path)) { error="parent directory does not exist: "+path; return false; }
     auto found=std::find_if(contents_.begin(),contents_.end(),[&](const InputFile& item){return item.name==path;});
     if (found!=contents_.end()) {
         if (found->directory) { error="path is a directory: "+path; return false; }
-        found->bytes=std::move(bytes); error.clear(); return true;
+        found->bytes=std::move(bytes);
+        found->modified_time=modified_time?modified_time:currentUnixTimestamp();
+        error.clear(); return true;
     }
-    contents_.push_back({path,std::move(bytes),false}); error.clear(); return true;
+    contents_.push_back({path,std::move(bytes),false,
+                         modified_time?modified_time:currentUnixTimestamp()});
+    error.clear(); return true;
 }
 
 bool ArchiveEditor::removeFile(const std::string& path,std::string& error) {

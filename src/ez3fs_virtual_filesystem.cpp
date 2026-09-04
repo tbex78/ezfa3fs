@@ -1,4 +1,5 @@
 #include "ez3fs/virtual_filesystem.hpp"
+#include "ez3fs/timestamp.hpp"
 #include <algorithm>
 #include <cstring>
 #include <set>
@@ -20,15 +21,15 @@ bool VirtualFilesystem::parentExists(const std::string& path) const {
     const auto parent=find(key.substr(0,slash));return parent!=contents_.end()&&parent->directory;
 }
 bool VirtualFilesystem::lookup(const std::string& path,NodeInfo& info) const {
-    const auto key=normalize(path);if(key.empty()){info={true,0};return true;}const auto node=find(path);
+    const auto key=normalize(path);if(key.empty()){info={true,0,0};return true;}const auto node=find(path);
     if(node==contents_.end()) {
         const auto prefix=key+'/';
         if(std::any_of(contents_.begin(),contents_.end(),[&](const InputFile& item){return item.name.rfind(prefix,0)==0;})) {
-            info={true,0};return true;
+            info={true,0,0};return true;
         }
         return false;
     }
-    info={node->directory,node->bytes.size()};return true;
+    info={node->directory,node->bytes.size(),node->modified_time};return true;
 }
 bool VirtualFilesystem::list(const std::string& path,std::vector<std::string>& children) const {
     NodeInfo info;if(!lookup(path,info)||!info.directory)return false;children.clear();std::set<std::string> unique;
@@ -55,11 +56,13 @@ bool VirtualFilesystem::createFile(const std::string& path,std::string& error) {
 bool VirtualFilesystem::write(const std::string& path,std::size_t offset,const std::uint8_t* data,std::size_t size,std::string& error) {
     if(!writable_){error="filesystem is read-only";return false;}auto node=find(path);if(node==contents_.end()||node->directory){error="file does not exist";return false;}
     if(offset>ImageBuilder::cartridge_capacity||size>ImageBuilder::cartridge_capacity-offset){error="write exceeds capacity";return false;}
-    if(node->bytes.size()<offset+size)node->bytes.resize(offset+size,0);std::memcpy(node->bytes.data()+offset,data,size);dirty_=true;error.clear();return true;
+    if(node->bytes.size()<offset+size)node->bytes.resize(offset+size,0);std::memcpy(node->bytes.data()+offset,data,size);
+    node->modified_time=currentUnixTimestamp();dirty_=true;error.clear();return true;
 }
 bool VirtualFilesystem::truncate(const std::string& path,std::size_t size,std::string& error) {
     if(!writable_){error="filesystem is read-only";return false;}auto node=find(path);if(node==contents_.end()||node->directory){error="file does not exist";return false;}
-    if(size>ImageBuilder::cartridge_capacity){error="size exceeds capacity";return false;}node->bytes.resize(size,0);dirty_=true;error.clear();return true;
+    if(size>ImageBuilder::cartridge_capacity){error="size exceeds capacity";return false;}node->bytes.resize(size,0);
+    node->modified_time=currentUnixTimestamp();dirty_=true;error.clear();return true;
 }
 bool VirtualFilesystem::removeFile(const std::string& path,std::string& error) {
     if(!writable_){error="filesystem is read-only";return false;}ArchiveEditor editor(contents_);
