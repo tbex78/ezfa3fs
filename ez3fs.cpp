@@ -1,4 +1,6 @@
 #include "ez3fs/archive.hpp"
+#include "ez3fs/byte_storage.hpp"
+#include "ez3fs/cartridge_storage.hpp"
 #include "ez3fs/fuse_mount.hpp"
 #include "ez3fs/version.hpp"
 #include <filesystem>
@@ -17,7 +19,7 @@ bool writeFile(const fs::path& p,const std::uint8_t* d,std::size_t n) {
     std::ofstream out(p,std::ios::binary|std::ios::trunc); if(!out)return false;
     out.write(reinterpret_cast<const char*>(d),static_cast<std::streamsize>(n)); return out.good();
 }
-void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs --version\n"; }
+void usage() { std::cerr<<"Usage:\n  ez3fs create OUTPUT.ez3fs FILE...\n  ez3fs list IMAGE.ez3fs\n  ez3fs verify IMAGE.ez3fs\n  ez3fs extract IMAGE.ez3fs OUTPUT_DIRECTORY\n  ez3fs mkdir IMAGE.ez3fs DIRECTORY\n  ez3fs add IMAGE.ez3fs SOURCE_FILE DESTINATION\n  ez3fs rm IMAGE.ez3fs FILE\n  ez3fs rmdir IMAGE.ez3fs DIRECTORY\n  ez3fs mount IMAGE.ez3fs MOUNTPOINT [--writable] [--foreground]\n  ez3fs card-info\n  ez3fs card-list\n  ez3fs card-verify\n  ez3fs card-extract OUTPUT_DIRECTORY\n  ez3fs --version\n"; }
 bool loadArchive(const fs::path& p,ez3fs::Archive& a) {
     std::vector<std::uint8_t> b; if(!readFile(p,b)){std::cerr<<"Could not read image: "<<p<<'\n';return false;}
     std::string e; if(!a.open(std::move(b),e)){std::cerr<<e<<'\n';return false;} return true;
@@ -36,12 +38,15 @@ int createImage(int argc,char** argv) {
     if(!writeFile(argv[2],image.bytes.data(),image.bytes.size())){std::cerr<<"Could not write image: "<<argv[2]<<'\n';return 1;}
     std::cout<<"Created "<<argv[2]<<" with "<<image.entries.size()<<" entries, "<<image.bytes.size()<<" programmed bytes.\n"; return 0;
 }
-int listImage(const char* p) { ez3fs::Archive a;if(!loadArchive(p,a))return 1;
+void printEntries(const ez3fs::Archive& a) {
     std::cout<<"EZ3FS "<<a.entries().size()<<" entries\n";for(const auto& e:a.entries())
-        std::cout<<(e.directory?"directory ":"file      ")<<std::setw(10)<<e.size<<"  "<<e.name<<'\n';return 0; }
-int verifyImage(const char* p) { ez3fs::Archive a;if(!loadArchive(p,a))return 1;std::string e;
+        std::cout<<(e.directory?"directory ":"file      ")<<std::setw(10)<<e.size<<"  "<<e.name<<'\n';
+}
+int listImage(const char* p) { ez3fs::Archive a;if(!loadArchive(p,a))return 1;printEntries(a);return 0; }
+int verifyArchive(const ez3fs::Archive& a) { std::string e;
     if(!a.verify(e)){std::cerr<<e<<'\n';return 1;}std::cout<<"Verified "<<a.entries().size()<<" entries.\n";return 0; }
-int extractImage(const char* p,const fs::path& destination) { ez3fs::Archive a;if(!loadArchive(p,a))return 1;std::string error;
+int verifyImage(const char* p) { ez3fs::Archive a;if(!loadArchive(p,a))return 1;return verifyArchive(a); }
+int extractArchive(const ez3fs::Archive& a,const fs::path& destination) { std::string error;
     if(!a.verify(error)){std::cerr<<error<<'\n';return 1;}std::error_code ec;fs::create_directories(destination,ec);
     if(ec){std::cerr<<"Could not create output directory.\n";return 1;}
     for(const auto& e:a.entries()){const auto out=destination/fs::path(e.name);
@@ -50,6 +55,41 @@ int extractImage(const char* p,const fs::path& destination) { ez3fs::Archive a;i
         if(ec||fs::exists(out)||!writeFile(out,a.image().data()+e.offset,static_cast<std::size_t>(e.size))){std::cerr<<"Could not safely extract: "<<out<<'\n';return 1;}}
     std::cout<<"Extracted "<<a.entries().size()<<" entries.\n";return 0;
 }
+int extractImage(const char* p,const fs::path& destination) { ez3fs::Archive a;if(!loadArchive(p,a))return 1;return extractArchive(a,destination); }
+
+bool loadCartridge(ez3fs::CartridgeStorage& storage,ez3fs::Archive& archive) {
+    std::string error;
+    if(!storage.open(error)){std::cerr<<error<<'\n';return false;}
+    if(!ez3fs::ArchiveLoader{}.load(storage,archive,error)){
+        std::cerr<<error<<'\n';std::string close_error;
+        if(!storage.close(close_error))std::cerr<<"Warning: "<<close_error<<'\n';
+        return false;
+    }
+    return true;
+}
+bool closeCartridge(ez3fs::CartridgeStorage& storage) {
+    std::string error;if(storage.close(error))return true;
+    std::cerr<<"Could not finish cartridge read session: "<<error<<'\n';return false;
+}
+template<typename Action> int withCartridge(Action action) {
+    ez3fs::CartridgeStorage storage;ez3fs::Archive archive;
+    if(!loadCartridge(storage,archive))return 1;
+    const int result=action(storage,archive);
+    return closeCartridge(storage)?result:1;
+}
+int cardInfo() { return withCartridge([](const ez3fs::CartridgeStorage& storage,const ez3fs::Archive& archive){
+    const auto id=storage.flashId();
+    std::cout<<"EZ3 flash ID "<<std::hex<<std::setfill('0')
+             <<std::setw(2)<<static_cast<unsigned>(id[0])<<' '
+             <<std::setw(2)<<static_cast<unsigned>(id[1])<<' '
+             <<std::setw(2)<<static_cast<unsigned>(id[2])<<' '
+             <<std::setw(2)<<static_cast<unsigned>(id[3])<<std::dec<<'\n'
+             <<"EZ3FS image bytes "<<archive.image().size()<<'\n'
+             <<"Entries "<<archive.entries().size()<<'\n';return 0;
+}); }
+int cardList() { return withCartridge([](const ez3fs::CartridgeStorage&,const ez3fs::Archive& archive){printEntries(archive);return 0;}); }
+int cardVerify() { return withCartridge([](const ez3fs::CartridgeStorage&,const ez3fs::Archive& archive){return verifyArchive(archive);}); }
+int cardExtract(const fs::path& destination) { return withCartridge([&](const ez3fs::CartridgeStorage&,const ez3fs::Archive& archive){return extractArchive(archive,destination);}); }
 
 bool replaceImage(const fs::path& path,const std::vector<ez3fs::InputFile>& contents) {
     ez3fs::ArchiveImage image;std::string error;
@@ -114,5 +154,9 @@ int main(int argc,char** argv) {
     if(argc==4&&std::string(argv[1])=="rm")return removeFile(argv[2],argv[3]);
     if(argc==4&&std::string(argv[1])=="rmdir")return removeDirectory(argv[2],argv[3]);
     if(argc>=2&&std::string(argv[1])=="mount")return mountFilesystem(argc,argv);
+    if(argc==2&&std::string(argv[1])=="card-info")return cardInfo();
+    if(argc==2&&std::string(argv[1])=="card-list")return cardList();
+    if(argc==2&&std::string(argv[1])=="card-verify")return cardVerify();
+    if(argc==3&&std::string(argv[1])=="card-extract")return cardExtract(argv[2]);
     usage();return 1;
 }

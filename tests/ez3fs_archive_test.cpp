@@ -1,15 +1,33 @@
 #include "ez3fs/archive.hpp"
+#include "ez3fs/byte_storage.hpp"
 #include "ez3fs/version.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <string>
-namespace { void require(bool condition) { if(!condition) std::abort(); } }
+namespace {
+void require(bool condition) { if(!condition) std::abort(); }
+class MemoryStorage final : public ez3fs::ByteStorage {
+public:
+    explicit MemoryStorage(const std::vector<std::uint8_t>& bytes):bytes_(bytes) {}
+    std::uint64_t capacity() const noexcept override { return bytes_.size(); }
+    bool read(std::uint64_t offset,std::uint8_t* destination,std::size_t size,
+              std::string& error) override {
+        if(offset>bytes_.size()||size>bytes_.size()-offset){error="out of bounds";return false;}
+        std::copy_n(bytes_.data()+static_cast<std::size_t>(offset),size,destination);
+        error.clear();return true;
+    }
+private:
+    const std::vector<std::uint8_t>& bytes_;
+};
+}
 int main() {
-    require(ez3fs::project_version=="0.3.2");
+    require(ez3fs::project_version=="0.4.0");
     const std::vector<ez3fs::InputFile> files{{"hello.txt",{'h','e','l','l','o'}},{"folder/data.bin",{0,0x7F,0xFF}}};
     ez3fs::ArchiveImage image;std::string error;require(ez3fs::ImageBuilder{}.build(files,image,error));
     require(error.empty());require(image.bytes.size()==0x20000);
     ez3fs::Archive archive;require(archive.open(image.bytes,error));require(archive.entries().size()==2);require(archive.verify(error));
+    MemoryStorage storage(image.bytes);ez3fs::Archive loaded;
+    require(ez3fs::ArchiveLoader{}.load(storage,loaded,error));require(loaded.verify(error));
     const std::vector<std::uint8_t> expected_magic{'E','Z','3','F','S','\r','\n',0x1A};
     require(std::equal(expected_magic.begin(),expected_magic.end(),image.bytes.begin()));
     auto legacy=image.bytes;
