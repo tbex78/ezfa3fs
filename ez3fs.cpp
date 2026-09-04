@@ -300,6 +300,12 @@ int liveGet(const fs::path& image,const std::string& source,const fs::path& outp
     if(!filesystem.readFile(source,bytes,error)||!writeFile(output,bytes.data(),bytes.size())){if(error.empty())error="could not write output file";std::cerr<<error<<'\n';return 1;}return 0; }
 int liveRemove(const fs::path& image,const std::string& path,bool directory) { ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;
     if(!(directory?filesystem.removeDirectory(path,error):filesystem.removeFile(path,error))||!flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}return 0; }
+int liveCardPull(const fs::path& image) { ez3fs::CartridgeStorage storage;std::string error;
+    if(!storage.open(error)){std::cerr<<error<<'\n';return 1;} ez3fs::live::NorFlash flash;
+    const bool loaded=flash.load(storage,error);std::string close_error;const bool closed=storage.close(close_error);
+    if(!loaded||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;} ez3fs::live::Filesystem filesystem(flash);
+    if(!ez3fs::live::Filesystem::open(flash,filesystem,error)||!filesystem.verify(error)||!flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}
+    std::cout<<"Pulled and verified EZ3FS-LIVE generation "<<filesystem.generation()<<" to "<<image<<".\n";return 0; }
 int mountFilesystem(int argc,char** argv) {
     if(argc<4||argc>6){usage();return 1;}bool writable=false,foreground=false;
     for(int i=4;i<argc;++i){const std::string option(argv[i]);
@@ -337,5 +343,6 @@ int main(int argc,char** argv) {
     if(argc==5&&std::string(argv[1])=="live-get")return liveGet(argv[2],argv[3],argv[4]);
     if(argc==4&&std::string(argv[1])=="live-rm")return liveRemove(argv[2],argv[3],false);
     if(argc==4&&std::string(argv[1])=="live-rmdir")return liveRemove(argv[2],argv[3],true);
+    if(argc==3&&std::string(argv[1])=="live-card-pull")return liveCardPull(argv[2]);
     usage();return 1;
 }

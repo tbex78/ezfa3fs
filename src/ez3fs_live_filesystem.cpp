@@ -42,6 +42,13 @@ bool NorFlash::load(const std::string& path,std::string& error) {
     bytes_=std::move(bytes);error.clear();return true;
 }
 
+bool NorFlash::load(ByteStorage& storage,std::string& error) {
+    if(storage.capacity()!=capacity){error="storage capacity is not 32 MiB";return false;}
+    std::vector<std::uint8_t> bytes(capacity);
+    if(!storage.read(0,bytes.data(),bytes.size(),error))return false;
+    bytes_=std::move(bytes);error.clear();return true;
+}
+
 bool NorFlash::save(const std::string& path,std::string& error) const {
     std::ofstream output(path,std::ios::binary|std::ios::trunc);
     if(!output){error="could not open live image for writing: "+path;return false;}

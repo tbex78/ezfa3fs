@@ -91,6 +91,13 @@ bool hasEz3fsMagic(const std::uint8_t* bytes) noexcept
            std::equal(legacy.begin(),legacy.end(),bytes);
 }
 
+bool hasEz3fsLiveMagic(const std::uint8_t* bytes) noexcept
+{
+    static constexpr std::array<std::uint8_t,8> magic =
+        {{'E','Z','3','L','I','V','E',0}};
+    return std::equal(magic.begin(),magic.end(),bytes);
+}
+
 std::string formatFlashId(const std::array<std::uint8_t,4>& id)
 {
     std::ostringstream output;
@@ -226,7 +233,10 @@ bool CartridgeStorage::Impl::initialize(std::string& error, bool allow_erased)
         if (!rawRead(0,header.data(),header.size(),error)) return false;
         const bool erased = std::all_of(header.begin(),header.end(),
             [](std::uint8_t byte){return byte==0xFF;});
-        if (!hasEz3fsMagic(header.data()) && !(allow_erased && erased)) {
+        std::array<std::uint8_t,8> live_header{};
+        if (!hasEz3fsLiveMagic(header.data()) && !rawRead(0x10000u,live_header.data(),live_header.size(),error)) return false;
+        if (!hasEz3fsMagic(header.data()) && !hasEz3fsLiveMagic(header.data()) &&
+            !hasEz3fsLiveMagic(live_header.data()) && !(allow_erased && erased)) {
             error = "unsupported cartridge flash identifier: " +
                     formatFlashId(flash_id) +
                     "; no EZ3FS image found at offset 0";
