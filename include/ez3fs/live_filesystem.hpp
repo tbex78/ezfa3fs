@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <iosfwd>
 
 namespace ez3fs::live {
 
@@ -24,6 +25,7 @@ public:
     bool load(const std::string& path,std::string& error);
     bool load(const std::vector<std::uint8_t>& bytes,std::string& error);
     bool load(ByteStorage& storage,std::string& error);
+    bool load(ByteStorage& storage,std::ostream& progress,std::string& error);
     bool save(const std::string& path,std::string& error) const;
     bool read(std::size_t offset,std::uint8_t* destination,std::size_t size,
               std::string& error) const;

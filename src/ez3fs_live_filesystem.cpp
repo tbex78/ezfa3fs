@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <limits>
 #include <set>
@@ -48,9 +49,18 @@ bool NorFlash::load(const std::vector<std::uint8_t>& bytes,std::string& error) {
 }
 
 bool NorFlash::load(ByteStorage& storage,std::string& error) {
+    return load(storage,std::cerr,error);
+}
+
+bool NorFlash::load(ByteStorage& storage,std::ostream& progress,std::string& error) {
     if(storage.capacity()!=capacity){error="storage capacity is not 32 MiB";return false;}
     std::vector<std::uint8_t> bytes(capacity);
-    if(!storage.read(0,bytes.data(),bytes.size(),error))return false;
+    progress<<"Reading EZ3FS-LIVE cartridge: 0%"<<std::flush;
+    for(std::size_t offset=0;offset<capacity;offset+=block_size) {
+        if(!storage.read(offset,bytes.data()+offset,block_size,error))return false;
+        progress<<"\rReading EZ3FS-LIVE cartridge: "<<((offset+block_size)*100/capacity)<<"%"<<std::flush;
+    }
+    progress<<"\n";
     bytes_=std::move(bytes);error.clear();return true;
 }
 
