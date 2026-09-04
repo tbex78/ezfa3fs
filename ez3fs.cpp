@@ -3,6 +3,7 @@
 #include "ez3fs/recovery_snapshot.hpp"
 #include "ez3fs/byte_storage.hpp"
 #include "ez3fs/cartridge_storage.hpp"
+#include "ez3fs/cartridge_live_device.hpp"
 #include "ez3fs/cartridge_programmer.hpp"
 #include "ez3fs/fuse_mount.hpp"
 #include "ez3fs/new_image_file.hpp"
@@ -56,12 +57,14 @@ void usage() {
   ez3fs live-rm IMAGE.ez3live FILE
   ez3fs live-rmdir IMAGE.ez3live DIRECTORY
   ez3fs live-gc IMAGE.ez3live
+  ez3fs live-space IMAGE.ez3live
   ez3fs live-mount IMAGE.ez3live MOUNTPOINT [--foreground]
   ez3fs live-card-mount MOUNTPOINT [--foreground]
   ez3fs live-card-mount MOUNTPOINT --writable --foreground
   ez3fs live-card-pull IMAGE.ez3live
   ez3fs live-card-write IMAGE.ez3live
   ez3fs live-card-gc
+  ez3fs live-card-space
   ez3fs live-card-read-block BLOCK OUTPUT.bin
   ez3fs live-card-erase-plan BLOCK
   ez3fs live-card-erase-block BLOCK
@@ -378,6 +381,48 @@ int liveGarbageCollect(const fs::path& image) {
     }
     std::cout<<"Reclaimed "<<reclaimed<<" EZ3FS-LIVE block(s) in "<<image<<".\n";return 0;
 }
+void printLiveSpace(const ez3fs::live::Filesystem& filesystem,
+                    const ez3fs::live::SpaceReport& report) {
+    constexpr std::size_t kib_per_block=ez3fs::live::NorFlash::block_size/1024;
+    const auto available=report.erased_blocks+report.reclaimable_blocks;
+    std::cout<<"EZ3FS-LIVE generation "<<filesystem.generation()<<" space report\n"
+             <<"Active data blocks:             "<<report.active_blocks<<'\n'
+             <<"Erased reusable blocks:         "<<report.erased_blocks<<'\n'
+             <<"Unreferenced programmed blocks: "<<report.reclaimable_blocks<<'\n'
+             <<"Total potentially available:    "<<available<<'\n'
+             <<"Largest erased extent:          "<<report.largest_erased_extent
+             <<" blocks ("<<report.largest_erased_extent*kib_per_block<<" KiB)\n"
+             <<"Largest extent after GC:         "<<report.largest_post_gc_extent
+             <<" blocks ("<<report.largest_post_gc_extent*kib_per_block<<" KiB)\n"
+             <<"Garbage collection recommended: "<<(report.reclaimable_blocks?"yes":"no")<<'\n'
+             <<"Active-data fragmentation:      "
+             <<(report.largest_post_gc_extent<available?"yes":"no")<<'\n';
+}
+int liveSpace(const fs::path& image) {
+    ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);
+    if(!loadLive(image,flash,filesystem))return 1;std::string error;ez3fs::live::SpaceReport report;
+    if(!filesystem.inspectSpace(report,error)){std::cerr<<error<<'\n';return 1;}
+    printLiveSpace(filesystem,report);return 0;
+}
+int liveCardSpace() {
+    ez3fs::CartridgeStorage storage;std::string error;
+    if(!storage.open(error)){std::cerr<<error<<'\n';return 1;}
+    ez3fs::CartridgeLiveDevice device(storage);ez3fs::live::Filesystem filesystem(device);
+    if(!ez3fs::live::Filesystem::open(device,filesystem,error)){
+        std::string ignored;storage.close(ignored);std::cerr<<error<<'\n';return 1;
+    }
+    unsigned displayed=101;
+    const auto progress=[&displayed](std::size_t completed,std::size_t total) {
+        const auto percent=total==0?100u:static_cast<unsigned>(completed*100/total);
+        if(percent==displayed)return;displayed=percent;
+        std::cerr<<"\rInspecting EZ3FS-LIVE space: "<<percent<<'%'<<std::flush;
+        if(completed==total)std::cerr<<'\n';
+    };
+    ez3fs::live::SpaceReport report;const bool inspected=filesystem.inspectSpace(report,error,progress);
+    std::string close_error;const bool closed=storage.close(close_error);
+    if(!inspected||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;}
+    printLiveSpace(filesystem,report);return 0;
+}
 int liveCardGarbageCollect() {
     std::cout<<"WARNING: this will erase unreferenced EZ3FS-LIVE data blocks on the cartridge.\n"
              <<"Unmount the cartridge before continuing.\n";
@@ -501,6 +546,7 @@ int main(int argc,char** argv) {
     if(argc==4&&std::string(argv[1])=="live-rm")return liveRemove(argv[2],argv[3],false);
     if(argc==4&&std::string(argv[1])=="live-rmdir")return liveRemove(argv[2],argv[3],true);
     if(argc==3&&std::string(argv[1])=="live-gc")return liveGarbageCollect(argv[2]);
+    if(argc==3&&std::string(argv[1])=="live-space")return liveSpace(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-card-pull")return liveCardPull(argv[2]);
     if(argc==4&&std::string(argv[1])=="live-card-read-block")return liveCardReadBlock(argv[2],argv[3]);
     if(argc==3&&std::string(argv[1])=="live-card-erase-plan")return liveCardErasePlan(argv[2]);
@@ -508,5 +554,6 @@ int main(int argc,char** argv) {
     if(argc==4&&std::string(argv[1])=="live-card-program-block")return liveCardProgramBlock(argv[2],argv[3]);
     if(argc==3&&std::string(argv[1])=="live-card-write")return liveCardWrite(argv[2]);
     if(argc==2&&std::string(argv[1])=="live-card-gc")return liveCardGarbageCollect();
+    if(argc==2&&std::string(argv[1])=="live-card-space")return liveCardSpace();
     usage();return 1;
 }

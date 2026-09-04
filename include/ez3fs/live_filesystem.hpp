@@ -58,6 +58,14 @@ struct Entry final {
     bool directory = false;
 };
 
+struct SpaceReport final {
+    std::size_t active_blocks = 0;
+    std::size_t erased_blocks = 0;
+    std::size_t reclaimable_blocks = 0;
+    std::size_t largest_erased_extent = 0;
+    std::size_t largest_post_gc_extent = 0;
+};
+
 class Filesystem final {
 public:
     using ScanProgress = std::function<void(std::size_t,std::size_t)>;
@@ -80,6 +88,8 @@ public:
     bool verify(std::string& error) const;
     bool collectGarbage(std::size_t& reclaimed_blocks,std::string& error,
                         ScanProgress progress = {});
+    bool inspectSpace(SpaceReport& report,std::string& error,
+                      ScanProgress progress = {}) const;
     const std::vector<Entry>& entries() const noexcept { return entries_; }
     std::uint64_t generation() const noexcept { return generation_; }
     std::size_t freeBlocks() const noexcept;

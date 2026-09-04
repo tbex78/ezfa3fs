@@ -73,6 +73,15 @@ int main()
     const auto recovered=std::find_if(reopened.entries().begin(),reopened.entries().end(),
         [](const ez3fs::live::Entry& entry){return entry.name=="docs/recovered.txt";});
     require(recovered!=reopened.entries().end()&&recovered->first_block==7);
+    ez3fs::live::SpaceReport space;std::size_t inspected=0,inspection_total=0;
+    require(reopened.inspectSpace(space,error,
+        [&](std::size_t completed,std::size_t total){inspected=completed;inspection_total=total;}));
+    require(space.active_blocks==4);
+    require(space.erased_blocks==504);
+    require(space.reclaimable_blocks==2);
+    require(space.largest_erased_extent==504);
+    require(space.largest_post_gc_extent==504);
+    require(inspected==510&&inspection_total==510);
     std::size_t reclaimed=0,progress_completed=0,progress_total=0;
     require(reopened.collectGarbage(reclaimed,error,
         [&](std::size_t completed,std::size_t total){progress_completed=completed;progress_total=total;}));

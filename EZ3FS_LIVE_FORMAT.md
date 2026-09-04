@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.32.1`.
+`0.33.0`.
 
 ## Geometry and layout
 
@@ -130,6 +130,12 @@ flash erase directly after a read transaction.
 interrupted write are removed from that estimate when allocation probes them
 or when garbage collection scans the complete data area.
 
+`live-space` and `live-card-space` perform a read-only data-area scan. Their
+report distinguishes active extents, erased reusable blocks, and unreferenced
+programmed blocks; it also reports the largest contiguous erased extent before
+and after garbage collection. A smaller post-GC extent than total available
+space indicates fragmentation caused by active file placement.
+
 ## Local image commands
 
 ```sh
@@ -143,6 +149,7 @@ or when garbage collection scans the complete data area.
 ./build/cmake/ez3fs live-rm cartridge.ez3live documents/README.md
 ./build/cmake/ez3fs live-rmdir cartridge.ez3live documents
 ./build/cmake/ez3fs live-gc cartridge.ez3live
+./build/cmake/ez3fs live-space cartridge.ez3live
 ```
 
 `live-format` creates an exact 32-MiB image. Mutating image commands persist a
@@ -170,6 +177,7 @@ cartridge:
 ```sh
 ./build/cmake/ez3fs live-card-write cartridge.ez3live
 ./build/cmake/ez3fs live-card-gc
+./build/cmake/ez3fs live-card-space
 ```
 
 `live-card-write` validates the image before asking for yes/no confirmation.

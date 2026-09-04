@@ -190,6 +190,34 @@ std::size_t Filesystem::freeBlocks() const noexcept {
     return count;
 }
 
+bool Filesystem::inspectSpace(SpaceReport& report,std::string& error,
+                              ScanProgress progress) const {
+    report={};constexpr std::size_t first_data_block=2;
+    constexpr std::size_t total=NorFlash::block_count-first_data_block;
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);
+    std::size_t erased_run=0,post_gc_run=0;
+    if(progress)progress(0,total);
+    for(std::size_t block=first_data_block;block<NorFlash::block_count;++block) {
+        if(blockReferenced(block)) {
+            ++report.active_blocks;erased_run=0;post_gc_run=0;
+        } else {
+            ++post_gc_run;report.largest_post_gc_extent=std::max(report.largest_post_gc_extent,post_gc_run);
+            if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
+                error="could not inspect live space block "+std::to_string(block)+": "+error;return false;
+            }
+            const bool blank=std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;});
+            if(blank) {
+                ++report.erased_blocks;++erased_run;
+                report.largest_erased_extent=std::max(report.largest_erased_extent,erased_run);
+            } else {
+                ++report.reclaimable_blocks;erased_run=0;
+            }
+        }
+        if(progress)progress(block-first_data_block+1,total);
+    }
+    error.clear();return true;
+}
+
 bool Filesystem::findBlankExtent(std::size_t block_count,
                                  std::size_t& first_block,
                                  std::string& error) {
