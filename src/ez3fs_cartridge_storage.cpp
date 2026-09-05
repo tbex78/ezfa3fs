@@ -83,6 +83,11 @@ private:
     bool tx92(std::uint8_t first, std::uint8_t second, std::string& error,
               std::uint32_t word_address = 0);
     bool selectSaveBank(std::uint16_t selector,std::string& error);
+    bool readSaveBank(std::uint16_t selector,
+                      std::vector<std::uint8_t>& bytes,std::string& error);
+    bool writeSaveBank(std::uint16_t selector,
+                       const std::vector<std::uint8_t>& bytes,
+                       std::string& error);
     bool readSaveBanks(std::vector<std::uint8_t>& bytes,std::string& error);
     bool captureSaveBanks(std::string& error);
     bool restoreSaveBanks(std::string& error);
@@ -267,18 +272,46 @@ bool CartridgeStorage::Impl::selectSaveBank(std::uint16_t selector,
            tx92(0,0,error)&&tx92(0,0,error);
 }
 
+bool CartridgeStorage::Impl::readSaveBank(
+    std::uint16_t selector,std::vector<std::uint8_t>& bytes,
+    std::string& error)
+{
+    const std::vector<std::uint8_t> command=
+        {0x5A,0xA5,0x91,0x01,0,0,0,0,0,0x80,0,0,0};
+    return selectSaveBank(selector,error)&&out(command,error)&&
+           in(bytes,save_bank_size,error);
+}
+
+bool CartridgeStorage::Impl::writeSaveBank(
+    std::uint16_t selector,const std::vector<std::uint8_t>& bytes,
+    std::string& error)
+{
+    if(bytes.size()!=save_bank_size) {
+        error="save-bank restore requires exactly 32 KiB";
+        return false;
+    }
+    const std::vector<std::uint8_t> command=
+        {0x5A,0xA5,0x92,0x01,0,0,0,0,0,0x80,0,0,0};
+    if(!selectSaveBank(selector,error)||!out(command,error)||
+       !out(bytes,error))return false;
+    std::vector<std::uint8_t> echo;
+    if(!in(echo,command.size(),error))return false;
+    if(echo!=command) {
+        error="cartridge save-bank restore command echo mismatch";
+        return false;
+    }
+    return true;
+}
+
 bool CartridgeStorage::Impl::readSaveBanks(std::vector<std::uint8_t>& bytes,
                                             std::string& error)
 {
     bytes.clear();
     bytes.reserve(save_bank_count*save_bank_size);
-    const std::vector<std::uint8_t> command=
-        {0x5A,0xA5,0x91,0x01,0,0,0,0,0,0x80,0,0,0};
     for(std::size_t bank=0;bank<save_bank_count;++bank) {
         const auto selector=static_cast<std::uint16_t>(0x0900u+bank*0x10u);
-        if(!selectSaveBank(selector,error)||!out(command,error))return false;
         std::vector<std::uint8_t> contents;
-        if(!in(contents,save_bank_size,error))return false;
+        if(!readSaveBank(selector,contents,error))return false;
         bytes.insert(bytes.end(),contents.begin(),contents.end());
     }
     return true;
@@ -302,33 +335,43 @@ bool CartridgeStorage::Impl::restoreSaveBanks(std::string& error)
         error="cartridge save banks were modified without a valid backup";
         return false;
     }
-    const std::vector<std::uint8_t> command=
-        {0x5A,0xA5,0x92,0x01,0,0,0,0,0,0x80,0,0,0};
     for(std::size_t bank=0;bank<save_bank_count;++bank) {
         const auto selector=static_cast<std::uint16_t>(0x0900u+bank*0x10u);
         const auto first=save_backup.begin()+
             static_cast<std::ptrdiff_t>(bank*save_bank_size);
         const std::vector<std::uint8_t> contents(first,first+save_bank_size);
-        if(!selectSaveBank(selector,error)||!out(command,error))return false;
-        preciseCommandDataDelay();
-        if(!out(contents,error))return false;
-        std::vector<std::uint8_t> echo;
-        if(!in(echo,command.size(),error))return false;
-        if(echo!=command) {
-            error="cartridge save-bank restore command echo mismatch";
+        bool restored=false;
+        std::string last_error;
+        for(unsigned attempt=1;attempt<=3&&!restored;++attempt) {
+            std::vector<std::uint8_t> readback;
+            restored=writeSaveBank(selector,contents,last_error)&&
+                     readSaveBank(selector,readback,last_error)&&
+                     readback==contents;
+            if(!restored&&readback.size()==contents.size()) {
+                const auto mismatch=std::mismatch(readback.begin(),
+                                                  readback.end(),
+                                                  contents.begin());
+                if(mismatch.first!=readback.end()) {
+                    std::ostringstream detail;
+                    detail<<"save-bank readback differs at byte 0x"<<std::hex
+                          <<static_cast<std::size_t>(mismatch.first-
+                                                    readback.begin())
+                          <<" (read 0x"<<static_cast<unsigned>(*mismatch.first)
+                          <<", expected 0x"
+                          <<static_cast<unsigned>(*mismatch.second)<<')';
+                    last_error=detail.str();
+                }
+            }
+            if(!restored&&attempt<3)
+                std::cerr<<"Retrying save-bank restore for bank "<<(bank+1)
+                         <<" (attempt "<<(attempt+1)<<"/3): "
+                         <<last_error<<'\n';
+        }
+        if(!restored) {
+            error="could not restore save bank "+std::to_string(bank+1)+
+                  ": "+last_error;
             return false;
         }
-    }
-    std::vector<std::uint8_t> readback;
-    if(!readSaveBanks(readback,error))return false;
-    if(readback!=save_backup) {
-        const auto mismatch=std::mismatch(readback.begin(),readback.end(),
-                                          save_backup.begin());
-        std::ostringstream detail;
-        detail<<"cartridge save-bank restore differs at byte 0x"<<std::hex
-              <<static_cast<std::size_t>(mismatch.first-readback.begin());
-        error=detail.str();
-        return false;
     }
     save_dirty=false;
     save_backup.clear();
