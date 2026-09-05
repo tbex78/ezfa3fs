@@ -5,6 +5,7 @@ build/
 documents/
 experiments/
 misc/
+mountpoint/
 notes/
 pcap/
 
@@ -15,4 +16,5 @@ pcap/
 *.ez3fs.bak
 *.ez3fs.fuse.tmp
 *.ez3live*
+*.ezfa3fs
 .DS_Store
