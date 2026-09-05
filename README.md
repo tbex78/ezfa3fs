@@ -1,350 +1,199 @@
 # EZ3FS
 
-EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
-NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
-FAT partition, or ROM-patching workflow.
+EZ3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartridge. It does not use the original EZ3 menu, loader, ROM patching, FAT32, or a partition table.
 
-Application version: **0.45.10**.
+The project provides two programs:
 
-`ez3fs` manages the live filesystem. `ezfs-legacy` preserves the packed-image
-workflow. Two incompatible formats are supported:
+- `ez3fs` manages the current transactional **EZFA3FS** format.
+- `ezfs-legacy` preserves the earlier packed **EZ3FS** image and staging workflow.
 
-| Format | Purpose | Cartridge updates |
-|---|---|---|
-| EZ3FS 1.2 (`.ez3fs`) | Compact indexed archive | Complete cartridge rewrite |
-| EZFA3FS 2.0.0 (`.ezfa3fs`) | Transactional copy-on-write filesystem | Individual 64-KiB block transactions |
+Application version: **0.45.10**. EZFA3FS is format **2.0.0** in its standard layout and **2.1.0** in its slotted direct-boot layout. Legacy EZ3FS remains format **1.2**.
 
-See [EZ3FS_FORMAT.md](EZ3FS_FORMAT.md) and
-[EZFA3FS_FORMAT.md](EZFA3FS_FORMAT.md) for their binary layouts and
-consistency rules.
-
-## Project status
-
-The following operations have been tested on a physical cartridge:
-
-- Complete EZ3FS and EZFA3FS programming with byte-for-byte verification.
-- Reading, erasing, programming, and verifying individual cartridge blocks.
-- Reading and mounting cartridge contents through FUSE/macFUSE.
-- Direct writable EZFA3FS mounting from the command line and Finder.
-- Creating, replacing, reading, and deleting files.
-- Creating, traversing, renaming, and deleting directories.
-- Recovery from transient USB endpoint stalls and erase/program readback
-  mismatches through bounded verified retries.
-
-Direct writable mounting buffers FUSE write chunks until the file is closed,
-uses
-range-based reads, and verifies successful data-block transactions without
-reconnecting. Metadata verification and USB-error recovery still reopen the
-device when required. Every programmed or erased block retains readback
-verification.
-
-EZFA3FS garbage collection can reclaim unreferenced blocks left by file
-replacement, deletion, or interrupted writes. Active extents and both
-metadata superblocks are never erased by the collector.
-
-Unix permission bits are not part of either image format. FUSE exposes fixed
-`0755` directory and `0644` file modes; `chmod` on a writable mount is
-accepted as a compatibility no-op so standard copy tools can complete. On
-macOS, Finder's combined attribute and BSD-flag updates receive the same
-fixed-metadata treatment and do not cause extra cartridge writes.
+The macOS/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
 ## Build
 
-The project requires a C++17 compiler and CMake 3.20 or newer. FUSE 3 and
-libusb support are enabled automatically when their `pkg-config` packages are
-available.
+Requirements are CMake, a C++17 compiler, libusb-1.0, and macFUSE when mount support is wanted.
 
 ```sh
-cmake -S . -B build/cmake -DCMAKE_BUILD_TYPE=Release
-cmake --build build/cmake --parallel
+cmake -S . -B build/cmake
+cmake --build build/cmake
 ctest --test-dir build/cmake --output-on-failure
 ```
 
-The build produces the EZFA3FS tool and the separate packed-image legacy
-tool:
+The binaries are `build/cmake/ez3fs` and `build/cmake/ezfs-legacy`.
 
-```sh
-./build/cmake/ez3fs --version
-./build/cmake/ezfs-legacy --version
-```
-
-A direct Make build is also available:
-
-```sh
-make
-./ez3fs --version
-./ezfs-legacy --version
-```
-
-Commands that do not need FUSE or USB remain available when those optional
-dependencies are absent.
-
-## Legacy packed EZ3FS images
-
-`ezfs-legacy` owns the original packed `.ez3fs` workflow. It intentionally
-exposes only archive creation, inspection, extraction, directory creation,
-file add/remove, and the packed-cartridge commands below.
-
-```sh
-./build/cmake/ezfs-legacy create cartridge.ez3fs
-./build/cmake/ezfs-legacy mkdir cartridge.ez3fs documents
-./build/cmake/ezfs-legacy add cartridge.ez3fs local.txt documents/local.txt
-./build/cmake/ezfs-legacy list cartridge.ez3fs
-./build/cmake/ezfs-legacy verify cartridge.ez3fs
-./build/cmake/ezfs-legacy extract cartridge.ez3fs output
-./build/cmake/ezfs-legacy rm cartridge.ez3fs documents/local.txt
-```
-
-## Legacy packed EZ3FS on a cartridge
-
-Read-only cartridge commands do not erase or program flash:
-
-```sh
-./build/cmake/ezfs-legacy card-info
-./build/cmake/ezfs-legacy card-list
-./build/cmake/ezfs-legacy card-verify
-./build/cmake/ezfs-legacy card-extract output
-./build/cmake/ezfs-legacy card-pull cartridge-backup.ez3fs
-./build/cmake/ezfs-legacy card-mount mountpoint
-```
-
-`card-pull` verifies the archive and refuses to overwrite an existing output
-path. A read-only cartridge mount loads and verifies the image, closes the USB
-session, and then exposes the in-memory contents through FUSE.
-
-Program a packed image only when a complete cartridge replacement is intended:
-
-```sh
-./build/cmake/ezfs-legacy card-write cartridge.ez3fs
-```
-
-The image is validated before USB programming begins. The command displays a
-warning, asks for yes/no confirmation, erases the complete cartridge, programs
-the image at offset zero, and verifies every byte.
-
-### Staged writable cartridge workflow
-
-Packed EZ3FS does not support live block updates. Its writable cartridge
-workflow therefore copies the cartridge into a local staging image:
-
-```sh
-./build/cmake/ezfs-legacy card-mount mountpoint \
-  --writable working.ez3fs --foreground
-```
-
-The cartridge is unchanged while mounted. Inspect or commit the staging image
-after unmounting:
-
-```sh
-./build/cmake/ezfs-legacy card-status working.ez3fs
-./build/cmake/ezfs-legacy card-commit working.ez3fs
-```
-
-`card-status` is read-only. `card-commit` shows the added, modified, and
-deleted paths; if the raw images differ, it requests yes/no confirmation and
-performs a complete verified cartridge rewrite.
-
-Before a staged writable mount starts, EZ3FS creates
-`working.ez3fs.recovery.ez3fs`. It removes the snapshot after a clean unmount
-and preserves it after an interrupted mount. Restore the staging image with:
-
-```sh
-./build/cmake/ezfs-legacy card-recover working.ez3fs
-```
-
-Recovery requests yes/no confirmation and only changes the local staging
-image. It never writes to the cartridge.
-
-## EZFA3FS images
-
-Create and modify an exact 32-MiB transactional image:
+## Standard image workflow
 
 ```sh
 ./build/cmake/ez3fs format cartridge.ezfa3fs
 ./build/cmake/ez3fs mkdir cartridge.ezfa3fs documents
-./build/cmake/ez3fs put cartridge.ezfa3fs local.txt documents/local.txt
+./build/cmake/ez3fs put cartridge.ezfa3fs test.txt documents/test.txt
 ./build/cmake/ez3fs list cartridge.ezfa3fs
 ./build/cmake/ez3fs verify cartridge.ezfa3fs
-./build/cmake/ez3fs get cartridge.ezfa3fs documents/local.txt output.txt
-./build/cmake/ez3fs rm cartridge.ezfa3fs documents/local.txt
-./build/cmake/ez3fs rmdir cartridge.ezfa3fs documents
-./build/cmake/ez3fs gc cartridge.ezfa3fs
-./build/cmake/ez3fs compact cartridge.ezfa3fs
-./build/cmake/ez3fs space cartridge.ezfa3fs
-```
-
-Create a loaderless direct-boot image for the single-ROM experiment in
-`ezfadvanceIII`:
-
-```sh
-./build/cmake/ez3fs format --direct-boot direct-boot.ezfa3fs ROM.gba
-./build/cmake/ez3fs verify direct-boot.ezfa3fs
-./build/cmake/ez3fs card-write direct-boot.ezfa3fs
-```
-
-This dedicated layout places the unchanged root-level `.gba` file at cartridge
-offset zero. Its EZFA3FS metadata occupies the final 128 KiB, so the ROM limit
-is 31.875 MiB. To prepare an empty cartridge and write the ROM later, omit the
-ROM argument, program the empty image, then use a writable `card-mount` or
-`put` once:
-
-```sh
-./build/cmake/ez3fs format --direct-boot empty-direct-boot.ezfa3fs
-./build/cmake/ez3fs put empty-direct-boot.ezfa3fs ROM.gba
-```
-
-The first accepted file must be one root-level `.gba`; it is placed at offset
-zero and pinned there while present. Later files and directories are stored only
-after its reserved 64-KiB-block boot slot. The boot ROM can be deleted and
-replaced through a writable mount. If its replacement is larger, the empty slot
-grows automatically through adjacent unreferenced blocks; an occupied adjacent
-extent produces an explicit capacity error. Finder sidecars are rejected until
-the ROM is present.
-
-Deleting the boot ROM erases only the logical blocks occupied by that ROM. The
-unused part of a larger reserved boot slot is already blank and is not erased.
-
-When `put` has no destination argument, the source path is used as the
-destination:
-
-```sh
-./build/cmake/ez3fs put cartridge.ezfa3fs documents/readme.txt
-```
-
-Local EZFA3FS FUSE mounting is read-only:
-
-```sh
-./build/cmake/ez3fs mount cartridge.ezfa3fs mountpoint --foreground
-```
-
-## EZFA3FS on a cartridge
-
-Program or pull a complete EZFA3FS image:
-
-```sh
 ./build/cmake/ez3fs card-write cartridge.ezfa3fs
-./build/cmake/ez3fs card-pull cartridge-backup.ezfa3fs
 ```
 
-`card-write` validates the exact 32-MiB image, asks for yes/no
-confirmation, replaces the complete cartridge, and verifies it.
-`card-pull` reads all 32 MiB, validates the newest generation and every
-file checksum, and writes the local output image.
+`card-write` verifies the image, asks for `y/N` confirmation, then erases, programs, and verifies the complete 32 MiB cartridge.
 
-Reclaim unreferenced cartridge data blocks only while it is unmounted:
+Mount the cartridge read-only:
+
+```sh
+mkdir -p mountpoint
+./build/cmake/ez3fs card-mount mountpoint --foreground
+```
+
+Mount with direct transactional writes:
+
+```sh
+./build/cmake/ez3fs card-mount mountpoint --writable --foreground
+```
+
+Add `--verify` for a full allocation scan before mounting. The default writable mount reads only the metadata needed to start, which is much faster on cartridges containing large files. Unmount from another terminal with `umount mountpoint`.
+
+## Direct boot
+
+The experimental direct-boot layout places one root-level GBA ROM at cartridge byte offset zero for compatible direct-boot logic in the companion `ezfadvanceIII` project.
+
+Create it with a ROM:
+
+```sh
+./build/cmake/ez3fs format --direct-boot direct-boot.ezfa3fs game.gba
+```
+
+Or create an empty image with a 16 MiB boot slot and copy the first ROM through a writable mount later:
+
+```sh
+./build/cmake/ez3fs format --direct-boot direct-boot.ezfa3fs
+```
+
+The first persistent file must be a non-empty root-level `.gba` file. The slot expands when possible if the ROM needs more room. Additional files and directories live after the reserved slot, so direct boot remains compatible with a multi-file filesystem.
+
+The ROM at offset zero is immutable while present. Delete it, then copy a new root-level `.gba` file to replace it. Deletion erases only the blocks occupied by the old ROM; the reserved slot remains available. A direct-boot ROM may occupy at most 510 blocks (31.875 MiB).
+
+## Command reference
+
+Image commands:
+
+```text
+ez3fs format IMAGE.ezfa3fs
+ez3fs format --direct-boot IMAGE.ezfa3fs [ROM.gba]
+ez3fs list IMAGE.ezfa3fs
+ez3fs verify IMAGE.ezfa3fs
+ez3fs mkdir IMAGE.ezfa3fs DIRECTORY
+ez3fs put IMAGE.ezfa3fs SOURCE_FILE [DESTINATION]
+ez3fs get IMAGE.ezfa3fs FILE OUTPUT_FILE
+ez3fs rm IMAGE.ezfa3fs FILE
+ez3fs rmdir IMAGE.ezfa3fs DIRECTORY
+ez3fs gc IMAGE.ezfa3fs
+ez3fs compact IMAGE.ezfa3fs
+ez3fs space IMAGE.ezfa3fs
+ez3fs mount IMAGE.ezfa3fs MOUNTPOINT [--foreground]
+```
+
+When `DESTINATION` is omitted from `put`, the source path is also the destination.
+
+Cartridge commands:
+
+```text
+ez3fs card-mount MOUNTPOINT [--foreground]
+ez3fs card-mount MOUNTPOINT --writable --foreground [--verify]
+ez3fs card-pull IMAGE.ezfa3fs
+ez3fs card-write IMAGE.ezfa3fs
+ez3fs card-gc
+ez3fs card-compact
+ez3fs card-space
+```
+
+Low-level diagnostics:
+
+```text
+ez3fs card-read-block BLOCK OUTPUT.bin
+ez3fs card-erase-plan BLOCK
+ez3fs card-erase-block BLOCK
+ez3fs card-program-block BLOCK INPUT.bin
+```
+
+Raw erase and program commands modify cartridge blocks after confirmation. Standard metadata occupies blocks 0 and 1; direct-boot metadata occupies blocks 510 and 511. Using raw commands on metadata or active data can destroy the filesystem.
+
+## macFUSE behavior
+
+Ordinary writes are staged in host memory. `flush` and `fsync` report mount health; a dirty file is committed when its final handle is released. This coalesces the many small writes issued by Finder and `cp` into one cartridge transaction.
+
+Directories are reported as mode `0755` and files as `0644`. Unsupported ownership, mode, flag, timestamp-setting, and extended-attribute changes are accepted as compatibility no-ops. Finder `.DS_Store` and AppleDouble `._*` files are held only in memory and disappear on unmount; they do not consume flash.
+
+Do not use macFUSE `noappledouble` or `noapplexattr` options. Finder can interpret those rejections as copy failures.
+
+If a mutation cannot be verified after its retries, the mount rejects subsequent mutations until remounted. The previously committed generation remains the recovery point.
+
+## Verify copied data
+
+```sh
+./build/cmake/ez3fs card-pull pulled.ezfa3fs
+./build/cmake/ez3fs verify pulled.ezfa3fs
+./build/cmake/ez3fs get pulled.ezfa3fs path/to/game.gba recovered.gba
+shasum -a 256 source.gba recovered.gba
+```
+
+EZFA3FS stores CRC32 values for corruption detection. SHA-256 is calculated externally.
+
+## Performance and maintenance
+
+EZFA3FS caches cartridge reads lazily in host memory, up to 32 MiB when every block is touched. Repeated reads and directory access are therefore faster without a full scan during normal mount startup.
+
+NOR operations remain slow: changed blocks are programmed and read back, and metadata is written to the alternate superblock and verified. Hardware failures are retried up to three times. Large copies can take materially longer than ordinary host-filesystem copies.
+
+Inspect capacity and fragmentation with:
+
+```sh
+./build/cmake/ez3fs card-space
+```
+
+It reports active, erased, and unreferenced blocks; potentially available capacity; largest extents; fragmentation; and whether garbage collection is recommended. Run maintenance only while unmounted:
 
 ```sh
 ./build/cmake/ez3fs card-gc
 ./build/cmake/ez3fs card-compact
-./build/cmake/ez3fs card-space
 ```
 
-The mutating cartridge commands ask for confirmation and must run while the
-FUSE mount is unmounted. Garbage collection preserves every block referenced
-by the active generation and verifies each physical erase. Compaction first
-collects garbage, then transactionally relocates active file extents toward
-the start of the data area to create a larger contiguous free tail.
+Garbage collection erases unreferenced blocks. Compaction relocates active files to form a larger contiguous erased extent. Allocation may invoke maintenance automatically when no suitable extent remains, so keeping erased space available avoids a long pause during a copy.
 
-`space` and `card-space` are read-only. They report active, erased,
-and reclaimable blocks together with the largest file extent available now
-and after garbage collection. Run cartridge diagnostics only while the FUSE
-mount is unmounted.
+## Legacy EZ3FS
 
-Mount the cartridge as a verified read-only snapshot:
+Use `ezfs-legacy` for packed `.ez3fs` images:
 
-```sh
-./build/cmake/ez3fs card-mount mountpoint
+```text
+ezfs-legacy create OUTPUT.ez3fs FILE...
+ezfs-legacy list IMAGE.ez3fs
+ezfs-legacy verify IMAGE.ez3fs
+ezfs-legacy extract IMAGE.ez3fs OUTPUT_DIRECTORY
+ezfs-legacy mkdir IMAGE.ez3fs DIRECTORY
+ezfs-legacy add IMAGE.ez3fs SOURCE_FILE DESTINATION
+ezfs-legacy rm IMAGE.ez3fs FILE
+ezfs-legacy card-info
+ezfs-legacy card-list
+ezfs-legacy card-verify
+ezfs-legacy card-extract OUTPUT_DIRECTORY
+ezfs-legacy card-pull OUTPUT.ez3fs
+ezfs-legacy card-write IMAGE.ez3fs
+ezfs-legacy card-status STAGING.ez3fs
+ezfs-legacy card-commit STAGING.ez3fs
+ezfs-legacy card-recover STAGING.ez3fs
+ezfs-legacy card-mount MOUNTPOINT [--foreground]
+ezfs-legacy card-mount MOUNTPOINT --writable STAGING.ez3fs [--foreground]
 ```
 
-For direct writes to cartridge flash, foreground mode is mandatory:
+Legacy writable mounts modify a staging image and require an explicit full-cartridge commit; they are not live block updates.
 
-```sh
-./build/cmake/ez3fs card-mount mountpoint \
-  --writable --foreground
-```
+## Format references
 
-The default writable mount validates the redundant metadata generations, keeps
-the USB session open, and starts without reading every referenced file. It does
-not rescan the complete free tail during mount. To checksum every referenced
-file before mounting, use the slower optional preflight, which displays
-block-based progress:
+- [EZFA3FS format](EZFA3FS_FORMAT.md)
+- [Legacy EZ3FS format](EZ3FS_FORMAT.md)
 
-```sh
-./build/cmake/ez3fs card-mount mountpoint \
-  --writable --foreground --verify
-```
+## Current limits
 
-Finder and terminal mutations are committed directly through copy-on-write
-transactions. If a write cannot find an erased extent,
-the filesystem automatically collects garbage and, when necessary, compacts
-active extents before retrying. The terminal reports when this slower
-maintenance path begins. `ENOSPC` is returned only when no sufficient extent
-can be made available. Do not run another cartridge command or disconnect the
-writer while this mount is active.
-
-On macOS, writable cartridge mounts use a 600-second daemon timeout for long
-flash transactions. Extended attribute writes are accepted and discarded
-because EZ3FS does not persist them. The macFUSE `noapplexattr` and
-`noappledouble` denial options are deliberately not used: Finder treats their
-rejections as copy failures before the EZ3FS callbacks can apply this policy.
-Finder's `.DS_Store` and `._*` housekeeping files are instead held in memory
-for the lifetime of the mount, so browsing does not create flash transactions.
-Repeated reads use a lazy 64-KiB block cache and successful writes invalidate
-or refresh affected blocks. Internal writer restarts skip the final-unmount
-settling delay after the cartridge has explicitly reported ready.
-Intermediate macFUSE `flush` and `fsync` requests only check mount health;
-final `release` commits only its named file once, so Finder cannot commit a copy
-that is still growing. Read-only and writable handles that made no data change
-do not trigger a pending-file commit. Newly created
-files remain pending until their contents commit successfully, so a failed copy
-does not leave a committed zero-byte file.
-Contiguous file blocks are programmed within one capture-compatible flash
-write session, switching sessions only at 8-MiB hardware window boundaries.
-Flash readback is reconciled through fresh USB sessions before a block is
-erased and retried. If a commit still fails, the mount remains readable but
-rejects every later mutation before it reaches the cartridge; unmount and
-remount before attempting another write.
-Writer reinitialization is bounded and retried; a failed reinitialization
-aborts maintenance safely without issuing another USB erase or program command.
-
-Unmount from another terminal before disconnecting:
-
-```sh
-diskutil unmount mountpoint       # macOS
-fusermount3 -u mountpoint         # Linux
-```
-
-macOS may create `.DS_Store` and `._*` AppleDouble files. On a writable live
-cartridge mount they are transient compatibility files: Finder can use them,
-but they are not committed to EZFA3FS and disappear when the mount ends.
-
-## Block diagnostics
-
-The following commands are intended for hardware diagnosis and development:
-
-```sh
-./build/cmake/ez3fs card-read-block 2 block-2.bin
-./build/cmake/ez3fs card-erase-plan 2
-./build/cmake/ez3fs card-erase-block 2
-./build/cmake/ez3fs card-program-block 2 block-2.bin
-```
-
-`card-erase-plan` is always a dry run. Direct erase and program commands
-are restricted to blocks 2 through 511, request yes/no confirmation, and
-perform readback verification. Blocks 0 and 1 contain transactional-layout
-metadata and cannot be modified by these diagnostic commands. Direct-boot
-metadata instead occupies blocks 510 and 511, so do not use the destructive
-diagnostic commands on those blocks when that layout is installed.
-
-## Safety notes
-
-- Keep a verified `card-pull` backup before experiments.
-- Never disconnect the USB writer during erase, program, or writable mounting.
-- Use only one cartridge command or mount at a time.
-- A failed EZFA3FS transaction keeps the previous valid superblock
-  generation. Remounting selects the newest complete generation.
-- Physical writes are verified. Transient stalls and mismatches are retried up
-  to three times; an operation fails with an I/O error if verification still
-  does not match.
-- EZ3FS and EZFA3FS are incompatible. Use commands matching the format on
-  the cartridge.
+- Storage is fixed at 32 MiB and files occupy contiguous 64 KiB logical blocks.
+- The format has no FAT compatibility or partition table.
+- Symlinks, hard links, sparse files, persistent permissions, ownership, extended attributes, and Finder metadata are unsupported.
+- Hardware reliability and throughput depend on the EZ-Flash writer, USB connection, and NOR flash.
+- Direct boot is experimental and requires compatible external boot logic.

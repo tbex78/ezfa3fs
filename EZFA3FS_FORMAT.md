@@ -1,319 +1,158 @@
-# EZFA3FS format 2.0.0
+# EZFA3FS transactional format
 
-EZFA3FS is the transactional, copy-on-write filesystem for the 32-MiB
-EZ-Flash Advance III NOR cartridge. It supports files, directories, persisted
-modification times, redundant metadata generations, and direct block-level
-updates while a cartridge is mounted through FUSE/macFUSE.
+This document describes the 32 MiB EZFA3FS format implemented by application version **0.45.10**. The standard layout is format **2.0.0**; the slotted direct-boot layout is **2.1.0**.
 
-The format is independent of the original EZ3 layout and incompatible with
-packed EZ3FS images. It contains no EZ3 menu, loader, ROM catalog, partition
-table, FAT filesystem, or ROM patches.
+EZFA3FS is an independent indexed filesystem for EZ-Flash Advance III NOR flash. It is not FAT, has no partition table, and does not use the original EZ3 menu or ROM patching. All multibyte integers are little-endian.
 
-EZFA3FS 2.0.0 is experimental but has been exercised on physical hardware
-from both terminal commands and Finder. The current application version is
-`0.45.10`.
+## Flash geometry
 
-## Geometry and layout
+An image is exactly 33,554,432 bytes: 512 logical blocks of 65,536 bytes.
 
-An image is exactly `0x02000000` bytes and is divided into 512 logical blocks
-of 64 KiB:
+The physical erase geometry is asymmetric:
 
-| Logical blocks | Purpose |
+- Logical block 0 consists of eight 8 KiB erase sectors.
+- Logical blocks 1 through 510 each use one 64 KiB erase sector.
+- Logical block 511 consists of eight 8 KiB erase sectors.
+
+Allocation and manifests use logical blocks. The cartridge adapter translates operations on blocks 0 and 511 into physical sector commands.
+
+## Layouts
+
+Standard layout:
+
+| Blocks | Purpose |
 |---:|---|
-| 0 and 1 | Alternating generation-numbered superblocks |
-| 2 through 511 | Copy-on-write file data and reclaimable space |
+| 0 and 1 | Alternating metadata superblocks |
+| 2 through 511 | File data and erased free space |
 
-```text
-block 0          superblock generation A
-block 1          superblock generation B
-blocks 2..511    copy-on-write file extents and unused 0xFF blocks
-```
+Its magic is `EZ3LIVE1`, major `2`, minor `0`.
 
-The cartridge's physical bottom-boot erase geometry is not completely
-uniform. Logical blocks 0 and 511 are each erased using eight 8-KiB physical
-sectors. The filesystem block-device adapter hides this detail and presents
-uniform 64-KiB logical blocks to the filesystem.
+Direct-boot layout:
 
-### Direct-boot layout
+| Blocks | Purpose |
+|---:|---|
+| 0 through `boot_slot_blocks - 1` | Reserved boot-ROM slot |
+| `boot_slot_blocks` through 509 | Other file data and free space |
+| 510 and 511 | Alternating metadata superblocks |
 
-`ez3fs format --direct-boot IMAGE.ezfa3fs [ROM.gba]` creates a separate
-direct-boot layout for the loaderless experiment. The optional ROM
-is stored unchanged from byte `0x00000000`; its two superblocks move to blocks
-510 and 511 and use magic `EZFA3DB\0`. The ROM may therefore use at most 510
-blocks (31.875 MiB).
-
-The direct-boot manifest may contain one non-empty root-level `.gba` boot file,
-whose extent begins at block 0, plus auxiliary files and directories. An empty
-direct-boot image may accept its first root-level `.gba` through `put` or a
-writable cartridge mount; the metadata is committed only after its ROM extent
-is programmed. Later files and directories allocate after the reserved boot
-slot and before the tail metadata blocks. Garbage collection and compaction may
-reclaim or move those later file extents, but never the occupied boot-ROM
-extent. The boot ROM may be deleted and replaced. An oversized replacement
-automatically expands an empty slot through adjacent unreferenced blocks; it is
-rejected with an explicit capacity error if an auxiliary extent prevents that
-growth. This preserves byte-zero compatibility with the sibling project's
-experimental loaderless direct-boot writer while retaining a verified EZFA3FS
-manifest.
+Its magic is `EZFA3FS1`, major `2`, minor `1`. An empty direct-boot format initially reserves 256 blocks (16 MiB). A format supplied with a ROM reserves at least its required size. The slot can expand toward block 509 while the required blocks are available.
 
 ## Superblock
 
-Each superblock occupies one complete logical block. All multibyte values are
-unsigned and little-endian.
+Each metadata block starts with this 32-byte header:
 
-| Offset | Size | Field |
+| Offset | Size | Meaning |
 |---:|---:|---|
-| `0x00` | 8 | Magic `EZFA3FS\0` |
-| `0x08` | 2 | Format major: `2` |
-| `0x0A` | 2 | Format minor: `0` |
-| `0x0C` | 8 | Generation number |
+| `0x00` | 8 | Layout magic |
+| `0x08` | 2 | Major version, `2` |
+| `0x0A` | 2 | Layout minor version |
+| `0x0C` | 8 | Monotonically increasing generation |
 | `0x14` | 4 | Manifest length |
-| `0x18` | 4 | IEEE CRC-32 of the manifest |
-| `0x1C` | 4 | Commit marker `0xC0FF17ED` |
-| `0x20` | variable | Manifest |
-| after manifest | remaining | `0xFF` padding |
+| `0x18` | 4 | Manifest CRC32 |
+| `0x1C` | 4 | Commit marker |
 
-A superblock is valid only when its magic, version, commit marker, manifest
-bounds, manifest CRC, and every manifest entry are valid. Mounting selects the
-valid superblock with the highest generation. An invalid or interrupted newer
-superblock is ignored.
+The manifest begins at `0x20`; unused bytes remain `0xFF`. Cartridge commits program and verify only the required metadata prefix rounded to the writer's 8 KiB granularity.
 
-The reader also accepts existing version-1 superblocks with magic
-`EZ3LIVE\0`. The next metadata transaction writes an EZFA3FS 2.0 superblock,
-so an existing image migrates without moving its file data.
+On open, both layout-appropriate superblocks are inspected. A candidate is valid only when its magic, version, bounds, commit marker, manifest CRC32, entries, and allocation invariants pass. The valid candidate with the greatest generation is active.
 
 ## Manifest
 
-The manifest starts with a 32-bit entry count followed by variable-length
-entries. Each entry consists of a 32-byte fixed portion and its path bytes.
+A standard manifest begins with one 32-bit entry count. A direct-boot manifest begins with a 32-bit boot-slot size followed by the 32-bit entry count.
 
-| Entry offset | Size | Field |
+Each entry then has a 32-byte fixed header followed by its UTF-8 path:
+
+| Offset | Size | Meaning |
 |---:|---:|---|
 | `0x00` | 2 | Path length |
 | `0x02` | 1 | Flags; bit 0 marks a directory |
 | `0x03` | 1 | Reserved |
-| `0x04` | 8 | Exact file size |
-| `0x0C` | 8 | Modification time in Unix seconds |
-| `0x14` | 4 | IEEE CRC-32 of file data |
-| `0x18` | 4 | First logical data block |
-| `0x1C` | 4 | Number of logical data blocks |
-| `0x20` | path length | Relative path bytes, without a NUL terminator |
+| `0x04` | 4 | First logical data block |
+| `0x08` | 4 | Contiguous logical block count |
+| `0x0C` | 8 | File size |
+| `0x14` | 4 | File CRC32 |
+| `0x18` | 8 | Modification time as Unix seconds |
+| `0x20` | variable | UTF-8 path |
 
-Paths use `/`, are relative, and cannot contain empty, `.` or `..` components.
-Names must be unique. Parent directories must exist before child entries are
-created.
+Directories have no data extent. Empty regular files also use no blocks. File extents must be in the layout's data region, large enough for the declared size, and non-overlapping.
 
-Directories have zero size, CRC, first block, and block count. Zero-length
-files have no data blocks. Non-empty file extents begin at block 2 or later,
-remain within the 512-block image, and are protected by their stored CRC-32.
+## Namespace rules
 
-## Transaction model
+- Paths are relative UTF-8 strings separated by `/`.
+- Leading or trailing `/`, empty components, `.`, and `..` are invalid.
+- Paths are unique and cannot descend through a regular file.
+- Parent directories must exist.
+- Renaming a directory also renames its descendants in the committed manifest.
 
-A file create or replacement follows this sequence:
+## Transactions and allocation
 
-1. Locate a contiguous erased extent that does not overlap an active file.
-2. Program complete 64-KiB blocks, padding the final block with `0xFF`.
-3. Build a manifest containing the new file extent.
-4. Erase the inactive superblock.
-5. Program the inactive superblock with generation + 1.
-6. Read back and verify every physical block transaction, reopening the USB
-   session for metadata or error recovery when required.
+Data is copy-on-write. A new or replaced file receives a contiguous erased extent, which is programmed and verified before metadata refers to it. The new manifest is written to the inactive superblock with generation `active + 1` and read back. Until that succeeds, the prior valid generation remains authoritative.
 
-Directory changes, renames, and deletions only need a new manifest generation.
-The previously active superblock remains valid until the replacement
-superblock is completely programmed and passes validation.
+Blocks dropped by a new generation become unreferenced garbage; they need not be erased during the metadata commit. Allocation prefers an erased contiguous extent. If none is large enough, the implementation can collect garbage and compact active files. Explicit maintenance before a large copy makes latency more predictable.
 
-Physical erase and program operations are checked through 64-KiB readback.
-Transient USB endpoint stalls, nonblank erase results, and program mismatches
-are retried up to three times. A partially programmed retry target is erased
-before it is programmed again.
+## Direct-boot rules
 
-If all retries fail, the operation returns an I/O error. Remounting selects the
-newest complete generation; an incomplete inactive superblock does not replace
-the previous committed filesystem state.
+- The first persistent file must be a non-empty root-level `.gba` file.
+- No directory may be committed before the boot ROM exists.
+- The boot ROM begins at block 0 and may use at most blocks 0 through 509.
+- The ROM is immutable while present; delete it before installing another.
+- Deleting it erases only its occupied logical blocks, not the entire reserved slot.
+- After deletion, the next persistent file must again be a non-empty root-level `.gba` file.
+- Other files and directories live after the reserved slot.
 
-## Allocation and recovery
+An empty `.gba` created through FUSE is transient and is not committed until it contains data and its final handle is released.
 
-Normal data allocation is copy-on-write. Replacing or deleting a file makes
-its old extent unreachable without erasing it immediately. Mounting derives
-an initial allocation cursor from committed entries without scanning the free tail.
-Before programming a file, the allocator searches for a contiguous erased
-extent and skips programmed blocks leaked by interrupted writes. This prevents
-unsafe NOR `0 -> 1` programming attempts while avoiding a full allocation scan
-at mount time.
+## Verification and recovery
 
-`gc` and `card-gc` sweep blocks 2 through 511, erase only blocks not
-referenced by the selected committed generation, and make the resulting holes
-available to the circular contiguous-extent allocator. The cartridge command
-must run while the filesystem is unmounted. An interrupted collection is safe
-to repeat because the collector first synchronizes the current manifest into
-the alternate superblock, then protects active extents and both metadata
-blocks from erasure. Cartridge collection restarts the writer session between
-inspection and each erase because the USB bridge does not reliably accept a
-flash erase directly after a read transaction.
+Verification checks image size, versions, both superblocks, generation selection, manifest CRC32, entries, namespace hierarchy, reserved ranges, extent bounds and overlap, and every regular-file CRC32. SHA-256 is not stored; extract a file and use `shasum -a 256` for cryptographic comparison.
 
-`compact` and `card-compact` first perform the same garbage sweep,
-then relocate active file extents toward block 2. Each relocation is a
-transaction with this ordering:
+Every cartridge erase and program is verified by readback. Transient USB or writer failures are retried up to three times, with writer reinitialization when possible. If a mounted mutation cannot be verified, later mutations are rejected until remounting. The last committed superblock is the recovery point.
 
-1. Read and checksum the source file.
-2. Program its new erased extent and verify the physical writes.
-3. Commit a manifest generation referencing the new extent.
-4. Commit the same manifest to the other superblock.
-5. Erase and verify the old extent.
+## Space management
 
-The source remains intact until both metadata blocks reference the verified
-destination. A power loss before the first commit leaves the old generation
-active; a power loss later leaves either the old or new data as harmless
-unreferenced garbage. The cartridge command requires an unmounted filesystem.
+`gc` erases programmed blocks not referenced by the active manifest. `compact` relocates active extents to create a larger contiguous erased region, while leaving a direct-boot ROM fixed at block zero.
 
-`list` reports an available-block estimate. Unknown remnants from an
-interrupted write are removed from that estimate when allocation probes them
-or when garbage collection scans the complete data area.
+`space` and `card-space` report active data, erased reusable blocks, unreferenced programmed blocks, potentially available space, largest current and post-GC extents, fragmentation, and whether collection is recommended. Cartridge GC and compaction require an unmounted filesystem and confirmation.
 
-`space` and `card-space` perform a read-only data-area scan. Their
-report distinguishes active extents, erased reusable blocks, and unreferenced
-programmed blocks; it also reports the largest contiguous erased extent before
-and after garbage collection. A smaller post-GC extent than total available
-space indicates fragmentation caused by active file placement.
+## Cartridge mounts and macFUSE
 
-File allocation normally uses the first suitable erased extent without a
-full-device maintenance scan. If allocation fails, the writer automatically
-collects garbage and retries. When the remaining capacity is sufficient but
-fragmented, it transactionally compacts active extents and retries once more.
-Command-line and writable FUSE callers report these maintenance transitions;
-a final allocation failure is exposed as out-of-space.
+A read-only cartridge mount pulls and verifies a complete snapshot. A writable mount opens from metadata and performs direct block transactions; optional `--verify` performs a full allocation scan first.
 
-## Local image commands
+Reads use a lazy verified cache, refreshed after program and invalidated after erase. It can grow to all 512 blocks (32 MiB) if every block is accessed.
 
-```sh
-./build/cmake/ez3fs format cartridge.ezfa3fs
-./build/cmake/ez3fs mkdir cartridge.ezfa3fs documents
-./build/cmake/ez3fs put cartridge.ezfa3fs README.md documents/README.md
-./build/cmake/ez3fs put cartridge.ezfa3fs documents/local.txt
-./build/cmake/ez3fs list cartridge.ezfa3fs
-./build/cmake/ez3fs verify cartridge.ezfa3fs
-./build/cmake/ez3fs get cartridge.ezfa3fs documents/README.md recovered.md
-./build/cmake/ez3fs rm cartridge.ezfa3fs documents/README.md
-./build/cmake/ez3fs rmdir cartridge.ezfa3fs documents
-./build/cmake/ez3fs gc cartridge.ezfa3fs
-./build/cmake/ez3fs compact cartridge.ezfa3fs
-./build/cmake/ez3fs space cartridge.ezfa3fs
+FUSE stages ordinary file writes in host memory. `flush` and `fsync` report health; a dirty file commits on its final `release`, coalescing Finder and `cp` writes into one transaction.
+
+Directories report mode `0755`, files `0644`. Unsupported ownership, mode, flags, timestamp-setting, and extended attributes are accepted as compatibility no-ops. `.DS_Store` and `._*` files live in a transient in-memory Finder overlay and never enter the manifest.
+
+## Commands
+
+Image operations:
+
+```text
+format, list, verify, mkdir, put, get, rm, rmdir,
+gc, compact, space, mount
 ```
 
-`format` creates an exact 32-MiB image. Mutating image commands persist a
-new generation before exiting. If `put` omits its destination, it uses the
-source path as the destination.
+Cartridge operations:
 
-Local image mounting is currently read-only:
-
-```sh
-./build/cmake/ez3fs mount cartridge.ezfa3fs mountpoint --foreground
+```text
+card-mount, card-pull, card-write, card-gc,
+card-compact, card-space
 ```
 
-## Cartridge image commands
+Raw diagnostics:
 
-Read a complete physical cartridge into a local image:
-
-```sh
-./build/cmake/ez3fs card-pull cartridge-backup.ezfa3fs
-./build/cmake/ez3fs verify cartridge-backup.ezfa3fs
+```text
+card-read-block, card-erase-plan, card-erase-block,
+card-program-block
 ```
 
-Write a complete image when initially formatting or deliberately replacing a
-cartridge:
+Raw erase and program commands bypass allocation. Never use them on active data or metadata unless deliberately performing low-level recovery.
 
-```sh
-./build/cmake/ez3fs card-write cartridge.ezfa3fs
-./build/cmake/ez3fs card-gc
-./build/cmake/ez3fs card-compact
-./build/cmake/ez3fs card-space
-```
+## Limits
 
-`card-write` validates the image before asking for yes/no confirmation.
-It erases and programs the complete cartridge and performs byte-for-byte
-verification.
-
-## FUSE/macFUSE cartridge mounting
-
-A read-only cartridge mount first reads and verifies all 32 MiB, closes the USB
-session, and mounts an in-memory snapshot:
-
-```sh
-./build/cmake/ez3fs card-mount mountpoint
-```
-
-A direct writable mount requires foreground mode so the libusb session is not
-inherited across FUSE daemonization:
-
-```sh
-./build/cmake/ez3fs card-mount mountpoint \
-  --writable --foreground
-```
-
-After yes/no confirmation, the default writable mount validates the redundant
-metadata generations and retains exclusive access to the USB writer without
-reading every referenced file. Add `--verify` to checksum every referenced file
-block before mounting; that slower preflight displays percentage progress. The
-mount does not rescan the complete free tail. Terminal and Finder operations
-are committed directly to flash.
-Garbage collection and compaction are invoked automatically if an ordinary
-copy-on-write allocation cannot proceed, so manual maintenance is not required
-for correctness during a mounted write.
-
-New FUSE files remain in the mount backend's pending state until release
-successfully commits their contents. After a commit failure, the
-mount stays readable but rejects later mutations before invoking the backend.
-It reports the cached failure to lifecycle callbacks without replaying the
-flash transaction during teardown. Program and erase verification rechecks a
-mismatched block through fresh USB sessions before retrying it. macOS cartridge
-mounts use a 600-second daemon timeout and accept but discard extended
-attributes because the format does not store them. Finder `.DS_Store` and
-AppleDouble files remain transient in host memory rather than being denied or
-written to cartridge flash.
-Contiguous data blocks share one captured-protocol programming session, with a
-session transition only at each 8-MiB hardware window boundary. A failed data
-extent is retried at another erased location before the mount reports failure.
-USB writer reinitialization uses bounded retries, and a failed reinitialization
-stops maintenance before another erase or program command can be issued.
-
-Unmount from another terminal before disconnecting the writer:
-
-```sh
-diskutil unmount mountpoint       # macOS
-fusermount3 -u mountpoint         # Linux
-```
-
-The macOS live-mount adapter keeps Finder `.DS_Store` and `._*` AppleDouble
-files in host memory. They remain usable during the mount but are not part of
-the on-cartridge manifest and disappear at unmount. This is a mount policy;
-the EZFA3FS format itself can still store files with those names through other
-interfaces.
-
-## Diagnostic block commands
-
-```sh
-./build/cmake/ez3fs card-read-block BLOCK OUTPUT.bin
-./build/cmake/ez3fs card-erase-plan BLOCK
-./build/cmake/ez3fs card-erase-block BLOCK
-./build/cmake/ez3fs card-program-block BLOCK INPUT.bin
-```
-
-- `card-read-block` accepts blocks 0 through 511 and writes exactly 64 KiB.
-- `card-erase-plan` accepts blocks 0 through 511 and never modifies flash.
-- Direct diagnostic erase and program are restricted to data blocks 2 through
-  511 so they cannot overwrite active filesystem metadata.
-- Direct erase and program require yes/no confirmation and verify readback.
-- A program input must be exactly 64 KiB.
-
-## Current limitations
-
-- Compaction is best-effort: a file can move only when a sufficiently large
-  erased extent already exists below its current extent. Pathological layouts
-  may therefore retain some fragmentation.
-- Each flushed logical file is written to a new contiguous extent.
-- Each committed mutation writes a new superblock generation.
-- Physical erase/program readback still bounds maximum write speed.
-- No concurrent cartridge commands while a direct mount is active.
-- No FAT compatibility, partition table, EZ3 menu, or original loader support.
-- Packed EZ3FS and EZFA3FS images cannot be interchanged.
+- Storage is fixed at 32 MiB.
+- Files occupy contiguous 64 KiB logical extents; fragmentation can require compaction.
+- The complete manifest must fit in one metadata block.
+- Permissions, ownership, links, sparse files, persistent extended attributes, and persistent Finder metadata are unsupported.
+- FAT and partition tools cannot mount the format.
+- Direct boot is experimental and requires compatible external boot logic.
