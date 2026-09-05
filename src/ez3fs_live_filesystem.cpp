@@ -11,8 +11,10 @@
 
 namespace ez3fs::live {
 namespace {
-constexpr std::array<std::uint8_t,8> magic{{'E','Z','3','L','I','V','E',0}};
-constexpr std::uint16_t major=1, minor=0;
+constexpr std::array<std::uint8_t,8> magic{{'E','Z','F','A','3','F','S',0}};
+constexpr std::array<std::uint8_t,8> legacy_magic{{'E','Z','3','L','I','V','E',0}};
+constexpr std::uint16_t major=2, minor=0;
+constexpr std::uint16_t legacy_major=1, legacy_minor=0;
 constexpr std::uint32_t commit_marker=0xC0FF17EDu;
 constexpr std::size_t superblock_header=32;
 
@@ -58,10 +60,10 @@ bool NorFlash::load(ByteStorage& storage,std::string& error) {
 bool NorFlash::load(ByteStorage& storage,std::ostream& progress,std::string& error) {
     if(storage.capacity()!=capacity){error="storage capacity is not 32 MiB";return false;}
     std::vector<std::uint8_t> bytes(capacity);
-    progress<<"Reading EZ3FS-LIVE cartridge: 0%"<<std::flush;
+    progress<<"Reading EZFA3FS cartridge: 0%"<<std::flush;
     for(std::size_t offset=0;offset<capacity;offset+=block_size) {
         if(!storage.read(offset,bytes.data()+offset,block_size,error))return false;
-        progress<<"\rReading EZ3FS-LIVE cartridge: "<<((offset+block_size)*100/capacity)<<"%"<<std::flush;
+        progress<<"\rReading EZFA3FS cartridge: "<<((offset+block_size)*100/capacity)<<"%"<<std::flush;
     }
     progress<<"\n";
     bytes_=std::move(bytes);error.clear();return true;
@@ -131,8 +133,11 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
     for(std::size_t block=0;block<2;++block) {
         std::vector<std::uint8_t> bytes(NorFlash::block_size);
         if(!flash.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error))return false;
-        if(!std::equal(magic.begin(),magic.end(),bytes.begin())||get<std::uint16_t>(bytes.data(),8)!=major||
-           get<std::uint16_t>(bytes.data(),10)!=minor||get<std::uint32_t>(bytes.data(),28)!=commit_marker)continue;
+        const bool current_format=std::equal(magic.begin(),magic.end(),bytes.begin())&&
+            get<std::uint16_t>(bytes.data(),8)==major&&get<std::uint16_t>(bytes.data(),10)==minor;
+        const bool legacy_format=std::equal(legacy_magic.begin(),legacy_magic.end(),bytes.begin())&&
+            get<std::uint16_t>(bytes.data(),8)==legacy_major&&get<std::uint16_t>(bytes.data(),10)==legacy_minor;
+        if((!current_format&&!legacy_format)||get<std::uint32_t>(bytes.data(),28)!=commit_marker)continue;
         const auto length=get<std::uint32_t>(bytes.data(),20);
         if(length>NorFlash::block_size-superblock_header||
            Crc32::calculate(bytes.data()+superblock_header,length)!=get<std::uint32_t>(bytes.data(),24))continue;
@@ -158,7 +163,7 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
         const auto generation=get<std::uint64_t>(bytes.data(),12);
         if(!found||generation>newest){found=true;newest=generation;chosen=block;entries=std::move(parsed);}
     }
-    if(!found){error="no valid EZ3FS-LIVE superblock found";return false;}
+    if(!found){error="no valid EZFA3FS superblock found";return false;}
     result.entries_=std::move(entries);result.generation_=newest;result.active_superblock_=chosen;result.next_free_block_=2;result.unavailable_blocks_.fill(false);
     for(const auto& entry:result.entries_)result.next_free_block_=std::max(result.next_free_block_,static_cast<std::size_t>(entry.first_block+entry.block_count));
     error.clear();return true;

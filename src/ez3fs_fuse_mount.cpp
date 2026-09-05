@@ -165,8 +165,8 @@ int runMount(MountSession& mounted,const std::string& mountpoint,
 #if defined(__APPLE__)
     if(filesystem_name=="ez3fs-card") {
         arguments.push_back("-o");arguments.push_back("volname=EZ3FS Cartridge");
-    } else if(filesystem_name=="ez3fs-live-card") {
-        arguments.push_back("-o");arguments.push_back("volname=EZ3FS-LIVE Cartridge");
+    } else if(filesystem_name=="ezfa3fs-card") {
+        arguments.push_back("-o");arguments.push_back("volname=EZFA3FS Cartridge");
         arguments.push_back("-o");arguments.push_back("daemon_timeout=600");
         arguments.push_back("-o");arguments.push_back("noappledouble");
         arguments.push_back("-o");arguments.push_back("noapplexattr");
@@ -195,7 +195,7 @@ int mountArchive(const Archive& archive,const std::string& mountpoint,
 }
 int mountLiveContents(const std::vector<InputFile>& contents,const std::string& mountpoint,bool foreground) {
     MountSession mounted(std::make_unique<VirtualMountBackend>(contents,false));
-    return runMount(mounted,mountpoint,foreground,"ez3fs-live");
+    return runMount(mounted,mountpoint,foreground,"ezfa3fs");
 }
 int mountLiveCartridge(const std::string& mountpoint,bool foreground,
                        bool verify_referenced_data) {
@@ -210,7 +210,7 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
             static_cast<unsigned>(completed*100/total);
         if(percent==displayed)return;
         displayed=percent;
-        std::cerr<<'\r'<<"Verifying EZ3FS-LIVE cartridge: "
+        std::cerr<<'\r'<<"Verifying EZFA3FS cartridge: "
                  <<percent<<'%'<<std::flush;
         if(completed==total)std::cerr<<'\n';
     };
@@ -218,13 +218,13 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
         std::cerr<<error<<'\n';return 1;
     }
     const auto maintenance=[](live::MaintenanceAction action) {
-        std::cerr<<"EZ3FS-LIVE automatic "
+        std::cerr<<"EZFA3FS automatic "
                  <<(action==live::MaintenanceAction::garbage_collection?
                     "garbage collection":"compaction")
                  <<" started; the current write will resume when it completes.\n";
     };
     MountSession mounted(std::make_unique<LiveMountBackend>(cartridge.filesystem(),maintenance));
-    const int result=runMount(mounted,mountpoint,foreground,"ez3fs-live-card");
+    const int result=runMount(mounted,mountpoint,foreground,"ezfa3fs-card");
     if(!cartridge.close(error)){std::cerr<<"Could not close live cartridge session: "<<error<<'\n';return 1;}
     return result;
 }

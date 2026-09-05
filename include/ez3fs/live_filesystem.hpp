@@ -15,7 +15,7 @@
 
 namespace ez3fs::live {
 
-inline constexpr std::string_view format_version = "1.0.0";
+inline constexpr std::string_view format_version = "2.0.0";
 
 class BlockDevice {
 public:

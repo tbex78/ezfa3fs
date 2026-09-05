@@ -5,9 +5,9 @@ III NOR cartridge. It is independent of the original EZ3 layout and contains
 no loader, menu, ROM catalog, partition table, FAT filesystem, or patched ROM
 metadata.
 
-EZ3FS 1.2 is the format emitted by EZ3FS application `0.36.0`. The application
+EZ3FS 1.2 is the format emitted by `ezfs-legacy` application `0.40.0`. The application
 also reads format 1.0, format 1.1, and the legacy EZFS magic described below.
-It is incompatible with the transactional EZ3FS-LIVE format.
+It is incompatible with the transactional EZFA3FS format.
 
 All multibyte integers are unsigned and little-endian. Paths are relative and
 use `/` as their separator.
@@ -92,7 +92,7 @@ verification additionally calculates and checks every file-data CRC.
 Use:
 
 ```sh
-./build/cmake/ez3fs verify IMAGE.ez3fs
+./build/cmake/ezfs-legacy verify IMAGE.ez3fs
 ```
 
 Cartridge reads apply the same parser and verifier. A cartridge with an
@@ -107,14 +107,14 @@ replace the original. The physical-cartridge workflow stages edits locally and
 then uses a complete erase/program/verify cycle.
 
 ```sh
-./build/cmake/ez3fs card-write IMAGE.ez3fs
+./build/cmake/ezfs-legacy card-write IMAGE.ez3fs
 ```
 
 `card-write` validates the archive before requesting yes/no confirmation. It
 then erases all 32 MiB, programs the padded image at offset zero, and compares
 every programmed byte with the source image.
 
-For individual live cartridge updates, use EZ3FS-LIVE rather than this format.
+For individual live cartridge updates, use EZFA3FS rather than this format.
 
 ## Compatibility
 

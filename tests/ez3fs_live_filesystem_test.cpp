@@ -46,6 +46,39 @@ private:
     std::set<std::size_t> failed_program_calls;
 };
 
+void putLittle(std::vector<std::uint8_t>& bytes,std::size_t offset,
+               std::uint64_t value,std::size_t size) {
+    for(std::size_t index=0;index<size;++index)
+        bytes[offset+index]=static_cast<std::uint8_t>(value>>(index*8));
+}
+
+void verifyFormatIdentityAndLegacyCompatibility() {
+    constexpr std::array<std::uint8_t,8> current_magic{{'E','Z','F','A','3','F','S',0}};
+    constexpr std::array<std::uint8_t,8> old_magic{{'E','Z','3','L','I','V','E',0}};
+    ez3fs::live::NorFlash formatted;std::string error;
+    require(ez3fs::live::Filesystem::format(formatted,error));
+    std::vector<std::uint8_t> block(ez3fs::live::NorFlash::block_size);
+    require(formatted.read(ez3fs::live::NorFlash::block_size,block.data(),block.size(),error));
+    require(std::equal(current_magic.begin(),current_magic.end(),block.begin()));
+    require(block[8]==2&&block[9]==0&&block[10]==0&&block[11]==0);
+
+    ez3fs::live::NorFlash legacy;
+    std::fill(block.begin(),block.end(),0xFF);
+    std::copy(old_magic.begin(),old_magic.end(),block.begin());
+    std::fill(block.begin()+32,block.begin()+36,0);
+    putLittle(block,8,1,2);putLittle(block,10,0,2);putLittle(block,12,7,8);
+    putLittle(block,20,4,4);putLittle(block,24,ez3fs::Crc32::calculate(block.data()+32,4),4);
+    putLittle(block,28,0xC0FF17EDu,4);
+    require(legacy.program(0,block.data(),block.size(),error));
+    ez3fs::live::Filesystem filesystem(legacy);
+    require(ez3fs::live::Filesystem::open(legacy,filesystem,error));
+    require(filesystem.generation()==7&&filesystem.entries().empty());
+    require(filesystem.createDirectory("migrated",error));
+    require(legacy.read(ez3fs::live::NorFlash::block_size,block.data(),block.size(),error));
+    require(std::equal(current_magic.begin(),current_magic.end(),block.begin()));
+    require(block[8]==2&&block[9]==0&&block[10]==0&&block[11]==0);
+}
+
 void verifyInterruptedCompaction(std::size_t failure_offset,
                                  std::uint32_t recovered_block,
                                  std::uint64_t generation_advance) {
@@ -152,6 +185,7 @@ void verifyAutomaticCompaction() {
 
 int main()
 {
+    verifyFormatIdentityAndLegacyCompatibility();
     // Losing power while either metadata generation is being updated leaves a
     // complete source or destination extent referenced by the newest valid one.
     verifyInterruptedCompaction(2,4,0);

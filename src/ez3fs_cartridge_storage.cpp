@@ -524,7 +524,7 @@ bool CartridgeStorage::Impl::programLiveExtent(
         }
         ++completed_blocks;
         if(block_count>1)
-            progress<<"\rProgramming EZ3FS-LIVE extent: "
+            progress<<"\rProgramming EZFA3FS extent: "
                     <<(completed_blocks*100/block_count)<<'%'<<std::flush;
     }
     if(!finishWriteOperation(error))return false;
@@ -830,7 +830,7 @@ bool CartridgeProgrammer::programAndVerify(
     if(!validated.open(image,error) || !validated.verify(error)) {
         live::NorFlash live_flash; live::Filesystem live_filesystem(live_flash); std::string live_error;
         if(!live_flash.load(image,live_error) || !live::Filesystem::open(live_flash,live_filesystem,live_error) || !live_filesystem.verify(live_error)) {
-            error="not an EZ3FS or EZ3FS-LIVE image"; return false;
+            error="not an EZ3FS or EZFA3FS image"; return false;
         }
     }
     if(!storage_.impl_->openForProgramming(error)) return false;

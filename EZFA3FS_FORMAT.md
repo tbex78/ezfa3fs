@@ -1,6 +1,6 @@
-# EZ3FS-LIVE format 1.0.0
+# EZFA3FS format 2.0.0
 
-EZ3FS-LIVE is the transactional, copy-on-write filesystem for the 32-MiB
+EZFA3FS is the transactional, copy-on-write filesystem for the 32-MiB
 EZ-Flash Advance III NOR cartridge. It supports files, directories, persisted
 modification times, redundant metadata generations, and direct block-level
 updates while a cartridge is mounted through FUSE/macFUSE.
@@ -9,9 +9,9 @@ The format is independent of the original EZ3 layout and incompatible with
 packed EZ3FS images. It contains no EZ3 menu, loader, ROM catalog, partition
 table, FAT filesystem, or ROM patches.
 
-EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
+EZFA3FS 2.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.36.0`.
+`0.40.0`.
 
 ## Geometry and layout
 
@@ -41,8 +41,8 @@ unsigned and little-endian.
 
 | Offset | Size | Field |
 |---:|---:|---|
-| `0x00` | 8 | Magic `EZ3LIVE\0` |
-| `0x08` | 2 | Format major: `1` |
+| `0x00` | 8 | Magic `EZFA3FS\0` |
+| `0x08` | 2 | Format major: `2` |
 | `0x0A` | 2 | Format minor: `0` |
 | `0x0C` | 8 | Generation number |
 | `0x14` | 4 | Manifest length |
@@ -55,6 +55,10 @@ A superblock is valid only when its magic, version, commit marker, manifest
 bounds, manifest CRC, and every manifest entry are valid. Mounting selects the
 valid superblock with the highest generation. An invalid or interrupted newer
 superblock is ignored.
+
+The reader also accepts existing version-1 superblocks with magic
+`EZ3LIVE\0`. The next metadata transaction writes an EZFA3FS 2.0 superblock,
+so an existing image migrates without moving its file data.
 
 ## Manifest
 
@@ -116,7 +120,7 @@ extent and skips programmed blocks leaked by interrupted writes. This prevents
 unsafe NOR `0 -> 1` programming attempts while avoiding a full allocation scan
 at mount time.
 
-`live-gc` and `live-card-gc` sweep blocks 2 through 511, erase only blocks not
+`gc` and `card-gc` sweep blocks 2 through 511, erase only blocks not
 referenced by the selected committed generation, and make the resulting holes
 available to the circular contiguous-extent allocator. The cartridge command
 must run while the filesystem is unmounted. An interrupted collection is safe
@@ -126,7 +130,7 @@ blocks from erasure. Cartridge collection restarts the writer session between
 inspection and each erase because the USB bridge does not reliably accept a
 flash erase directly after a read transaction.
 
-`live-compact` and `live-card-compact` first perform the same garbage sweep,
+`compact` and `card-compact` first perform the same garbage sweep,
 then relocate active file extents toward block 2. Each relocation is a
 transaction with this ordering:
 
@@ -141,11 +145,11 @@ destination. A power loss before the first commit leaves the old generation
 active; a power loss later leaves either the old or new data as harmless
 unreferenced garbage. The cartridge command requires an unmounted filesystem.
 
-`live-list` reports an available-block estimate. Unknown remnants from an
+`list` reports an available-block estimate. Unknown remnants from an
 interrupted write are removed from that estimate when allocation probes them
 or when garbage collection scans the complete data area.
 
-`live-space` and `live-card-space` perform a read-only data-area scan. Their
+`space` and `card-space` perform a read-only data-area scan. Their
 report distinguishes active extents, erased reusable blocks, and unreferenced
 programmed blocks; it also reports the largest contiguous erased extent before
 and after garbage collection. A smaller post-GC extent than total available
@@ -161,28 +165,28 @@ a final allocation failure is exposed as out-of-space.
 ## Local image commands
 
 ```sh
-./build/cmake/ez3fs live-format cartridge.ez3live
-./build/cmake/ez3fs live-mkdir cartridge.ez3live documents
-./build/cmake/ez3fs live-put cartridge.ez3live README.md documents/README.md
-./build/cmake/ez3fs live-put cartridge.ez3live documents/local.txt
-./build/cmake/ez3fs live-list cartridge.ez3live
-./build/cmake/ez3fs live-verify cartridge.ez3live
-./build/cmake/ez3fs live-get cartridge.ez3live documents/README.md recovered.md
-./build/cmake/ez3fs live-rm cartridge.ez3live documents/README.md
-./build/cmake/ez3fs live-rmdir cartridge.ez3live documents
-./build/cmake/ez3fs live-gc cartridge.ez3live
-./build/cmake/ez3fs live-compact cartridge.ez3live
-./build/cmake/ez3fs live-space cartridge.ez3live
+./build/cmake/ez3fs format cartridge.ezfa3fs
+./build/cmake/ez3fs mkdir cartridge.ezfa3fs documents
+./build/cmake/ez3fs put cartridge.ezfa3fs README.md documents/README.md
+./build/cmake/ez3fs put cartridge.ezfa3fs documents/local.txt
+./build/cmake/ez3fs list cartridge.ezfa3fs
+./build/cmake/ez3fs verify cartridge.ezfa3fs
+./build/cmake/ez3fs get cartridge.ezfa3fs documents/README.md recovered.md
+./build/cmake/ez3fs rm cartridge.ezfa3fs documents/README.md
+./build/cmake/ez3fs rmdir cartridge.ezfa3fs documents
+./build/cmake/ez3fs gc cartridge.ezfa3fs
+./build/cmake/ez3fs compact cartridge.ezfa3fs
+./build/cmake/ez3fs space cartridge.ezfa3fs
 ```
 
-`live-format` creates an exact 32-MiB image. Mutating image commands persist a
-new generation before exiting. If `live-put` omits its destination, it uses the
+`format` creates an exact 32-MiB image. Mutating image commands persist a
+new generation before exiting. If `put` omits its destination, it uses the
 source path as the destination.
 
 Local image mounting is currently read-only:
 
 ```sh
-./build/cmake/ez3fs live-mount cartridge.ez3live mountpoint --foreground
+./build/cmake/ez3fs mount cartridge.ezfa3fs mountpoint --foreground
 ```
 
 ## Cartridge image commands
@@ -190,21 +194,21 @@ Local image mounting is currently read-only:
 Read a complete physical cartridge into a local image:
 
 ```sh
-./build/cmake/ez3fs live-card-pull cartridge-backup.ez3live
-./build/cmake/ez3fs live-verify cartridge-backup.ez3live
+./build/cmake/ez3fs card-pull cartridge-backup.ezfa3fs
+./build/cmake/ez3fs verify cartridge-backup.ezfa3fs
 ```
 
 Write a complete image when initially formatting or deliberately replacing a
 cartridge:
 
 ```sh
-./build/cmake/ez3fs live-card-write cartridge.ez3live
-./build/cmake/ez3fs live-card-gc
-./build/cmake/ez3fs live-card-compact
-./build/cmake/ez3fs live-card-space
+./build/cmake/ez3fs card-write cartridge.ezfa3fs
+./build/cmake/ez3fs card-gc
+./build/cmake/ez3fs card-compact
+./build/cmake/ez3fs card-space
 ```
 
-`live-card-write` validates the image before asking for yes/no confirmation.
+`card-write` validates the image before asking for yes/no confirmation.
 It erases and programs the complete cartridge and performs byte-for-byte
 verification.
 
@@ -214,14 +218,14 @@ A read-only cartridge mount first reads and verifies all 32 MiB, closes the USB
 session, and mounts an in-memory snapshot:
 
 ```sh
-./build/cmake/ez3fs live-card-mount mountpoint
+./build/cmake/ez3fs card-mount mountpoint
 ```
 
 A direct writable mount requires foreground mode so the libusb session is not
 inherited across FUSE daemonization:
 
 ```sh
-./build/cmake/ez3fs live-card-mount mountpoint \
+./build/cmake/ez3fs card-mount mountpoint \
   --writable --foreground
 ```
 
@@ -263,14 +267,14 @@ entries if Finder recreates them immediately.
 ## Diagnostic block commands
 
 ```sh
-./build/cmake/ez3fs live-card-read-block BLOCK OUTPUT.bin
-./build/cmake/ez3fs live-card-erase-plan BLOCK
-./build/cmake/ez3fs live-card-erase-block BLOCK
-./build/cmake/ez3fs live-card-program-block BLOCK INPUT.bin
+./build/cmake/ez3fs card-read-block BLOCK OUTPUT.bin
+./build/cmake/ez3fs card-erase-plan BLOCK
+./build/cmake/ez3fs card-erase-block BLOCK
+./build/cmake/ez3fs card-program-block BLOCK INPUT.bin
 ```
 
-- `live-card-read-block` accepts blocks 0 through 511 and writes exactly 64 KiB.
-- `live-card-erase-plan` accepts blocks 0 through 511 and never modifies flash.
+- `card-read-block` accepts blocks 0 through 511 and writes exactly 64 KiB.
+- `card-erase-plan` accepts blocks 0 through 511 and never modifies flash.
 - Direct diagnostic erase and program are restricted to data blocks 2 through
   511 so they cannot overwrite active filesystem metadata.
 - Direct erase and program require yes/no confirmation and verify readback.
@@ -286,4 +290,4 @@ entries if Finder recreates them immediately.
 - Physical erase/program readback still bounds maximum write speed.
 - No concurrent cartridge commands while a direct mount is active.
 - No FAT compatibility, partition table, EZ3 menu, or original loader support.
-- Packed EZ3FS and EZ3FS-LIVE images cannot be interchanged.
+- Packed EZ3FS and EZFA3FS images cannot be interchanged.
