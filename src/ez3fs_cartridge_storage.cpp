@@ -738,6 +738,7 @@ bool CartridgeStorage::verifyLiveBlockAfterWrite(
 }
 bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& error) {
     constexpr unsigned attempts=3;
+    const bool metadata_block=block<2||block>=live::NorFlash::block_count-2;
     const std::vector<std::uint8_t> erased(live::NorFlash::block_size,0xFF);
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
         std::string operation_error;
@@ -750,13 +751,14 @@ bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& e
         // returning the pre-write/erased view there until the USB session is
         // reopened, even after a successful write-window completion.
         if(verifyLiveBlockAfterWrite(block,erased,"erase",operation_error,
-                                     !completed||block<2,error))return true;
+                                     !completed||metadata_block,error))return true;
         if(attempt<attempts)std::cerr<<"Retrying live block erase (attempt "<<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
     }
     return false;
 }
 bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) {
     constexpr unsigned attempts=3;
+    const bool metadata_block=block<2||block>=live::NorFlash::block_count-2;
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
         std::string operation_error;
         if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error)) {
@@ -765,7 +767,7 @@ bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::v
         }
         const bool completed=impl_->programLiveBlock(block,bytes,std::cerr,operation_error,true);
         if(verifyLiveBlockAfterWrite(block,bytes,"program",operation_error,
-                                     !completed||block<2,error))return true;
+                                     !completed||metadata_block,error))return true;
         if(attempt==attempts)return false;
         std::cerr<<"Retrying live block program (attempt "<<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
         std::string erase_error;
