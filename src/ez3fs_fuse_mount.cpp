@@ -281,8 +281,6 @@ int runMount(MountSession& mounted,const std::string& mountpoint,
     } else if(filesystem_name=="ezfa3fs-card") {
         arguments.push_back("-o");arguments.push_back("volname=EZFA3FS Cartridge");
         arguments.push_back("-o");arguments.push_back("daemon_timeout=600");
-        arguments.push_back("-o");arguments.push_back("noappledouble");
-        arguments.push_back("-o");arguments.push_back("noapplexattr");
     }
 #endif
     if(foreground)arguments.push_back("-f");arguments.push_back(mountpoint);

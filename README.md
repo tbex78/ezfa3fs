@@ -280,9 +280,11 @@ can be made available. Do not run another cartridge command or disconnect the
 writer while this mount is active.
 
 On macOS, writable cartridge mounts use a 600-second daemon timeout for long
-flash transactions and suppress AppleDouble and `.DS_Store` traffic. Extended
-attribute writes are accepted and discarded because EZ3FS does not persist
-them. Intermediate macFUSE `flush` and `fsync` requests only check mount health;
+flash transactions. Extended attribute writes are accepted and discarded
+because EZ3FS does not persist them. The macFUSE `noapplexattr` and
+`noappledouble` denial options are deliberately not used: Finder treats their
+rejections as copy failures before the EZ3FS callbacks can apply this policy.
+Intermediate macFUSE `flush` and `fsync` requests only check mount health;
 final `release` commits only its named file once, so Finder cannot commit a copy
 that is still growing. Read-only and writable handles that made no data change
 do not trigger a pending-file commit. Newly created
