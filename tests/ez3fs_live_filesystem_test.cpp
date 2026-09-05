@@ -52,6 +52,10 @@ void putLittle(std::vector<std::uint8_t>& bytes,std::size_t offset,
         bytes[offset+index]=static_cast<std::uint8_t>(value>>(index*8));
 }
 
+std::vector<std::uint8_t> blockData(std::size_t blocks,std::uint8_t value) {
+    return std::vector<std::uint8_t>(blocks*ez3fs::live::NorFlash::block_size,value);
+}
+
 void verifyFormatIdentityAndLegacyCompatibility() {
     constexpr const auto& current_magic=ez3fs::live::format_magic;
     constexpr const auto& old_magic=ez3fs::live::legacy_format_magic;
@@ -137,6 +141,19 @@ void verifyEmptyDirectBootLayout() {
     require(filesystem.putFile("second.gba",rom,1235,error));
     require(!filesystem.putFile("first.GBA",rom,1236,error));
     require(error.find("immutable")!=std::string::npos);
+
+    ez3fs::live::NorFlash growing_flash;
+    require(ez3fs::live::Filesystem::formatDirectBootEmpty(growing_flash,error,1));
+    ez3fs::live::Filesystem growing(growing_flash);
+    require(ez3fs::live::Filesystem::open(growing_flash,growing,error));
+    const auto larger_rom=blockData(2,0x5A);
+    require(growing.putFile("larger.gba",larger_rom,1236,error));
+    require(growing.entries().front().block_count==2);
+    require(growing.removeFile("larger.gba",error));
+    require(growing.putFile("another.gba",blockData(3,0xA5),1237,error));
+    require(growing.entries().front().block_count==3);
+    require(growing.readFile("another.gba",bytes,error));
+    require(bytes==blockData(3,0xA5));
 }
 
 void verifyInterruptedCompaction(std::size_t failure_offset,
@@ -166,10 +183,6 @@ void verifyInterruptedCompaction(std::size_t failure_offset,
     require(recovered.readFile("movable",bytes,error));
     require(bytes==std::vector<std::uint8_t>({'c'}));
     require(recovered.verify(error));
-}
-
-std::vector<std::uint8_t> blockData(std::size_t blocks,std::uint8_t value) {
-    return std::vector<std::uint8_t>(blocks*ez3fs::live::NorFlash::block_size,value);
 }
 
 void verifyAlternateExtentRetry() {

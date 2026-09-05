@@ -37,22 +37,24 @@ logical blocks to the filesystem.
 ### Direct-boot layout
 
 `ez3fs format --direct-boot IMAGE.ezfa3fs [ROM.gba]` creates a separate
-single-ROM layout for the loaderless direct-boot experiment. The optional ROM
+direct-boot layout for the loaderless experiment. The optional ROM
 is stored unchanged from byte `0x00000000`; its two superblocks move to blocks
 510 and 511 and use magic `EZFA3DB\0`. The ROM may therefore use at most 510
 blocks (31.875 MiB).
 
-The direct-boot manifest contains exactly one non-empty root-level `.gba`
-file, whose extent begins at block 0. An empty direct-boot image may accept its
-first root-level `.gba` through `put` or a writable cartridge mount; the
-metadata is committed only after its ROM extent is programmed. Later files and
-directories allocate strictly after the ROM's rounded extent and before the
-tail metadata blocks. Garbage collection and compaction may reclaim or move
-those later file extents, but never the boot-ROM extent. The boot ROM itself
-cannot be replaced, renamed, or removed; recreate and fully reprogram the
-image to change it. This preserves byte-zero compatibility with the sibling
-project's experimental loaderless direct-boot writer while retaining a
-verified EZFA3FS manifest.
+The direct-boot manifest may contain one non-empty root-level `.gba` boot file,
+whose extent begins at block 0, plus auxiliary files and directories. An empty
+direct-boot image may accept its first root-level `.gba` through `put` or a
+writable cartridge mount; the metadata is committed only after its ROM extent
+is programmed. Later files and directories allocate after the reserved boot
+slot and before the tail metadata blocks. Garbage collection and compaction may
+reclaim or move those later file extents, but never the occupied boot-ROM
+extent. The boot ROM may be deleted and replaced. An oversized replacement
+automatically expands an empty slot through adjacent unreferenced blocks; it is
+rejected with an explicit capacity error if an auxiliary extent prevents that
+growth. This preserves byte-zero compatibility with the sibling project's
+experimental loaderless direct-boot writer while retaining a verified EZFA3FS
+manifest.
 
 ## Superblock
 

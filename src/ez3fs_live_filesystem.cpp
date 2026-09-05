@@ -263,6 +263,7 @@ bool Filesystem::commit(std::string& error) {
 
 bool Filesystem::blockReferenced(std::size_t block) const noexcept {
     if(block<firstDataBlock()||block>=dataEndBlock())return true;
+    if(isDirectBoot()&&block<boot_slot_blocks_)return true;
     return std::any_of(entries_.begin(),entries_.end(),[block](const Entry& entry){
         return !entry.directory&&block>=entry.first_block&&
                block<static_cast<std::size_t>(entry.first_block)+entry.block_count;
@@ -403,6 +404,45 @@ bool Filesystem::programExtent(std::size_t first_block,
     next_free_block_=first_block+blocks;error.clear();return true;
 }
 
+bool Filesystem::ensureDirectBootSlotCapacity(std::size_t block_count,
+                                              std::string& error) {
+    if(block_count<=boot_slot_blocks_){error.clear();return true;}
+    if(block_count>dataEndBlock()) {
+        error="direct-boot ROM requires "+std::to_string(block_count)+
+              " blocks, but only "+std::to_string(dataEndBlock())+
+              " blocks are available before metadata";return false;
+    }
+    for(std::size_t block=boot_slot_blocks_;block<block_count;++block) {
+        const auto occupied=std::find_if(entries_.begin(),entries_.end(),
+            [block](const Entry& entry){
+                return !entry.directory&&block>=entry.first_block&&
+                    block<static_cast<std::size_t>(entry.first_block)+entry.block_count;
+            });
+        if(occupied!=entries_.end()) {
+            error="direct-boot ROM requires "+std::to_string(block_count)+
+                  " blocks, but its reserved slot has "+
+                  std::to_string(boot_slot_blocks_)+" blocks and cannot grow: block "+
+                  std::to_string(block)+" is used by "+occupied->name;return false;
+        }
+    }
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);
+    for(std::size_t block=boot_slot_blocks_;block<block_count;++block) {
+        if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
+            error="could not inspect direct-boot slot expansion block "+
+                  std::to_string(block)+": "+error;return false;
+        }
+        const bool blank=std::all_of(bytes.begin(),bytes.end(),
+            [](std::uint8_t byte){return byte==0xFF;});
+        if(!blank&&(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error))) {
+            error="could not erase direct-boot slot expansion block "+
+                  std::to_string(block)+": "+error;return false;
+        }
+    }
+    boot_slot_blocks_=block_count;
+    next_free_block_=std::max(next_free_block_,boot_slot_blocks_);
+    error.clear();return true;
+}
+
 bool Filesystem::canCreateFile(const std::string& path,std::string& error) const {
     if(isDirectBoot()) {
         if(!directBootRom()) {
@@ -429,9 +469,11 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
     if(isDirectBoot()) {
         const auto blocks=dataBlockCount(bytes.size());
         if(!directBootRom()) {
-            if(!validDirectBootRomName(path)||bytes.empty()||blocks>boot_slot_blocks_) {
-                error="direct-boot EZFA3FS requires one non-empty root-level .gba ROM no larger than 31.875 MiB";return false;
+            if(!validDirectBootRomName(path)) {
+                error="direct-boot EZFA3FS requires its first file to be one root-level .gba ROM";return false;
             }
+            if(bytes.empty()) {error="direct-boot EZFA3FS cannot commit an empty boot ROM";return false;}
+            if(!ensureDirectBootSlotCapacity(blocks,error))return false;
             std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
             std::copy(bytes.begin(),bytes.end(),extent.begin());std::size_t completed=0;
             if(!flash_.programBlocks(0,extent.data(),blocks,completed,error)||completed!=blocks) {

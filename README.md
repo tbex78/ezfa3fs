@@ -191,9 +191,12 @@ ROM argument, program the empty image, then use a writable `card-mount` or
 ```
 
 The first accepted file must be one root-level `.gba`; it is placed at offset
-zero and permanently pinned there. Later files and directories are stored only
-after the ROM's rounded 64-KiB extent. The boot ROM itself cannot be replaced,
-renamed, or removed; Finder sidecars are rejected until the ROM is present.
+zero and pinned there while present. Later files and directories are stored only
+after its reserved 64-KiB-block boot slot. The boot ROM can be deleted and
+replaced through a writable mount. If its replacement is larger, the empty slot
+grows automatically through adjacent unreferenced blocks; an occupied adjacent
+extent produces an explicit capacity error. Finder sidecars are rejected until
+the ROM is present.
 
 When `put` has no destination argument, the source path is used as the
 destination:
