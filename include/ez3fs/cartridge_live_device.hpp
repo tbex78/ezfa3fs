@@ -21,6 +21,7 @@ public:
     bool replaceMetadataBlock(std::size_t block,const std::uint8_t* source,
                               std::size_t size,std::string& error) override;
     bool prepareForErase(std::string& error) override;
+    bool prepareForProgram(std::string& error) override;
 private:
     CartridgeStorage& storage_;
 };

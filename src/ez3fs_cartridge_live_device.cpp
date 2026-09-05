@@ -47,4 +47,7 @@ bool CartridgeLiveDevice::replaceMetadataBlock(
 bool CartridgeLiveDevice::prepareForErase(std::string& error) {
     return storage_.restartLiveWriteSession(error);
 }
+bool CartridgeLiveDevice::prepareForProgram(std::string& error) {
+    return storage_.restartLiveWriteSession(error);
+}
 } // namespace ez3fs

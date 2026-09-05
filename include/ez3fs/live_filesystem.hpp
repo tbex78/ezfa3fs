@@ -46,6 +46,7 @@ public:
                                       const std::uint8_t* source,
                                       std::size_t size,std::string& error);
     virtual bool prepareForErase(std::string& error) { error.clear();return true; }
+    virtual bool prepareForProgram(std::string& error) { error.clear();return true; }
 };
 
 class NorFlash final : public BlockDevice {

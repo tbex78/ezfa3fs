@@ -45,6 +45,9 @@ public:
     bool prepareForErase(std::string& error) override {
         ++prepare_erase_count;error.clear();return true;
     }
+    bool prepareForProgram(std::string& error) override {
+        ++prepare_program_count;error.clear();return true;
+    }
     void failProgramCall(std::size_t call) { failed_program_calls.insert(call); }
     void failProgramCalls(std::size_t first,std::size_t count) {
         for(std::size_t i=0;i<count;++i)failed_program_calls.insert(first+i);
@@ -54,6 +57,7 @@ public:
     std::size_t extent_program_count = 0;
     std::size_t replace_count = 0;
     std::size_t prepare_erase_count = 0;
+    std::size_t prepare_program_count = 0;
     std::size_t erase_batch_count = 0;
     std::vector<std::size_t> erased_blocks;
 private:
@@ -216,7 +220,9 @@ void verifyDirectBootDeleteInvalidatesOnlyFirstBlock() {
     // Replacement preflight erases stale blocks that it will overwrite, but
     // does not spend time erasing an old tail beyond the replacement extent.
     const auto replacement=blockData(2,0xF0);
+    const auto prepared_programs=device.prepare_program_count;
     require(filesystem.putFile("new.gba",replacement,1235,error));
+    require(device.prepare_program_count==prepared_programs+1);
     require(device.erase_batch_count==1);
     require(std::count(device.erased_blocks.begin(),device.erased_blocks.end(),1)==
             block1_erases+1);

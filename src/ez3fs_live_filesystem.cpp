@@ -402,7 +402,8 @@ bool Filesystem::programExtent(std::size_t first_block,
     std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
     std::copy(bytes.begin(),bytes.end(),extent.begin());
     std::size_t completed=0;
-    if(!flash_.programBlocks(first_block,extent.data(),blocks,completed,error)) {
+    if(!flash_.prepareForProgram(error)||
+       !flash_.programBlocks(first_block,extent.data(),blocks,completed,error)) {
         const auto affected=std::min(blocks,completed+1);
         for(std::size_t leaked=0;leaked<affected;++leaked)
             unavailable_blocks_[first_block+leaked]=true;
@@ -515,7 +516,9 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
             if(!prepareDirectBootRomExtent(blocks,error))return false;
             std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
             std::copy(bytes.begin(),bytes.end(),extent.begin());std::size_t completed=0;
-            if(!flash_.programBlocks(0,extent.data(),blocks,completed,error)||completed!=blocks) {
+            if(!flash_.prepareForProgram(error)||
+               !flash_.programBlocks(0,extent.data(),blocks,completed,error)||
+               completed!=blocks) {
                 if(error.empty())error="direct-boot ROM programming was incomplete";return false;
             }
             entries_.insert(entries_.begin(),{path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),0,static_cast<std::uint32_t>(blocks),false});

@@ -127,4 +127,8 @@ bool CachedBlockDevice::prepareForErase(std::string& error) {
     return device_.prepareForErase(error);
 }
 
+bool CachedBlockDevice::prepareForProgram(std::string& error) {
+    return device_.prepareForProgram(error);
+}
+
 } // namespace ez3fs::live
