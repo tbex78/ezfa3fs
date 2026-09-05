@@ -179,6 +179,21 @@ void verifyEmptyDirectBootLayout() {
     require(bytes==blockData(3,0xA5));
 }
 
+void verifyDirectBootDeleteErasesOnlyRomBlocks() {
+    ez3fs::live::NorFlash flash;std::string error;
+    require(ez3fs::live::Filesystem::formatDirectBootEmpty(flash,error,256));
+    CountingDevice device(flash);
+    ez3fs::live::Filesystem filesystem(device);
+    require(ez3fs::live::Filesystem::open(device,filesystem,error));
+    const std::vector<std::uint8_t> small_rom{0x18,0x00,0x00,0xEA};
+    require(filesystem.putFile("small.gba",small_rom,1234,error));
+    require(filesystem.entries().front().block_count==1);
+    const auto prepared_before_delete=device.prepare_erase_count;
+    require(filesystem.removeFile("small.gba",error));
+    require(device.prepare_erase_count==prepared_before_delete+1);
+    require(filesystem.awaitsDirectBootRom());
+}
+
 void verifyInterruptedCompaction(std::size_t failure_offset,
                                  std::uint32_t recovered_block,
                                  std::uint64_t generation_advance) {
@@ -285,6 +300,7 @@ int main()
     verifyPhysicalEraseGeometry();
     verifyDirectBootLayout();
     verifyEmptyDirectBootLayout();
+    verifyDirectBootDeleteErasesOnlyRomBlocks();
     // Losing power while either metadata generation is being updated leaves a
     // complete source or destination extent referenced by the newest valid one.
     verifyInterruptedCompaction(2,4,0);

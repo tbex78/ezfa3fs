@@ -606,11 +606,15 @@ bool Filesystem::removeFile(const std::string& path,std::string& error) {
     const auto old=entries_;const auto it=std::find_if(entries_.begin(),entries_.end(),[&](const Entry& e){return e.name==path&&!e.directory;});
     if(it==entries_.end()){error="live file does not exist";return false;}
     if(isDirectBootRom(*it)){
+        const auto programmed_blocks=static_cast<std::size_t>(it->block_count);
         const auto old=entries_;entries_.erase(it);
         if(!commit(error)){entries_=old;return false;}
-        for(std::size_t block=0;block<boot_slot_blocks_;++block)
+        // The boot slot is reserved address space, not allocated ROM data.
+        // Erasing its full capacity makes deleting a small ROM needlessly
+        // erase hundreds of blocks that are already blank.
+        for(std::size_t block=0;block<programmed_blocks;++block)
             if(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error)){
-                error="boot slot metadata was cleared but block "+std::to_string(block)+" could not be erased: "+error;return false;
+                error="boot ROM metadata was cleared but block "+std::to_string(block)+" could not be erased: "+error;return false;
             }
         next_free_block_=allocationStartBlock();error.clear();return true;
     }

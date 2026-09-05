@@ -4,7 +4,7 @@ EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
 NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
 FAT partition, or ROM-patching workflow.
 
-Application version: **0.45.9**.
+Application version: **0.45.10**.
 
 `ez3fs` manages the live filesystem. `ezfs-legacy` preserves the packed-image
 workflow. Two incompatible formats are supported:
@@ -200,6 +200,9 @@ replaced through a writable mount. If its replacement is larger, the empty slot
 grows automatically through adjacent unreferenced blocks; an occupied adjacent
 extent produces an explicit capacity error. Finder sidecars are rejected until
 the ROM is present.
+
+Deleting the boot ROM erases only the logical blocks occupied by that ROM. The
+unused part of a larger reserved boot slot is already blank and is not erased.
 
 When `put` has no destination argument, the source path is used as the
 destination:
