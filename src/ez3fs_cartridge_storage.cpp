@@ -979,14 +979,30 @@ bool CartridgeStorage::programLiveFilesystemExtent(
                                       !transferred&&i==0,error)) {
             // An extent transfer shares one USB write session.  A transient
             // failure can therefore leave exactly one completed transaction
-            // unreadable while its neighbours are sound.  Recover that block
-            // through the single-block writer: it owns the erase, writer
-            // restart, and readback retry sequence.  Do not discard an
+            // unreadable while its neighbours are sound. Do not discard an
             // otherwise valid large-file transfer merely because its bulk
             // verification encountered that recoverable condition.
             const auto verification_failure=error;
-            if(!programLiveFilesystemBlock(first_block+i,expected,error)) {
-                error=verification_failure+"; block recovery failed: "+error;
+            std::string recovery_error;
+            // A failed extent transaction may have programmed only a subset
+            // of the expected zero bits. Replaying the program command over
+            // that data cannot perform the 0-to-1 transitions needed to
+            // repair it. Start recovery from a verified erased block, then
+            // reopen the writer because erase verification leaves the bridge
+            // in its read mapping.
+            if(!eraseLiveFilesystemBlock(first_block+i,recovery_error)) {
+                error=verification_failure+"; block recovery erase failed: "+
+                      recovery_error;
+                completed_blocks=i;return false;
+            }
+            if(!restartLiveWriteSession(recovery_error)) {
+                error=verification_failure+"; block recovery writer restart failed: "+
+                      recovery_error;
+                completed_blocks=i;return false;
+            }
+            if(!programLiveFilesystemBlock(first_block+i,expected,recovery_error)) {
+                error=verification_failure+"; block recovery failed: "+
+                      recovery_error;
                 completed_blocks=i;return false;
             }
         }
