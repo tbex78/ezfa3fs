@@ -1094,55 +1094,44 @@ bool CartridgeStorage::replaceLiveFilesystemMetadata(
        bytes.size()!=live::NorFlash::block_size) {
         error="live filesystem block replacement is out of range";return false;
     }
-    const auto transfer_size=metadataTransferSize(bytes);
+    // The final logical block is the flash's split top boot block. The only
+    // capture-proven program operation at that boundary is one complete 64-KiB
+    // transaction after erasing all eight physical sectors. Ordinary metadata
+    // blocks retain the smaller 8-KiB-rounded transfer.
+    const auto transfer_size=block==live::NorFlash::block_count-1?
+        live::NorFlash::block_size:metadataTransferSize(bytes);
     const std::vector<std::uint8_t> prefix(bytes.begin(),
         bytes.begin()+static_cast<std::ptrdiff_t>(transfer_size));
-    // Verification deliberately leaves the bridge in a linear read mapping.
-    // Reopen it before the erase/program pair instead of sending a guaranteed
-    // failing erase and using that failure as the writer-state transition.
-    std::string restart_error;
-    if(!restartLiveWriteSession(restart_error)) {
-        error="could not prepare cartridge writer for metadata replacement: "+
-              restart_error;return false;
-    }
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
-        std::string operation_error;
-        if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error,true)) {
-            error="could not restore cartridge writer before block replacement: "+
-                  operation_error;return false;
+        std::string restart_error;
+        if(!restartLiveWriteSession(restart_error)) {
+            error="could not prepare cartridge writer for metadata replacement: "+
+                  restart_error;
+            return false;
         }
+        std::string operation_error;
         const bool erased=impl_->eraseLiveBlockPrefix(
             block,transfer_size,std::cerr,operation_error,true);
         if(!erased) {
             error=operation_error;
         } else {
-            const std::vector<std::uint8_t> blank(transfer_size,0xFF);
-            if(verifyLiveBlockAfterWrite(block,blank,"metadata erase",
-                                         operation_error,true,error)) {
-                // Erase verification leaves the bridge in read mode. Start a
-                // fresh writer session only after proving that no old header
-                // bits can block the next generation's 0-to-1 transitions.
-                std::string program_error;
-                if(!restartLiveWriteSession(program_error)) {
-                    error="could not prepare writer after metadata erase: "+
-                          program_error;
-                } else {
-                    const bool programmed=impl_->programLiveBlockPrefix(
-                        block,prefix,std::cerr,program_error,true);
-                    if(verifyLiveBlockAfterWrite(
-                            block,prefix,"metadata replacement",program_error,
-                            !programmed,error))return true;
-                }
-            }
+            // Do not inspect the erased sector here. A read switches the
+            // bridge away from the capture-proven erase -> program state and
+            // caused block 511 to remain blank despite a successful command
+            // response. Final payload verification proves the resulting
+            // contents while the other superblock remains the recovery point.
+            const bool programmed=impl_->programLiveBlockPrefix(
+                block,prefix,std::cerr,operation_error,true);
+            if(verifyLiveBlockAfterWrite(
+                    block,prefix,"metadata replacement",operation_error,
+                    true,error))return true;
+            if(!programmed&&!operation_error.empty()&&
+               error.find(operation_error)==std::string::npos)
+                error=operation_error+"; "+error;
         }
         if(attempt==attempts)return false;
         std::cerr<<"Retrying live block replacement (attempt "
                  <<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
-        restart_error.clear();
-        if(!restartLiveWriteSession(restart_error)) {
-            error+="; replacement writer restart failed: "+restart_error;
-            return false;
-        }
     }
     return false;
 }

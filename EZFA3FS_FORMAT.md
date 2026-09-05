@@ -1,6 +1,6 @@
 # EZFA3FS transactional format
 
-This document describes the 32 MiB EZFA3FS format implemented by application version **0.45.23**. The standard layout is format **2.0.0**; the slotted direct-boot layout is **2.1.0**.
+This document describes the 32 MiB EZFA3FS format implemented by application version **0.45.24**. The standard layout is format **2.0.0**; the slotted direct-boot layout is **2.1.0**.
 
 EZFA3FS is an independent indexed filesystem for EZ-Flash Advance III NOR flash. It is not FAT, has no partition table, and does not use the original EZ3 menu or ROM patching. All multibyte integers are little-endian.
 
@@ -51,7 +51,7 @@ Each metadata block starts with this 32-byte header:
 | `0x18` | 4 | Manifest CRC32 |
 | `0x1C` | 4 | Commit marker |
 
-The manifest begins at `0x20`; unused bytes remain `0xFF`. Cartridge commits program and verify only the required metadata prefix rounded to the writer's 8 KiB granularity.
+The manifest begins at `0x20`; unused bytes remain `0xFF`. Cartridge commits normally program and verify only the required metadata prefix rounded to the writer's 8 KiB granularity. Direct-boot superblock 511 is the split top boot block and is therefore erased and programmed as one complete 64 KiB block.
 
 On open, both layout-appropriate superblocks are inspected. A candidate is valid only when its magic, version, bounds, commit marker, manifest CRC32, entries, and allocation invariants pass. The valid candidate with the greatest generation is active.
 
@@ -106,7 +106,7 @@ An empty `.gba` created through FUSE is transient and is not committed until it 
 
 Verification checks image size, versions, both superblocks, generation selection, manifest CRC32, entries, namespace hierarchy, reserved ranges, extent bounds and overlap, and every regular-file CRC32. SHA-256 is not stored; extract a file and use `shasum -a 256` for cryptographic comparison.
 
-Standalone cartridge erases and all programmed data are verified by readback. Direct-boot replacement keeps erase and programming contiguous, so final program verification also verifies the resulting erased-and-reprogrammed blocks. Transient USB reads, writes, or writer failures are retried up to three times, with writer reinitialization and mapping restoration when possible. Programming sessions reproduce the capture-derived three-poll writer activation after manager probing. If a mounted mutation cannot be verified, later mutations are rejected until remounting. The last committed superblock is the recovery point.
+Standalone cartridge erases and all programmed data are verified by readback. Direct-boot data and metadata replacement keep erase and programming contiguous, so final program verification also verifies the resulting erased-and-reprogrammed blocks. Transient USB reads, writes, or writer failures are retried up to three times, with writer reinitialization and mapping restoration when possible. Programming sessions reproduce the capture-derived three-poll writer activation after manager probing. If a mounted mutation cannot be verified, later mutations are rejected until remounting. The last committed superblock is the recovery point.
 
 ## Space management
 

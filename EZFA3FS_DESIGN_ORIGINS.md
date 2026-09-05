@@ -122,6 +122,8 @@ Two metadata superblocks are used. Each valid superblock contains a generation n
 
 During a commit, the new manifest is written to the inactive superblock with a greater generation. The previous generation remains available until the new one has been programmed and verified. On open, EZFA3FS selects the newest valid generation.
 
+Metadata replacement keeps physical erase and program operations in the same writer session. The split top boot block at logical block 511 uses the capture-proven full 64 KiB program transaction rather than the smaller prefix optimization used for ordinary metadata blocks.
+
 This provides transactional metadata recovery without needing an in-place journal.
 
 ### Copy-on-write data
@@ -142,7 +144,7 @@ Because files require contiguous extents, enough total free space does not guara
 
 ### Integrity checks
 
-CRC32 values protect manifests and file contents against accidental corruption. Standalone hardware erases and all programmed data are checked through readback. Direct-boot replacement deliberately avoids a read-mode transition between erase and program, then verifies the final programmed extent.
+CRC32 values protect manifests and file contents against accidental corruption. Standalone hardware erases and all programmed data are checked through readback. Direct-boot data and metadata replacement deliberately avoid a read-mode transition between erase and program, then verify the final programmed contents.
 
 CRC32 is not a cryptographic hash. SHA-256 comparisons are performed externally after extracting or pulling a file.
 
