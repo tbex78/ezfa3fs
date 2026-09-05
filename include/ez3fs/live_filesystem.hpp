@@ -3,6 +3,7 @@
 #include "ez3fs/archive.hpp"
 #include "ez3fs/byte_storage.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +17,16 @@
 namespace ez3fs::live {
 
 inline constexpr std::string_view format_version = "2.0.0";
+inline constexpr std::array<std::uint8_t,8> format_magic{
+    {'E','Z','F','A','3','F','S',0}};
+inline constexpr std::array<std::uint8_t,8> legacy_format_magic{
+    {'E','Z','3','L','I','V','E',0}};
+
+inline bool hasFormatMagic(const std::uint8_t* bytes) noexcept
+{
+    return std::equal(format_magic.begin(),format_magic.end(),bytes) ||
+           std::equal(legacy_format_magic.begin(),legacy_format_magic.end(),bytes);
+}
 
 class BlockDevice {
 public:

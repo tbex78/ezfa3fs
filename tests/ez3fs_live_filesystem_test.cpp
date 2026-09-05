@@ -53,8 +53,8 @@ void putLittle(std::vector<std::uint8_t>& bytes,std::size_t offset,
 }
 
 void verifyFormatIdentityAndLegacyCompatibility() {
-    constexpr std::array<std::uint8_t,8> current_magic{{'E','Z','F','A','3','F','S',0}};
-    constexpr std::array<std::uint8_t,8> old_magic{{'E','Z','3','L','I','V','E',0}};
+    constexpr const auto& current_magic=ez3fs::live::format_magic;
+    constexpr const auto& old_magic=ez3fs::live::legacy_format_magic;
     ez3fs::live::NorFlash formatted;std::string error;
     require(ez3fs::live::Filesystem::format(formatted,error));
     std::vector<std::uint8_t> block(ez3fs::live::NorFlash::block_size);

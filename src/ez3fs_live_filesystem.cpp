@@ -11,8 +11,6 @@
 
 namespace ez3fs::live {
 namespace {
-constexpr std::array<std::uint8_t,8> magic{{'E','Z','F','A','3','F','S',0}};
-constexpr std::array<std::uint8_t,8> legacy_magic{{'E','Z','3','L','I','V','E',0}};
 constexpr std::uint16_t major=2, minor=0;
 constexpr std::uint16_t legacy_major=1, legacy_minor=0;
 constexpr std::uint32_t commit_marker=0xC0FF17EDu;
@@ -133,9 +131,9 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
     for(std::size_t block=0;block<2;++block) {
         std::vector<std::uint8_t> bytes(NorFlash::block_size);
         if(!flash.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error))return false;
-        const bool current_format=std::equal(magic.begin(),magic.end(),bytes.begin())&&
+        const bool current_format=std::equal(format_magic.begin(),format_magic.end(),bytes.begin())&&
             get<std::uint16_t>(bytes.data(),8)==major&&get<std::uint16_t>(bytes.data(),10)==minor;
-        const bool legacy_format=std::equal(legacy_magic.begin(),legacy_magic.end(),bytes.begin())&&
+        const bool legacy_format=std::equal(legacy_format_magic.begin(),legacy_format_magic.end(),bytes.begin())&&
             get<std::uint16_t>(bytes.data(),8)==legacy_major&&get<std::uint16_t>(bytes.data(),10)==legacy_minor;
         if((!current_format&&!legacy_format)||get<std::uint32_t>(bytes.data(),28)!=commit_marker)continue;
         const auto length=get<std::uint32_t>(bytes.data(),20);
@@ -189,7 +187,7 @@ bool Filesystem::commit(std::string& error) {
     }
     if(manifest.size()>NorFlash::block_size-superblock_header){error="live manifest exceeds superblock capacity";return false;}
     const auto target=1-active_superblock_;if(!flash_.eraseBlock(target,error))return false;
-    std::vector<std::uint8_t> block(NorFlash::block_size,0xFF);std::copy(magic.begin(),magic.end(),block.begin());
+    std::vector<std::uint8_t> block(NorFlash::block_size,0xFF);std::copy(format_magic.begin(),format_magic.end(),block.begin());
     put<std::uint16_t>(block.data(),8,major);put<std::uint16_t>(block.data(),10,minor);put<std::uint64_t>(block.data(),12,generation_+1);
     put<std::uint32_t>(block.data(),20,static_cast<std::uint32_t>(manifest.size()));
     put<std::uint32_t>(block.data(),24,Crc32::calculate(manifest.data(),manifest.size()));put<std::uint32_t>(block.data(),28,commit_marker);
