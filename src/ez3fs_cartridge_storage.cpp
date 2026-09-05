@@ -809,7 +809,18 @@ bool CartridgeStorage::programLiveFilesystemExtent(
         if(!verifyLiveBlockAfterWrite(first_block+i,expected,"program",
                                       verification_error,
                                       !transferred&&i==0,error)) {
-            completed_blocks=i;return false;
+            // An extent transfer shares one USB write session.  A transient
+            // failure can therefore leave exactly one completed transaction
+            // unreadable while its neighbours are sound.  Recover that block
+            // through the single-block writer: it owns the erase, writer
+            // restart, and readback retry sequence.  Do not discard an
+            // otherwise valid large-file transfer merely because its bulk
+            // verification encountered that recoverable condition.
+            const auto verification_failure=error;
+            if(!programLiveFilesystemBlock(first_block+i,expected,error)) {
+                error=verification_failure+"; block recovery failed: "+error;
+                completed_blocks=i;return false;
+            }
         }
     }
     if(!transferred) {
