@@ -5,6 +5,9 @@
 
 namespace ez3fs {
 
+LiveCartridgeSession::LiveCartridgeSession()
+    : device_(storage_),cached_device_(device_),filesystem_(cached_device_) {}
+
 LiveCartridgeSession::~LiveCartridgeSession() { std::string ignored;close(ignored); }
 
 bool LiveCartridgeSession::open(

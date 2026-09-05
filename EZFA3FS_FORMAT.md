@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZFA3FS 2.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.44.0`.
+`0.45.9`.
 
 ## Geometry and layout
 
@@ -261,14 +261,16 @@ Garbage collection and compaction are invoked automatically if an ordinary
 copy-on-write allocation cannot proceed, so manual maintenance is not required
 for correctness during a mounted write.
 
-New FUSE files remain in the mount backend's pending state until flush, fsync,
-or release successfully commits their contents. After a commit failure, the
+New FUSE files remain in the mount backend's pending state until release
+successfully commits their contents. After a commit failure, the
 mount stays readable but rejects later mutations before invoking the backend.
 It reports the cached failure to lifecycle callbacks without replaying the
 flash transaction during teardown. Program and erase verification rechecks a
 mismatched block through fresh USB sessions before retrying it. macOS cartridge
-mounts use a 600-second daemon timeout, suppress AppleDouble traffic, and
-accept but discard extended attributes because the format does not store them.
+mounts use a 600-second daemon timeout and accept but discard extended
+attributes because the format does not store them. Finder `.DS_Store` and
+AppleDouble files remain transient in host memory rather than being denied or
+written to cartridge flash.
 Contiguous data blocks share one captured-protocol programming session, with a
 session transition only at each 8-MiB hardware window boundary. A failed data
 extent is retried at another erased location before the mount reports failure.
@@ -282,9 +284,11 @@ diskutil unmount mountpoint       # macOS
 fusermount3 -u mountpoint         # Linux
 ```
 
-Finder can create `.DS_Store` and `._*` AppleDouble files. They are stored as
-ordinary files and consume blocks. Close Finder windows before removing these
-entries if Finder recreates them immediately.
+The macOS live-mount adapter keeps Finder `.DS_Store` and `._*` AppleDouble
+files in host memory. They remain usable during the mount but are not part of
+the on-cartridge manifest and disappear at unmount. This is a mount policy;
+the EZFA3FS format itself can still store files with those names through other
+interfaces.
 
 ## Diagnostic block commands
 

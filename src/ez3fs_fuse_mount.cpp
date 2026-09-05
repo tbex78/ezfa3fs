@@ -1,5 +1,6 @@
 #include "ez3fs/fuse_mount.hpp"
 #include "ez3fs/archive.hpp"
+#include "ez3fs/finder_metadata_mount_backend.hpp"
 #include "ez3fs/live_cartridge_session.hpp"
 #include "ez3fs/live_mount_backend.hpp"
 #include "ez3fs/mount_backend.hpp"
@@ -334,7 +335,12 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
                     "garbage collection":"compaction")
                  <<" started; the current write will resume when it completes.\n";
     };
-    MountSession mounted(std::make_unique<LiveMountBackend>(cartridge.filesystem(),maintenance));
+    std::unique_ptr<MountBackend> backend=
+        std::make_unique<LiveMountBackend>(cartridge.filesystem(),maintenance);
+#if defined(__APPLE__)
+    backend=std::make_unique<FinderMetadataMountBackend>(std::move(backend));
+#endif
+    MountSession mounted(std::move(backend));
     const int result=runMount(mounted,mountpoint,foreground,"ezfa3fs-card");
     if(!cartridge.close(error)){std::cerr<<"Could not close live cartridge session: "<<error<<'\n';return 1;}
     return result;

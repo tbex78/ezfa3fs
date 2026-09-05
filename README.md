@@ -4,7 +4,7 @@ EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
 NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
 FAT partition, or ROM-patching workflow.
 
-Application version: **0.44.0**.
+Application version: **0.45.9**.
 
 `ez3fs` manages the live filesystem. `ezfs-legacy` preserves the packed-image
 workflow. Two incompatible formats are supported:
@@ -284,6 +284,11 @@ flash transactions. Extended attribute writes are accepted and discarded
 because EZ3FS does not persist them. The macFUSE `noapplexattr` and
 `noappledouble` denial options are deliberately not used: Finder treats their
 rejections as copy failures before the EZ3FS callbacks can apply this policy.
+Finder's `.DS_Store` and `._*` housekeeping files are instead held in memory
+for the lifetime of the mount, so browsing does not create flash transactions.
+Repeated reads use a lazy 64-KiB block cache and successful writes invalidate
+or refresh affected blocks. Internal writer restarts skip the final-unmount
+settling delay after the cartridge has explicitly reported ready.
 Intermediate macFUSE `flush` and `fsync` requests only check mount health;
 final `release` commits only its named file once, so Finder cannot commit a copy
 that is still growing. Read-only and writable handles that made no data change
@@ -306,9 +311,9 @@ diskutil unmount mountpoint       # macOS
 fusermount3 -u mountpoint         # Linux
 ```
 
-macOS may create `.DS_Store` and `._*` AppleDouble files. They are ordinary
-EZFA3FS entries and consume flash blocks like other files. Close Finder
-windows before deleting them if Finder immediately recreates them.
+macOS may create `.DS_Store` and `._*` AppleDouble files. On a writable live
+cartridge mount they are transient compatibility files: Finder can use them,
+but they are not committed to EZFA3FS and disappear when the mount ends.
 
 ## Block diagnostics
 

@@ -1,12 +1,13 @@
 #pragma once
 
+#include "ez3fs/cached_block_device.hpp"
 #include "ez3fs/cartridge_live_device.hpp"
 
 namespace ez3fs {
 
 class LiveCartridgeSession final {
 public:
-    LiveCartridgeSession() : device_(storage_), filesystem_(device_) {}
+    LiveCartridgeSession();
     ~LiveCartridgeSession();
     LiveCartridgeSession(const LiveCartridgeSession&) = delete;
     LiveCartridgeSession& operator=(const LiveCartridgeSession&) = delete;
@@ -20,6 +21,7 @@ public:
 private:
     CartridgeStorage storage_;
     CartridgeLiveDevice device_;
+    live::CachedBlockDevice cached_device_;
     live::Filesystem filesystem_;
     bool open_ = false;
 };

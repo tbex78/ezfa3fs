@@ -30,7 +30,7 @@ public:
 
     bool open(std::string& error);
     bool openForProgramming(std::string& error);
-    bool close(std::string& error);
+    bool close(std::string& error,bool settle_before_release=true);
     void shutdown() noexcept;
     bool read(std::uint64_t offset, std::uint8_t* destination,
               std::size_t size, std::string& error);
@@ -719,17 +719,19 @@ bool CartridgeStorage::Impl::openForProgramming(std::string& error)
 #endif
 }
 
-bool CartridgeStorage::Impl::close(std::string& error)
+bool CartridgeStorage::Impl::close(std::string& error,bool settle_before_release)
 {
 #if defined(EZ3FS_HAS_LIBUSB)
     bool finished = true;
     if (is_open) {
         for (unsigned i=0; i<3 && finished; ++i) finished = waitReady(1,error);
-        if (finished) std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        if (finished&&settle_before_release)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     }
     shutdown();
     return finished;
 #else
+    (void)settle_before_release;
     error.clear(); return true;
 #endif
 }
@@ -790,7 +792,7 @@ bool CartridgeStorage::openLiveWriteSessionWithRetry(std::string& error) {
     return false;
 }
 bool CartridgeStorage::restartLiveWriteSession(std::string& error) {
-    std::string close_error;const bool closed=close(close_error);
+    std::string close_error;const bool closed=impl_->close(close_error,false);
     if(openLiveWriteSessionWithRetry(error))return true;
     if(!closed&&!close_error.empty())error+="; close also failed: "+close_error;
     return false;
