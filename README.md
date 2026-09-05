@@ -7,7 +7,7 @@ The project provides two programs:
 - `ez3fs` manages the current transactional **EZFA3FS** format.
 - `ezfs-legacy` preserves the earlier packed **EZ3FS** image and staging workflow.
 
-Application version: **0.45.14**. EZFA3FS is format **2.0.0** in its standard layout and **2.1.0** in its slotted direct-boot layout. Legacy EZ3FS remains format **1.2**.
+Application version: **0.45.15**. EZFA3FS is format **2.0.0** in its standard layout and **2.1.0** in its slotted direct-boot layout. Legacy EZ3FS remains format **1.2**.
 
 The macOS/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
@@ -69,7 +69,7 @@ Or create an empty image with a 16 MiB boot slot and copy the first ROM through 
 
 The first persistent file must be a non-empty root-level `.gba` file. The slot expands when possible if the ROM needs more room. Additional files and directories live after the reserved slot, so direct boot remains compatible with a multi-file filesystem.
 
-The ROM at offset zero is immutable while present. Delete it, then copy a new root-level `.gba` file to replace it. Deletion erases only logical block 0 to invalidate the old ROM immediately. When a replacement is copied, any nonblank blocks in its required extent are erased before programming. The reserved slot remains available. A direct-boot ROM may occupy at most 510 blocks (31.875 MiB).
+The ROM at offset zero is immutable while present. Delete it, then copy a new root-level `.gba` file to replace it. Deletion erases only logical block 0 to invalidate the old ROM immediately. When a replacement is copied, nonblank blocks in its required extent are erased in window-level batches, verified together, and individually retried only when needed. The reserved slot remains available. A direct-boot ROM may occupy at most 510 blocks (31.875 MiB).
 
 ## Command reference
 

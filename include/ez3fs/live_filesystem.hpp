@@ -40,6 +40,8 @@ public:
                                std::size_t block_count,
                                std::size_t& completed_blocks,std::string& error);
     virtual bool eraseBlock(std::size_t block,std::string& error) = 0;
+    virtual bool eraseBlocks(const std::vector<std::size_t>& blocks,
+                             std::string& error);
     virtual bool replaceMetadataBlock(std::size_t block,
                                       const std::uint8_t* source,
                                       std::size_t size,std::string& error);

@@ -1,6 +1,6 @@
 # EZFA3FS transactional format
 
-This document describes the 32 MiB EZFA3FS format implemented by application version **0.45.14**. The standard layout is format **2.0.0**; the slotted direct-boot layout is **2.1.0**.
+This document describes the 32 MiB EZFA3FS format implemented by application version **0.45.15**. The standard layout is format **2.0.0**; the slotted direct-boot layout is **2.1.0**.
 
 EZFA3FS is an independent indexed filesystem for EZ-Flash Advance III NOR flash. It is not FAT, has no partition table, and does not use the original EZ3 menu or ROM patching. All multibyte integers are little-endian.
 
@@ -96,7 +96,7 @@ Blocks dropped by a new generation become unreferenced garbage; they need not be
 - The boot ROM begins at block 0 and may use at most blocks 0 through 509.
 - The ROM is immutable while present; delete it before installing another.
 - Deleting it erases only logical block 0, immediately invalidating the old GBA header and entry point.
-- Installing its replacement erases any nonblank blocks in the replacement extent before programming; stale blocks beyond a smaller replacement remain reserved and inaccessible.
+- Installing its replacement erases nonblank blocks in the replacement extent in window-level batches, verifies the batch, and retries only failed blocks individually; stale blocks beyond a smaller replacement remain reserved and inaccessible.
 - After deletion, the next persistent file must again be a non-empty root-level `.gba` file.
 - Other files and directories live after the reserved slot.
 

@@ -125,6 +125,13 @@ bool BlockDevice::replaceMetadataBlock(std::size_t block,
            program(block*NorFlash::block_size,source,size,error);
 }
 
+bool BlockDevice::eraseBlocks(const std::vector<std::size_t>& blocks,
+                              std::string& error) {
+    for(const auto block:blocks)
+        if(!eraseBlock(block,error))return false;
+    error.clear();return true;
+}
+
 bool NorFlash::eraseBlock(std::size_t block,std::string& error) {
     if(block>=block_count){error="NOR erase block out of bounds";return false;}
     std::fill(bytes_.begin()+static_cast<std::ptrdiff_t>(block*block_size),
@@ -453,6 +460,7 @@ bool Filesystem::ensureDirectBootSlotCapacity(std::size_t block_count,
 bool Filesystem::prepareDirectBootRomExtent(std::size_t block_count,
                                             std::string& error) {
     std::vector<std::uint8_t> bytes(NorFlash::block_size);
+    std::vector<std::size_t> stale_blocks;
     for(std::size_t block=0;block<block_count;++block) {
         if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
             error="could not inspect direct-boot ROM block "+
@@ -460,10 +468,12 @@ bool Filesystem::prepareDirectBootRomExtent(std::size_t block_count,
         }
         const bool blank=std::all_of(bytes.begin(),bytes.end(),
             [](std::uint8_t byte){return byte==0xFF;});
-        if(!blank&&(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error))) {
-            error="could not erase stale direct-boot ROM block "+
-                  std::to_string(block)+": "+error;return false;
-        }
+        if(!blank)stale_blocks.push_back(block);
+    }
+    if(!stale_blocks.empty()&&
+       (!flash_.prepareForErase(error)||!flash_.eraseBlocks(stale_blocks,error))) {
+        error="could not erase stale direct-boot ROM extent: "+error;
+        return false;
     }
     error.clear();return true;
 }

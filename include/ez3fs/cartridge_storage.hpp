@@ -33,6 +33,8 @@ public:
     bool eraseLiveBlock(std::size_t block,std::string& error);
     bool programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error);
     bool eraseLiveFilesystemBlock(std::size_t block,std::string& error);
+    bool eraseLiveFilesystemBlocks(const std::vector<std::size_t>& blocks,
+                                   std::string& error);
     bool programLiveFilesystemBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error);
     bool replaceLiveFilesystemMetadata(std::size_t block,
                                        const std::vector<std::uint8_t>& bytes,

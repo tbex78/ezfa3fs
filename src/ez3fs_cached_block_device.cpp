@@ -101,6 +101,17 @@ bool CachedBlockDevice::eraseBlock(std::size_t block,std::string& error) {
     return true;
 }
 
+bool CachedBlockDevice::eraseBlocks(const std::vector<std::size_t>& blocks,
+                                    std::string& error) {
+    for(const auto block:blocks)invalidate(block,1);
+    if(!device_.eraseBlocks(blocks,error))return false;
+    for(const auto block:blocks) {
+        auto bytes=std::make_unique<CachedBlock>(NorFlash::block_size,0xFF);
+        blocks_[block]=std::move(bytes);
+    }
+    error.clear();return true;
+}
+
 bool CachedBlockDevice::replaceMetadataBlock(std::size_t block,
                                              const std::uint8_t* source,
                                              std::size_t size,

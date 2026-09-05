@@ -60,4 +60,12 @@ int main() {
     require(cache.eraseBlock(0,error));
     require(cache.read(4,&value,1,error)&&value==0xFF);
     require(device.reads==1);
+
+    device.bytes[NorFlash::block_size]=0x12;
+    device.bytes[2*NorFlash::block_size]=0x34;
+    require(cache.eraseBlocks({1,2},error));
+    require(cache.read(NorFlash::block_size,&value,1,error)&&value==0xFF);
+    require(cache.read(2*NorFlash::block_size,&value,1,error)&&value==0xFF);
+    require(device.reads==1);
+    require(device.erases==3);
 }

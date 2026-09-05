@@ -35,6 +35,9 @@ public:
     bool read(std::uint64_t offset, std::uint8_t* destination,
               std::size_t size, std::string& error);
     bool eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error,bool allow_metadata=false);
+    bool eraseLiveBlocks(const std::vector<std::size_t>& blocks,
+                         std::ostream& progress,std::string& error,
+                         bool allow_metadata=false);
     bool eraseLiveBlockPrefix(std::size_t block,std::size_t byte_count,
                               std::ostream& progress,std::string& error,
                               bool allow_metadata=false);
@@ -566,6 +569,55 @@ bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& prog
     return eraseLiveBlockPrefix(block,live::NorFlash::block_size,progress,
                                 error,allow_metadata);
 }
+bool CartridgeStorage::Impl::eraseLiveBlocks(
+    const std::vector<std::size_t>& blocks,std::ostream& progress,
+    std::string& error,bool allow_metadata) {
+    if(blocks.empty()){error.clear();return true;}
+    if(!std::is_sorted(blocks.begin(),blocks.end())||
+       std::adjacent_find(blocks.begin(),blocks.end())!=blocks.end()) {
+        error="live erase batch must contain sorted unique blocks";return false;
+    }
+    unsigned selected_window=4;
+    std::size_t completed=0;
+    for(const auto block:blocks) {
+        if((!allow_metadata&&block<2)||block>=live::NorFlash::block_count) {
+            error="live erase batch contains a block outside the permitted range";
+            return false;
+        }
+        const auto sectors=CartridgeFlashGeometry::sectorsForLogicalBlock(block);
+        const auto window=sectors.front().window;
+        if(window!=selected_window) {
+            if(selected_window!=4&&!finishLiveWriteOperation(error))return false;
+            if(!selectWriteWindow(window,error))return false;
+            selected_window=window;
+        }
+        for(const auto& sector:sectors) {
+            const auto address=sector.word_address;
+            std::vector<std::uint8_t> command={0x5A,0xA5,0x96,0,
+                static_cast<std::uint8_t>(address),
+                static_cast<std::uint8_t>(address>>8),
+                static_cast<std::uint8_t>(address>>16),
+                static_cast<std::uint8_t>(address>>24),0,0,0,0,0};
+            std::vector<std::uint8_t> response;
+            if(!out(command,error)||!in(response,command.size(),error))return false;
+            if(response.size()!=command.size()||
+               !std::equal(command.begin(),command.begin()+12,response.begin())||
+               response[12]!=0) {
+                std::ostringstream detail;
+                detail<<"cartridge live batch erase response mismatch";
+                if(response.size()==command.size())
+                    detail<<" (status 0x"<<std::hex
+                          <<static_cast<unsigned>(response[12])<<')'<<std::dec;
+                error=detail.str();return false;
+            }
+        }
+        ++completed;
+        progress<<"\rErasing EZFA3FS extent: "
+                <<(completed*100/blocks.size())<<'%'<<std::flush;
+    }
+    if(!finishLiveWriteOperation(error))return false;
+    progress<<'\n';error.clear();return true;
+}
 bool CartridgeStorage::Impl::eraseLiveBlockPrefix(
     std::size_t block,std::size_t byte_count,std::ostream& progress,
     std::string& error,bool allow_metadata)
@@ -667,6 +719,9 @@ bool CartridgeStorage::Impl::programImage(
     error="EZ3FS was built without libusb support";return false;
 }
 bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t,std::ostream&,std::string& error,bool)
+{ error="EZ3FS was built without libusb support";return false; }
+bool CartridgeStorage::Impl::eraseLiveBlocks(const std::vector<std::size_t>&,
+                                             std::ostream&,std::string& error,bool)
 { error="EZ3FS was built without libusb support";return false; }
 bool CartridgeStorage::Impl::eraseLiveBlockPrefix(std::size_t,std::size_t,
                                                   std::ostream&,std::string& error,bool)
@@ -890,6 +945,42 @@ bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& e
         if(attempt<attempts)std::cerr<<"Retrying live block erase (attempt "<<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
     }
     return false;
+}
+bool CartridgeStorage::eraseLiveFilesystemBlocks(
+    const std::vector<std::size_t>& blocks,std::string& error) {
+    if(blocks.empty()){error.clear();return true;}
+    std::string operation_error;
+    if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error,true)) {
+        error="could not restore cartridge writer before batch erase: "+
+              operation_error;return false;
+    }
+    const bool completed=impl_->eraseLiveBlocks(
+        blocks,std::cerr,operation_error,true);
+    const std::vector<std::uint8_t> blank(live::NorFlash::block_size,0xFF);
+    std::vector<std::size_t> failed_blocks;
+    for(std::size_t index=0;index<blocks.size();++index) {
+        std::vector<std::uint8_t> readback;
+        std::string read_error;
+        if(!readLiveBlockAfterWrite(blocks[index],blank.size(),readback,
+                                    read_error,index==0)||readback!=blank)
+            failed_blocks.push_back(blocks[index]);
+    }
+    for(const auto block:failed_blocks) {
+        std::string retry_error;
+        if(!eraseLiveFilesystemBlock(block,retry_error)) {
+            error="batch erase could not recover block "+
+                  std::to_string(block)+": "+retry_error;
+            if(!completed&&!operation_error.empty())
+                error+="; initial batch also failed: "+operation_error;
+            return false;
+        }
+    }
+    std::cerr<<"Verified "<<blocks.size()
+             <<" erased cartridge block(s)";
+    if(!failed_blocks.empty())
+        std::cerr<<" ("<<failed_blocks.size()<<" repaired individually)";
+    std::cerr<<".\n";
+    error.clear();return true;
 }
 bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) {
     constexpr unsigned attempts=3;
