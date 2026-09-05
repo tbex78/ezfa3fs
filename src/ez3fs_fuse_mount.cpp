@@ -67,6 +67,16 @@ int finishMutation(bool changed,const std::string& error) {
     if(!changed)return mutationFailure(session(),error);
     return commitSession(session());
 }
+int metadataMutation(const char* path) {
+    MountNode node;
+    if(!session().backend().lookup(path,node))return -ENOENT;
+    // EZFA3FS persists file data, directory structure, and modification
+    // times only. Unix permissions and ownership are deliberately a fixed
+    // mount policy, so acknowledge metadata updates Finder requires without
+    // turning them into filesystem transactions.
+    if(!session().backend().writable())return -EROFS;
+    return beginMutation(session());
+}
 
 int ez3fsGetattr(const char* path,struct stat* status,struct fuse_file_info*) {
     std::lock_guard<std::mutex> lock(session().mutex());MountNode info;if(!session().backend().lookup(path,info))return -ENOENT;
@@ -90,13 +100,21 @@ int ez3fsOpen(const char* path,struct fuse_file_info* info) {
     return 0;
 }
 int ez3fsChmod(const char* path,mode_t,struct fuse_file_info*) {
-    std::lock_guard<std::mutex> lock(session().mutex());MountNode node;
-    if(!session().backend().lookup(path,node))return -ENOENT;
+    std::lock_guard<std::mutex> lock(session().mutex());
     // EZ3FS formats do not store Unix permission bits. Accept chmod on a
     // writable mount so standard copy tools can finish, while getattr keeps
     // exposing the filesystem's fixed 0644/0755 policy.
-    if(!session().backend().writable())return -EROFS;
-    return beginMutation(session());
+    return metadataMutation(path);
+}
+int ez3fsChown(const char* path,uid_t,gid_t,struct fuse_file_info*) {
+    std::lock_guard<std::mutex> lock(session().mutex());return metadataMutation(path);
+}
+int ez3fsUtimens(const char* path,const struct timespec[2],struct fuse_file_info*) {
+    std::lock_guard<std::mutex> lock(session().mutex());return metadataMutation(path);
+}
+int ez3fsAccess(const char* path,int) {
+    std::lock_guard<std::mutex> lock(session().mutex());MountNode node;
+    return session().backend().lookup(path,node)?0:-ENOENT;
 }
 int ez3fsRead(const char* path,char* buffer,size_t size,off_t offset,struct fuse_file_info*) {
     if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().mutex());std::vector<std::uint8_t> bytes;
@@ -154,7 +172,8 @@ int ez3fsStatfs(const char*,struct statvfs* status) {std::lock_guard<std::mutex>
     status->f_ffree=1024;status->f_favail=1024;status->f_namemax=255;return 0;}
 
 fuse_operations operations() {fuse_operations value{};value.getattr=ez3fsGetattr;value.readdir=ez3fsReaddir;value.open=ez3fsOpen;
-    value.read=ez3fsRead;value.chmod=ez3fsChmod;value.mkdir=ez3fsMkdir;value.create=ez3fsCreate;value.write=ez3fsWrite;value.truncate=ez3fsTruncate;
+    value.read=ez3fsRead;value.chmod=ez3fsChmod;value.chown=ez3fsChown;value.utimens=ez3fsUtimens;value.access=ez3fsAccess;
+    value.mkdir=ez3fsMkdir;value.create=ez3fsCreate;value.write=ez3fsWrite;value.truncate=ez3fsTruncate;
     value.unlink=ez3fsUnlink;value.rmdir=ez3fsRmdir;value.rename=ez3fsRename;value.flush=ez3fsFlush;value.fsync=ez3fsFsync;
     value.release=ez3fsRelease;value.setxattr=ez3fsSetxattr;value.getxattr=ez3fsGetxattr;value.listxattr=ez3fsListxattr;
     value.removexattr=ez3fsRemovexattr;value.destroy=ez3fsDestroy;value.statfs=ez3fsStatfs;return value;}
