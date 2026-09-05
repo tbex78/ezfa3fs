@@ -79,13 +79,14 @@ private:
     bool probePrefix(std::uint8_t a0,std::uint8_t a1,
                      std::uint8_t b0,std::uint8_t b1,
                      std::uint8_t c0,std::uint8_t c1,
-                     bool include_tail,std::string& error);
+                     bool include_tail,std::string& error,bool writer_probe=false);
+    bool unlockWindow(std::string& error,bool writer);
     bool resetAfterFlashId(bool use_f0,std::string& error);
     bool probeFlashWindow(std::uint8_t a0,std::uint8_t a1,
                           std::uint8_t b0,std::uint8_t b1,
                           std::uint8_t c0,std::uint8_t c1,
                           std::array<std::uint8_t,4>& id,
-                          std::string& error);
+                          std::string& error,bool writer_probe=false);
     bool readFlashId(std::array<std::uint8_t, 4>& id, std::string& error);
     bool prepareMapping(std::uint64_t end, std::string& error);
     bool mappingBody(std::uint32_t limit, std::string& error);
@@ -287,14 +288,25 @@ bool CartridgeStorage::Impl::activateWriter(std::string& error)
 
 bool CartridgeStorage::Impl::probePrefix(
     std::uint8_t a0,std::uint8_t a1,std::uint8_t b0,std::uint8_t b1,
-    std::uint8_t c0,std::uint8_t c1,bool include_tail,std::string& error)
+    std::uint8_t c0,std::uint8_t c1,bool include_tail,std::string& error,
+    bool writer_probe)
 {
     if (!tx92(0x55,0xAA,error) || !tx92(a0,a1,error) ||
         !tx92(b0,b1,error) || !tx92(c0,c1,error)) return false;
     std::this_thread::sleep_for(std::chrono::milliseconds(125));
     if(!include_tail)return true;
-    return tx92(0xAA,0x55,error)&&tx92(0,0,error)&&
-           tx92(0,0,error)&&tx92(0,0,error);
+    return unlockWindow(error,writer_probe);
+}
+
+bool CartridgeStorage::Impl::unlockWindow(std::string& error,bool writer)
+{
+    if(!tx92(0xAA,0x55,error)||!tx92(0,0,error)||
+       !tx92(0,0,error)||!tx92(0,0,error))return false;
+    // The companion manager writer includes these selectors in every probe,
+    // before issuing the flash-ID command. Read-only probing keeps its
+    // historical sequence.
+    return !writer||(tx92One(0,0xAA,error)&&tx92One(0,0x55,error)&&
+                     tx92One(1,0x06,error));
 }
 
 bool CartridgeStorage::Impl::resetAfterFlashId(bool use_f0,std::string& error)
@@ -306,9 +318,9 @@ bool CartridgeStorage::Impl::resetAfterFlashId(bool use_f0,std::string& error)
 bool CartridgeStorage::Impl::probeFlashWindow(
     std::uint8_t a0,std::uint8_t a1,std::uint8_t b0,std::uint8_t b1,
     std::uint8_t c0,std::uint8_t c1,std::array<std::uint8_t,4>& id,
-    std::string& error)
+    std::string& error,bool writer_probe)
 {
-    return probePrefix(a0,a1,b0,b1,c0,c1,true,error)&&
+    return probePrefix(a0,a1,b0,b1,c0,c1,true,error,writer_probe)&&
            tx92(0x90,0,error)&&readFlashId(id,error)&&
            resetAfterFlashId(false,error);
 }
@@ -343,11 +355,11 @@ bool CartridgeStorage::Impl::initialize(std::string& error,bool allow_erased,
     }
 
     std::array<std::uint8_t,4> ignored{};
-    if (!probePrefix(0,0,0,0,0,0,true,error) || !tx92(0xAA,0,error,0x555) ||
+    if (!probePrefix(0,0,0,0,0,0,true,error,allow_erased) || !tx92(0xAA,0,error,0x555) ||
         !tx92(0x55,0,error,0x2AA) || !tx92(0x90,0,error,0x555) ||
         !readFlashId(ignored,error) || !tx92(0x90,0,error) ||
         !resetAfterFlashId(true,error) ||
-        !probeFlashWindow(0,0,0,0,0,0,flash_id,error))return false;
+        !probeFlashWindow(0,0,0,0,0,0,flash_id,error,allow_erased))return false;
 
     if(allow_erased) {
         // The original manager primes all four 8-MiB windows before writing.
@@ -358,8 +370,8 @@ bool CartridgeStorage::Impl::initialize(std::string& error,bool allow_erased,
             {{2,0,0,0x40,0,0}},{{2,0,0,0x80,0,0}},{{2,0,0,0xC0,0,0}}}};
         for(const auto& probe:upper)
             if(!probeFlashWindow(probe[0],probe[1],probe[2],probe[3],
-                                 probe[4],probe[5],ignored,error))return false;
-        if(!probeFlashWindow(0,0,0,0,2,0,ignored,error)||
+                                 probe[4],probe[5],ignored,error,true))return false;
+        if(!probeFlashWindow(0,0,0,0,2,0,ignored,error,true)||
            !probePrefix(0,0,0,0,0,0,false,error))return false;
     }
 
@@ -486,10 +498,7 @@ bool CartridgeStorage::Impl::selectWriteWindow(unsigned window,
     if (!tx92(0x55,0xAA,error) || !tx92(mode,0,error) ||
         !tx92(0,high,error) || !tx92(0,0,error)) return false;
     std::this_thread::sleep_for(std::chrono::milliseconds(125));
-    return tx92(0xAA,0x55,error) && tx92(0,0,error) &&
-           tx92(0,0,error) && tx92(0,0,error) &&
-           tx92One(0,0xAA,error) && tx92One(0,0x55,error) &&
-           tx92One(1,0x06,error);
+    return unlockWindow(error,true);
 }
 
 bool CartridgeStorage::Impl::programTransaction(
