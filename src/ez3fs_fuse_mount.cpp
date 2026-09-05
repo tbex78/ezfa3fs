@@ -6,6 +6,7 @@
 #include "ez3fs/mount_session.hpp"
 #include "ez3fs/virtual_mount_backend.hpp"
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -36,6 +37,32 @@ namespace ez3fs {
 #if defined(EZ3FS_HAS_FUSE3)
 namespace {
 namespace fs=std::filesystem;
+
+struct FuseFileHandle final {
+    bool writable = false;
+    bool dirty = false;
+};
+
+FuseFileHandle* fileHandle(struct fuse_file_info* info) {
+    return info&&info->fh!=0?
+        reinterpret_cast<FuseFileHandle*>(static_cast<std::uintptr_t>(info->fh)):
+        nullptr;
+}
+void installFileHandle(struct fuse_file_info* info,bool writable,bool dirty) {
+    if(!info)return;
+    auto handle=std::make_unique<FuseFileHandle>();
+    handle->writable=writable;handle->dirty=dirty;
+    info->fh=static_cast<std::uint64_t>(
+        reinterpret_cast<std::uintptr_t>(handle.release()));
+}
+void markFileHandleDirty(struct fuse_file_info* info) {
+    if(auto* handle=fileHandle(info);handle&&handle->writable)handle->dirty=true;
+}
+std::unique_ptr<FuseFileHandle> takeFileHandle(struct fuse_file_info* info) {
+    auto* handle=fileHandle(info);
+    if(info)info->fh=0;
+    return std::unique_ptr<FuseFileHandle>(handle);
+}
 
 bool readImage(const fs::path& path,std::vector<std::uint8_t>& bytes) {
     std::ifstream input(path,std::ios::binary);if(!input)return false;
@@ -98,10 +125,12 @@ int ez3fsReaddir(const char* path,void* buffer,fuse_fill_dir_t filler,off_t,stru
 }
 int ez3fsOpen(const char* path,struct fuse_file_info* info) {
     std::lock_guard<std::mutex> lock(session().mutex());MountNode node;if(!session().backend().lookup(path,node)||node.directory)return -ENOENT;
-    if((info->flags&O_ACCMODE)!=O_RDONLY) {
+    const bool writable=(info->flags&O_ACCMODE)!=O_RDONLY;
+    if(writable) {
         if(!session().backend().writable())return -EROFS;
         if(const int failure=beginMutation(session());failure!=0)return failure;
     }
+    installFileHandle(info,writable,false);
     return 0;
 }
 int ez3fsChmod(const char* path,mode_t,struct fuse_file_info*) {
@@ -128,15 +157,16 @@ int ez3fsRead(const char* path,char* buffer,size_t size,off_t offset,struct fuse
 }
 int ez3fsMkdir(const char* path,mode_t) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().createDirectory(path,error);return finishMutation(changed,error);}
-int ez3fsCreate(const char* path,mode_t,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
-    const bool changed=session().backend().createFile(path,error);return changed?0:mutationFailure(session(),error);}
-int ez3fsWrite(const char* path,const char* buffer,size_t size,off_t offset,struct fuse_file_info*) {
+int ez3fsCreate(const char* path,mode_t,struct fuse_file_info* info) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+    const bool changed=session().backend().createFile(path,error);if(changed)installFileHandle(info,true,false);return changed?0:mutationFailure(session(),error);}
+int ez3fsWrite(const char* path,const char* buffer,size_t size,off_t offset,struct fuse_file_info* info) {
     if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
-    return session().backend().write(path,static_cast<std::size_t>(offset),reinterpret_cast<const std::uint8_t*>(buffer),size,error)?static_cast<int>(size):mutationFailure(session(),error);
+    if(!session().backend().write(path,static_cast<std::size_t>(offset),reinterpret_cast<const std::uint8_t*>(buffer),size,error))return mutationFailure(session(),error);
+    markFileHandleDirty(info);return static_cast<int>(size);
 }
-int ez3fsTruncate(const char* path,off_t size,struct fuse_file_info*) {if(size<0)return -EINVAL;
+int ez3fsTruncate(const char* path,off_t size,struct fuse_file_info* info) {if(size<0)return -EINVAL;
     std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
-    const bool changed=session().backend().truncate(path,static_cast<std::size_t>(size),error);return changed?0:mutationFailure(session(),error);}
+    const bool changed=session().backend().truncate(path,static_cast<std::size_t>(size),error);if(changed)markFileHandleDirty(info);return changed?0:mutationFailure(session(),error);}
 int ez3fsUnlink(const char* path) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().removeFile(path,error);return finishMutation(changed,error);}
 int ez3fsRmdir(const char* path) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
@@ -153,7 +183,11 @@ int ez3fsFlush(const char*,struct fuse_file_info*) {
     return beginMutation(session());
 }
 int ez3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return beginMutation(session());}
-int ez3fsRelease(const char* path,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSessionFile(session(),path);}
+int ez3fsRelease(const char* path,struct fuse_file_info* info) {std::lock_guard<std::mutex> lock(session().mutex());
+    const auto handle=takeFileHandle(info);
+    if(handle&&!handle->dirty)return beginMutation(session());
+    return commitSessionFile(session(),path);
+}
 int ez3fsSetxattr(const char* path,const char*,const char*,size_t,int) {
     std::lock_guard<std::mutex> lock(session().mutex());MountNode node;
     if(!session().backend().lookup(path,node))return -ENOENT;

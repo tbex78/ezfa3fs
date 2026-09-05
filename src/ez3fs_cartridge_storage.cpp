@@ -917,6 +917,14 @@ bool CartridgeStorage::replaceLiveFilesystemMetadata(
     const auto transfer_size=metadataTransferSize(bytes);
     const std::vector<std::uint8_t> prefix(bytes.begin(),
         bytes.begin()+static_cast<std::ptrdiff_t>(transfer_size));
+    // Verification deliberately leaves the bridge in a linear read mapping.
+    // Reopen it before the erase/program pair instead of sending a guaranteed
+    // failing erase and using that failure as the writer-state transition.
+    std::string restart_error;
+    if(!restartLiveWriteSession(restart_error)) {
+        error="could not prepare cartridge writer for metadata replacement: "+
+              restart_error;return false;
+    }
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
         std::string operation_error;
         if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error)) {
@@ -935,7 +943,7 @@ bool CartridgeStorage::replaceLiveFilesystemMetadata(
         if(attempt==attempts)return false;
         std::cerr<<"Retrying live block replacement (attempt "
                  <<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
-        std::string restart_error;
+        restart_error.clear();
         if(!restartLiveWriteSession(restart_error)) {
             error+="; replacement writer restart failed: "+restart_error;
             return false;

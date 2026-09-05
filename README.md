@@ -282,7 +282,8 @@ flash transactions and suppress AppleDouble and `.DS_Store` traffic. Extended
 attribute writes are accepted and discarded because EZ3FS does not persist
 them. Intermediate macFUSE `flush` and `fsync` requests only check mount health;
 final `release` commits only its named file once, so Finder cannot commit a copy
-that is still growing. Newly created
+that is still growing. Read-only and writable handles that made no data change
+do not trigger a pending-file commit. Newly created
 files remain pending until their contents commit successfully, so a failed copy
 does not leave a committed zero-byte file.
 Contiguous file blocks are programmed within one capture-compatible flash
