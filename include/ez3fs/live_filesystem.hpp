@@ -106,6 +106,7 @@ public:
 
     explicit Filesystem(BlockDevice& flash) : flash_(flash) {}
     static bool format(BlockDevice& flash,std::string& error);
+    static bool formatDirectBootEmpty(BlockDevice& flash,std::string& error);
     static bool formatDirectBoot(BlockDevice& flash,const std::string& rom_name,
                                  const std::vector<std::uint8_t>& rom,
                                  std::uint64_t modified_time,std::string& error);

@@ -363,6 +363,13 @@ int liveFormatDirectBoot(const fs::path& path,const fs::path& rom_path) {
        !flash.save(path.string(),error)){std::cerr<<error<<'\n';return 1;}
     std::cout<<"Formatted direct-boot EZFA3FS image "<<path<<" with "<<rom_path.filename()<<" at cartridge offset 0.\n";return 0;
 }
+int liveFormatDirectBootEmpty(const fs::path& path) {
+    ez3fs::live::NorFlash flash;std::string error;
+    if(!ez3fs::live::Filesystem::formatDirectBootEmpty(flash,error)||!flash.save(path.string(),error)){
+        std::cerr<<error<<'\n';return 1;
+    }
+    std::cout<<"Formatted empty direct-boot EZFA3FS image "<<path<<". Add exactly one root-level .gba ROM with put or a writable cartridge mount.\n";return 0;
+}
 void printLiveEntries(const ez3fs::live::Filesystem& filesystem) { std::cout<<"EZFA3FS generation "<<filesystem.generation()<<"\n";
     for(const auto& entry:filesystem.entries())std::cout<<(entry.directory?"directory ":"file      ")<<std::setw(10)<<entry.size<<"  "<<entry.name<<'\n';
     std::cout<<"Free blocks: "<<filesystem.freeBlocks()<<'\n'; }
@@ -592,6 +599,7 @@ int main(int argc,char** argv) {
     if(argc>=2&&std::string(argv[1])=="card-mount")return cardMount(argc,argv);
 #else
     if(argc==3&&std::string(argv[1])=="format")return liveFormat(argv[2]);
+    if(argc==4&&std::string(argv[1])=="format"&&std::string(argv[2])=="--direct-boot")return liveFormatDirectBootEmpty(argv[3]);
     if(argc==5&&std::string(argv[1])=="format"&&std::string(argv[2])=="--direct-boot")return liveFormatDirectBoot(argv[3],argv[4]);
     if(argc==3&&std::string(argv[1])=="list")return liveList(argv[2]);
     if(argc==3&&std::string(argv[1])=="verify")return liveVerify(argv[2]);

@@ -131,24 +131,19 @@ bool Filesystem::format(BlockDevice& flash,std::string& error) {
     Filesystem filesystem(flash);return filesystem.commit(error);
 }
 
+bool Filesystem::formatDirectBootEmpty(BlockDevice& flash,std::string& error) {
+    for(std::size_t block=0;block<NorFlash::block_count;++block)
+        if(!flash.eraseBlock(block,error))return false;
+    Filesystem filesystem(flash);filesystem.layout_=Layout::direct_boot;
+    return filesystem.commit(error);
+}
+
 bool Filesystem::formatDirectBoot(BlockDevice& flash,const std::string& rom_name,
                                   const std::vector<std::uint8_t>& rom,
                                   std::uint64_t modified_time,std::string& error) {
-    const auto blocks=dataBlockCount(rom.size());
-    if(!validDirectBootRomName(rom_name)||rom.empty()||blocks>NorFlash::block_count-2) {
-        error="direct-boot format requires one non-empty root-level .gba ROM no larger than 31.875 MiB";return false;
-    }
-    for(std::size_t block=0;block<NorFlash::block_count;++block)
-        if(!flash.eraseBlock(block,error))return false;
-    std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
-    std::copy(rom.begin(),rom.end(),extent.begin());std::size_t completed=0;
-    if(!flash.programBlocks(0,extent.data(),blocks,completed,error)||completed!=blocks) {
-        if(error.empty())error="direct-boot ROM programming was incomplete";return false;
-    }
-    Filesystem filesystem(flash);filesystem.layout_=Layout::direct_boot;
-    filesystem.entries_.push_back({rom_name,rom.size(),modified_time,Crc32::calculate(rom.data(),rom.size()),0,static_cast<std::uint32_t>(blocks),false});
-    filesystem.next_free_block_=blocks;
-    return filesystem.commit(error);
+    if(!formatDirectBootEmpty(flash,error))return false;
+    Filesystem filesystem(flash);
+    return open(flash,filesystem,error)&&filesystem.putFile(rom_name,rom,modified_time,error);
 }
 
 bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
@@ -193,7 +188,7 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
                entry.first_block!=0||parsed.size()!=0)){valid=false;break;}
             parsed.push_back(std::move(entry));offset+=32+name_length;
         }
-        if(!valid||offset!=length||(layout==Layout::direct_boot&&parsed.size()!=1))continue;
+        if(!valid||offset!=length||(layout==Layout::direct_boot&&parsed.size()>1))continue;
         const auto generation=get<std::uint64_t>(bytes.data(),12);
         if(!found||generation>newest){found=true;newest=generation;chosen=block;chosen_layout=layout;entries=std::move(parsed);}
         // Ordinary EZFA3FS images retain their two metadata blocks at the
@@ -383,7 +378,10 @@ bool Filesystem::programExtent(std::size_t first_block,
 }
 
 bool Filesystem::canCreateFile(const std::string& path,std::string& error) const {
-    if(isDirectBoot()){error="direct-boot EZFA3FS images are immutable; create a replacement with format --direct-boot";return false;}
+    if(isDirectBoot()) {
+        if(entries_.empty()&&validDirectBootRomName(path)){error.clear();return true;}
+        error="direct-boot EZFA3FS accepts exactly one root-level .gba ROM";return false;
+    }
     if(!validPath(path)||!parentExists(path)||find(path)) {
         error="invalid or existing live file path";return false;
     }
@@ -400,7 +398,21 @@ bool Filesystem::createDirectory(const std::string& path,std::string& error) {
 bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>& bytes,
                          std::uint64_t modified_time,std::string& error,
                          MaintenanceObserver maintenance) {
-    if(isDirectBoot()){error="direct-boot EZFA3FS images are immutable; create a replacement with format --direct-boot";return false;}
+    if(isDirectBoot()) {
+        const auto blocks=dataBlockCount(bytes.size());
+        if(!entries_.empty()||!validDirectBootRomName(path)||bytes.empty()||blocks>dataEndBlock()) {
+            error="direct-boot EZFA3FS accepts exactly one non-empty root-level .gba ROM no larger than 31.875 MiB";return false;
+        }
+        std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
+        std::copy(bytes.begin(),bytes.end(),extent.begin());std::size_t completed=0;
+        if(!flash_.programBlocks(0,extent.data(),blocks,completed,error)||completed!=blocks) {
+            if(error.empty())error="direct-boot ROM programming was incomplete";return false;
+        }
+        entries_.push_back({path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),0,static_cast<std::uint32_t>(blocks),false});
+        next_free_block_=blocks;
+        if(commit(error))return true;
+        entries_.clear();return false;
+    }
     if(!validPath(path)||!parentExists(path)){error="invalid live file path";return false;}
     if(const auto* existing=find(path);existing&&existing->directory){error="live path is a directory";return false;}
     const auto blocks=dataBlockCount(bytes.size());

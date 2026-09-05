@@ -4,7 +4,7 @@ EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
 NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
 FAT partition, or ROM-patching workflow.
 
-Application version: **0.41.0**.
+Application version: **0.42.0**.
 
 `ez3fs` manages the live filesystem. `ezfs-legacy` preserves the packed-image
 workflow. Two incompatible formats are supported:
@@ -181,8 +181,18 @@ Create a loaderless direct-boot image for the single-ROM experiment in
 
 This dedicated layout places the unchanged root-level `.gba` file at cartridge
 offset zero. Its EZFA3FS metadata occupies the final 128 KiB, so the ROM limit
-is 31.875 MiB. Direct-boot images are immutable: recreate the image to replace
-the ROM. Do not writable-mount them or add Finder sidecar files.
+is 31.875 MiB. To prepare an empty cartridge and write the ROM later, omit the
+ROM argument, program the empty image, then use a writable `card-mount` or
+`put` once:
+
+```sh
+./build/cmake/ez3fs format --direct-boot empty-direct-boot.ezfa3fs
+./build/cmake/ez3fs put empty-direct-boot.ezfa3fs ROM.gba
+```
+
+The first accepted file must be one root-level `.gba`; it is placed at offset
+zero and permanently locks the image. Finder sidecar files and every later
+mutation are rejected.
 
 When `put` has no destination argument, the source path is used as the
 destination:
