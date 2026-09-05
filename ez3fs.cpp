@@ -5,6 +5,7 @@
 #include "ez3fs/cartridge_storage.hpp"
 #include "ez3fs/cartridge_live_device.hpp"
 #include "ez3fs/cartridge_programmer.hpp"
+#include "ez3fs/cartridge_flash_geometry.hpp"
 #include "ez3fs/fuse_mount.hpp"
 #include "ez3fs/new_image_file.hpp"
 #include "ez3fs/live_filesystem.hpp"
@@ -525,14 +526,15 @@ int liveCardErasePlan(const std::string& block_text) {
     if(block>=ez3fs::live::NorFlash::block_count){std::cerr<<"Cartridge block must be between 0 and 511.\n";return 1;}
     const std::uint64_t begin=block*ez3fs::live::NorFlash::block_size,end=begin+ez3fs::live::NorFlash::block_size;
     std::cout<<"Dry-run erase plan for logical block "<<block<<" (bytes 0x"<<std::hex<<begin<<"..0x"<<end-1<<std::dec<<")\n";
+    const auto sectors=ez3fs::CartridgeFlashGeometry::sectorsForLogicalBlock(block);
     for(unsigned window=0;window<4;++window) {
         std::cout<<"window "<<window<<":\n";
-        std::vector<std::uint32_t> addresses;
-        for(std::uint32_t address=0;address<=0x8000;address+=0x1000)addresses.push_back(address);
-        for(std::uint32_t address=0x10000;address<=0x3F8000;address+=0x8000)addresses.push_back(address);
-        if(window%2) {addresses.clear();for(std::uint32_t address=0;address<=0x3F8000;address+=0x8000)addresses.push_back(address);for(std::uint32_t address=0x3F9000;address<=0x3FF000;address+=0x1000)addresses.push_back(address);}
-        for(const auto address:addresses) { const auto byte_offset=static_cast<std::uint64_t>(window)*0x800000u+static_cast<std::uint64_t>(address)*2u;
-            if(byte_offset<end&&byte_offset+0x2000u>begin)std::cout<<"  0x96 word 0x"<<std::hex<<address<<" (byte 0x"<<byte_offset<<")\n"<<std::dec; }
+        for(const auto& sector:sectors)if(sector.window==window) {
+            const auto byte_offset=static_cast<std::uint64_t>(window)*0x800000u+
+                                   static_cast<std::uint64_t>(sector.word_address)*2u;
+            std::cout<<"  0x96 word 0x"<<std::hex<<sector.word_address
+                     <<" (byte 0x"<<byte_offset<<")\n"<<std::dec;
+        }
     }
     std::cout<<"No erase command was sent.\n";return 0;
 }

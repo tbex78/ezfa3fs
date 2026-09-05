@@ -1,4 +1,5 @@
 #include "ez3fs/live_filesystem.hpp"
+#include "ez3fs/cartridge_flash_geometry.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -81,6 +82,18 @@ void verifyFormatIdentityAndLegacyCompatibility() {
     require(legacy.read(ez3fs::live::NorFlash::block_size,block.data(),block.size(),error));
     require(std::equal(current_magic.begin(),current_magic.end(),block.begin()));
     require(block[8]==2&&block[9]==0&&block[10]==0&&block[11]==0);
+}
+
+void verifyPhysicalEraseGeometry() {
+    const auto bottom=ez3fs::CartridgeFlashGeometry::sectorsForLogicalBlock(0);
+    require(bottom.size()==8&&bottom.front().window==0&&
+            bottom.front().word_address==0&&bottom.back().word_address==0x7000);
+    const auto ordinary=ez3fs::CartridgeFlashGeometry::sectorsForLogicalBlock(2);
+    require(ordinary.size()==1&&ordinary.front().window==0&&
+            ordinary.front().word_address==0x10000);
+    const auto top=ez3fs::CartridgeFlashGeometry::sectorsForLogicalBlock(511);
+    require(top.size()==8&&top.front().window==3&&
+            top.front().word_address==0x3F8000&&top.back().word_address==0x3FF000);
 }
 
 void verifyDirectBootLayout() {
@@ -259,6 +272,7 @@ void verifyAutomaticCompaction() {
 int main()
 {
     verifyFormatIdentityAndLegacyCompatibility();
+    verifyPhysicalEraseGeometry();
     verifyDirectBootLayout();
     verifyEmptyDirectBootLayout();
     // Losing power while either metadata generation is being updated leaves a

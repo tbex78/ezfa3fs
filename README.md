@@ -313,9 +313,11 @@ The following commands are intended for hardware diagnosis and development:
 ```
 
 `card-erase-plan` is always a dry run. Direct erase and program commands
-are restricted to data blocks 2 through 511, request yes/no confirmation, and
-perform readback verification. Blocks 0 and 1 contain EZFA3FS metadata and
-cannot be modified by these diagnostic commands.
+are restricted to blocks 2 through 511, request yes/no confirmation, and
+perform readback verification. Blocks 0 and 1 contain transactional-layout
+metadata and cannot be modified by these diagnostic commands. Direct-boot
+metadata instead occupies blocks 510 and 511, so do not use the destructive
+diagnostic commands on those blocks when that layout is installed.
 
 ## Safety notes
 

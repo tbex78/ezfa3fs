@@ -30,9 +30,9 @@ blocks 2..511    copy-on-write file extents and unused 0xFF blocks
 ```
 
 The cartridge's physical bottom-boot erase geometry is not completely
-uniform. Logical block 0 is erased using eight 8-KiB physical sectors. The
-filesystem block-device adapter hides this detail and presents uniform 64-KiB
-logical blocks to the filesystem.
+uniform. Logical blocks 0 and 511 are each erased using eight 8-KiB physical
+sectors. The filesystem block-device adapter hides this detail and presents
+uniform 64-KiB logical blocks to the filesystem.
 
 ### Direct-boot layout
 
