@@ -34,6 +34,10 @@ public:
     bool programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error);
     bool eraseLiveFilesystemBlock(std::size_t block,std::string& error);
     bool programLiveFilesystemBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error);
+    bool programLiveFilesystemExtent(std::size_t first_block,
+                                     const std::vector<std::uint8_t>& bytes,
+                                     std::size_t& completed_blocks,
+                                     std::string& error);
 
 private:
     friend class CartridgeProgrammer;

@@ -91,6 +91,21 @@ bool NorFlash::program(std::size_t offset,const std::uint8_t* source,std::size_t
     error.clear();return true;
 }
 
+bool BlockDevice::programBlocks(std::size_t first_block,
+                                const std::uint8_t* source,
+                                std::size_t block_count,
+                                std::size_t& completed_blocks,
+                                std::string& error) {
+    completed_blocks=0;
+    for(std::size_t i=0;i<block_count;++i) {
+        if(!program((first_block+i)*NorFlash::block_size,
+                    source+i*NorFlash::block_size,
+                    NorFlash::block_size,error))return false;
+        ++completed_blocks;
+    }
+    error.clear();return true;
+}
+
 bool NorFlash::eraseBlock(std::size_t block,std::string& error) {
     if(block>=block_count){error="NOR erase block out of bounds";return false;}
     std::fill(bytes_.begin()+static_cast<std::ptrdiff_t>(block*block_size),
@@ -296,15 +311,21 @@ bool Filesystem::programExtent(std::size_t first_block,
                                const std::vector<std::uint8_t>& bytes,
                                std::string& error) {
     const auto blocks=(bytes.size()+NorFlash::block_size-1)/NorFlash::block_size;
-    for(std::size_t i=0;i<blocks;++i) {
-        std::vector<std::uint8_t> block(NorFlash::block_size,0xFF);
-        const auto begin=i*NorFlash::block_size;
-        const auto count=std::min(NorFlash::block_size,bytes.size()-begin);
-        std::copy_n(bytes.data()+begin,count,block.data());
-        if(!flash_.program((first_block+i)*NorFlash::block_size,block.data(),block.size(),error)) {
-            for(std::size_t leaked=0;leaked<=i;++leaked)unavailable_blocks_[first_block+leaked]=true;
-            next_free_block_=first_block+i+1;return false;
-        }
+    std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
+    std::copy(bytes.begin(),bytes.end(),extent.begin());
+    std::size_t completed=0;
+    if(!flash_.programBlocks(first_block,extent.data(),blocks,completed,error)) {
+        const auto affected=std::min(blocks,completed+1);
+        for(std::size_t leaked=0;leaked<affected;++leaked)
+            unavailable_blocks_[first_block+leaked]=true;
+        next_free_block_=first_block+affected;return false;
+    }
+    if(completed!=blocks) {
+        const auto affected=std::min(blocks,completed+1);
+        for(std::size_t leaked=0;leaked<affected;++leaked)
+            unavailable_blocks_[first_block+leaked]=true;
+        next_free_block_=first_block+affected;
+        error="block device reported an incomplete live extent";return false;
     }
     next_free_block_=first_block+blocks;error.clear();return true;
 }
@@ -328,10 +349,20 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
     if(!validPath(path)||!parentExists(path)){error="invalid live file path";return false;}
     if(const auto* existing=find(path);existing&&existing->directory){error="live path is a directory";return false;}
     const auto blocks=(bytes.size()+NorFlash::block_size-1)/NorFlash::block_size;
-    std::size_t first_block=0;
-    if(!allocateExtent(blocks,first_block,error,maintenance))return false;
-    const auto old=entries_;auto* existing=find(path);next_free_block_=first_block;
-    if(!programExtent(first_block,bytes,error)){entries_=old;return false;}
+    constexpr unsigned extent_attempts=3;
+    const auto old=entries_;std::size_t first_block=0;std::string program_error;
+    bool programmed=false;
+    for(unsigned attempt=1;attempt<=extent_attempts;++attempt) {
+        if(!allocateExtent(blocks,first_block,error,maintenance)) {
+            if(!program_error.empty())error=program_error+"; alternate extent unavailable: "+error;
+            entries_=old;return false;
+        }
+        next_free_block_=first_block;
+        if(programExtent(first_block,bytes,error)){programmed=true;break;}
+        program_error=error;
+    }
+    if(!programmed){entries_=old;error=program_error;return false;}
+    auto* existing=find(path);
     Entry replacement{path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),static_cast<std::uint32_t>(first_block),static_cast<std::uint32_t>(blocks),false};
     if(existing)*existing=replacement;else entries_.push_back(std::move(replacement));
     if(commit(error))return true;entries_=old;return false;

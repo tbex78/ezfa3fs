@@ -35,6 +35,11 @@ public:
     bool eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error,bool allow_metadata=false);
     bool programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,
                           std::ostream& progress,std::string& error,bool allow_metadata=false);
+    bool programLiveExtent(std::size_t first_block,
+                           const std::vector<std::uint8_t>& bytes,
+                           std::size_t& completed_blocks,
+                           std::ostream& progress,std::string& error,
+                           bool allow_metadata=false);
     bool is_open = false;
     std::array<std::uint8_t, 4> flash_id{};
 
@@ -65,6 +70,9 @@ private:
     bool tx92One(std::uint8_t selector, std::uint8_t value,
                  std::string& error);
     bool selectWriteWindow(unsigned window, std::string& error);
+    bool programTransaction(std::uint32_t word_address,
+                            const std::vector<std::uint8_t>& data,
+                            const char* operation,std::string& error);
     bool finishWriteOperation(std::string& error);
 #endif
     bool eraseAll(std::ostream& progress, std::string& error);
@@ -357,6 +365,31 @@ bool CartridgeStorage::Impl::selectWriteWindow(unsigned window,
            tx92One(1,0x06,error);
 }
 
+bool CartridgeStorage::Impl::programTransaction(
+    std::uint32_t word_address,const std::vector<std::uint8_t>& data,
+    const char* operation,std::string& error) {
+    std::vector<std::uint8_t> command=
+        {0x5A,0xA5,0x92,0,0,0,0,0,0,0,0,0,0x41};
+    putLe32(command,4,word_address);
+    putLe32(command,8,static_cast<std::uint32_t>(data.size()));
+    if(!out(command,error))return false;
+    std::this_thread::sleep_for(std::chrono::microseconds(750));
+    if(!out(data,error))return false;
+    std::vector<std::uint8_t> response;
+    if(!in(response,command.size(),error))return false;
+    command[12]=0;
+    if(response==command){error.clear();return true;}
+    const auto mismatch=std::mismatch(response.begin(),response.end(),command.begin());
+    std::ostringstream detail;detail<<operation<<" completion mismatch";
+    if(mismatch.first!=response.end())
+        detail<<" at byte 0x"<<std::hex
+              <<static_cast<std::size_t>(mismatch.first-response.begin())
+              <<" (received 0x"<<static_cast<unsigned>(*mismatch.first)
+              <<", expected 0x"<<static_cast<unsigned>(*mismatch.second)
+              <<')'<<std::dec;
+    error=detail.str();return false;
+}
+
 bool CartridgeStorage::Impl::finishWriteOperation(std::string& error)
 {
     const bool finished=tx92(0xFF,0xFF,error) && tx92One(1,0x04,error) &&
@@ -425,18 +458,9 @@ bool CartridgeStorage::Impl::programImage(
         }
         const auto size=std::min(block_size,image.size()-offset);
         const auto local=static_cast<std::uint32_t>(offset%window_size);
-        std::vector<std::uint8_t> command =
-            {0x5A,0xA5,0x92,0,0,0,0,0,0,0,0,0,0x41};
-        putLe32(command,4,local/2);putLe32(command,8,static_cast<std::uint32_t>(size));
-        if (!out(command,error)) return false;
-        std::this_thread::sleep_for(std::chrono::microseconds(750));
         std::vector<std::uint8_t> data(image.begin()+static_cast<std::ptrdiff_t>(offset),
                                        image.begin()+static_cast<std::ptrdiff_t>(offset+size));
-        if (!out(data,error)) return false;
-        std::vector<std::uint8_t> response;
-        if (!in(response,command.size(),error)) return false;
-        command[12]=0;
-        if (response!=command) { error="cartridge program completion mismatch";return false; }
+        if(!programTransaction(local/2,data,"cartridge program",error))return false;
         progress << "\rProgramming " << offset+size << '/' << image.size() << std::flush;
     }
     progress << '\n';
@@ -464,24 +488,47 @@ bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& prog
 }
 bool CartridgeStorage::Impl::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::ostream& progress,std::string& error,bool allow_metadata)
 {
-    if((!allow_metadata&&block<2)||block>=0x200||bytes.size()!=0x10000){error="live block programming is outside the permitted range";return false;}
-    const unsigned window=static_cast<unsigned>(block/128);const auto local=static_cast<std::uint32_t>((block%128)*0x8000u);
-    if(!selectWriteWindow(window,error))return false;
-    std::vector<std::uint8_t> command={0x5A,0xA5,0x92,0,0,0,0,0,0,0,0,0,0x41};putLe32(command,4,local);putLe32(command,8,static_cast<std::uint32_t>(bytes.size()));
-    if(!out(command,error))return false;std::this_thread::sleep_for(std::chrono::microseconds(750));if(!out(bytes,error))return false;std::vector<std::uint8_t> response;
-    if(!in(response,command.size(),error))return false;command[12]=0;
-    if(response!=command){
-        const auto mismatch=std::mismatch(response.begin(),response.end(),command.begin());
-        std::ostringstream detail;detail<<"cartridge live block program completion mismatch";
-        if(mismatch.first!=response.end())
-            detail<<" at byte 0x"<<std::hex
-                  <<static_cast<std::size_t>(mismatch.first-response.begin())
-                  <<" (received 0x"<<static_cast<unsigned>(*mismatch.first)
-                  <<", expected 0x"<<static_cast<unsigned>(*mismatch.second)<<')'
-                  <<std::dec;
-        error=detail.str();return false;
+    std::size_t completed=0;
+    return programLiveExtent(block,bytes,completed,progress,error,allow_metadata);
+}
+bool CartridgeStorage::Impl::programLiveExtent(
+    std::size_t first_block,const std::vector<std::uint8_t>& bytes,
+    std::size_t& completed_blocks,std::ostream& progress,std::string& error,
+    bool allow_metadata) {
+    constexpr std::size_t block_size=live::NorFlash::block_size;
+    constexpr std::size_t blocks_per_window=0x80;
+    completed_blocks=0;
+    const auto block_count=bytes.size()/block_size;
+    if(bytes.empty()||bytes.size()%block_size||first_block>=0x200||
+       block_count>0x200-first_block||(!allow_metadata&&first_block<2)) {
+        error="live extent programming is outside the permitted range";return false;
     }
-    if(!finishWriteOperation(error))return false;progress<<"Programmed cartridge block "<<block<<".\n";return true;
+    unsigned selected_window=4;
+    for(std::size_t i=0;i<block_count;++i) {
+        const auto block=first_block+i;
+        const auto window=static_cast<unsigned>(block/blocks_per_window);
+        if(window!=selected_window) {
+            if(selected_window!=4&&!finishWriteOperation(error))return false;
+            if(!selectWriteWindow(window,error))return false;
+            selected_window=window;
+        }
+        const auto local=static_cast<std::uint32_t>((block%blocks_per_window)*0x8000u);
+        std::vector<std::uint8_t> data(
+            bytes.begin()+static_cast<std::ptrdiff_t>(i*block_size),
+            bytes.begin()+static_cast<std::ptrdiff_t>((i+1)*block_size));
+        if(!programTransaction(local,data,"cartridge live block program",error)) {
+            if(block_count>1)progress<<'\n';
+            return false;
+        }
+        ++completed_blocks;
+        if(block_count>1)
+            progress<<"\rProgramming EZ3FS-LIVE extent: "
+                    <<(completed_blocks*100/block_count)<<'%'<<std::flush;
+    }
+    if(!finishWriteOperation(error))return false;
+    if(block_count>1)progress<<'\n';
+    else progress<<"Programmed cartridge block "<<first_block<<".\n";
+    error.clear();return true;
 }
 #else
 bool CartridgeStorage::Impl::eraseAll(std::ostream&,std::string& error)
@@ -498,6 +545,10 @@ bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t,std::ostream&,std::strin
 { error="EZ3FS was built without libusb support";return false; }
 bool CartridgeStorage::Impl::programLiveBlock(std::size_t,const std::vector<std::uint8_t>&,std::ostream&,std::string& error,bool)
 { error="EZ3FS was built without libusb support";return false; }
+bool CartridgeStorage::Impl::programLiveExtent(std::size_t,const std::vector<std::uint8_t>&,
+                                               std::size_t& completed,std::ostream&,
+                                               std::string& error,bool)
+{ completed=0;error="EZ3FS was built without libusb support";return false; }
 #endif
 
 bool CartridgeStorage::Impl::open(std::string& error)
@@ -701,6 +752,35 @@ bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::v
         }
     }
     return false;
+}
+bool CartridgeStorage::programLiveFilesystemExtent(
+    std::size_t first_block,const std::vector<std::uint8_t>& bytes,
+    std::size_t& completed_blocks,std::string& error) {
+    constexpr std::size_t block_size=live::NorFlash::block_size;
+    completed_blocks=0;
+    std::string operation_error;
+    const bool transferred=impl_->programLiveExtent(first_block,bytes,
+        completed_blocks,std::cerr,operation_error,true);
+    const auto block_count=bytes.size()/block_size;
+    const auto verify_count=transferred?block_count:
+        std::min(block_count,completed_blocks+1);
+    for(std::size_t i=0;i<verify_count;++i) {
+        std::vector<std::uint8_t> expected(
+            bytes.begin()+static_cast<std::ptrdiff_t>(i*block_size),
+            bytes.begin()+static_cast<std::ptrdiff_t>((i+1)*block_size));
+        const auto verification_error=(transferred||i<completed_blocks)?
+            std::string{}:operation_error;
+        if(!verifyLiveBlockAfterWrite(first_block+i,expected,"program",
+                                      verification_error,
+                                      !transferred&&i==0,error)) {
+            completed_blocks=i;return false;
+        }
+    }
+    if(!transferred) {
+        if(verify_count==block_count){completed_blocks=block_count;error.clear();return true;}
+        error=operation_error;return false;
+    }
+    completed_blocks=block_count;error.clear();return true;
 }
 bool CartridgeStorage::isOpen() const noexcept { return impl_->is_open; }
 std::array<std::uint8_t,4> CartridgeStorage::flashId() const noexcept { return impl_->flash_id; }

@@ -22,6 +22,9 @@ public:
     virtual ~BlockDevice() = default;
     virtual bool read(std::size_t offset,std::uint8_t* destination,std::size_t size,std::string& error) const = 0;
     virtual bool program(std::size_t offset,const std::uint8_t* source,std::size_t size,std::string& error) = 0;
+    virtual bool programBlocks(std::size_t first_block,const std::uint8_t* source,
+                               std::size_t block_count,
+                               std::size_t& completed_blocks,std::string& error);
     virtual bool eraseBlock(std::size_t block,std::string& error) = 0;
     virtual bool prepareForErase(std::string& error) { error.clear();return true; }
 };

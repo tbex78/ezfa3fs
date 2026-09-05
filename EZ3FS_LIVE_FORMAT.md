@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.35.2`.
+`0.35.3`.
 
 ## Geometry and layout
 
@@ -238,8 +238,11 @@ mount stays readable but rejects later mutations before invoking the backend.
 It reports the cached failure to lifecycle callbacks without replaying the
 flash transaction during teardown. Program and erase verification rechecks a
 mismatched block through fresh USB sessions before retrying it. macOS cartridge
-mounts use a 600-second daemon timeout and suppress AppleDouble and Apple
-extended-attribute traffic.
+mounts use a 600-second daemon timeout, suppress AppleDouble traffic, and
+accept but discard extended attributes because the format does not store them.
+Contiguous data blocks share one captured-protocol programming session, with a
+session transition only at each 8-MiB hardware window boundary. A failed data
+extent is retried at another erased location before the mount reports failure.
 
 Unmount from another terminal before disconnecting the writer:
 

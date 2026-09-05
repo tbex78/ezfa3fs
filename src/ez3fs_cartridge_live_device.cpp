@@ -14,6 +14,19 @@ bool CartridgeLiveDevice::program(std::size_t offset,const std::uint8_t* source,
     if(offset%block_size||size!=block_size||offset>=live::NorFlash::capacity){error="cartridge live programming requires one aligned 64-KiB block";return false;}
     std::vector<std::uint8_t> bytes(source,source+size);return storage_.programLiveFilesystemBlock(offset/block_size,bytes,error);
 }
+bool CartridgeLiveDevice::programBlocks(std::size_t first_block,
+                                        const std::uint8_t* source,
+                                        std::size_t block_count,
+                                        std::size_t& completed_blocks,
+                                        std::string& error) {
+    if(first_block>=live::NorFlash::block_count||
+       block_count>live::NorFlash::block_count-first_block) {
+        completed_blocks=0;error="cartridge live extent is out of range";return false;
+    }
+    std::vector<std::uint8_t> bytes(source,source+block_count*block_size);
+    return storage_.programLiveFilesystemExtent(first_block,bytes,
+                                                completed_blocks,error);
+}
 bool CartridgeLiveDevice::eraseBlock(std::size_t block,std::string& error) {
     if(block>=live::NorFlash::block_count){error="cartridge live erase block is out of range";return false;}
     return storage_.eraseLiveFilesystemBlock(block,error);

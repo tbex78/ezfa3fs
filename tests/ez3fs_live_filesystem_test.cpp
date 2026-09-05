@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <set>
 
 namespace {
 void require(bool condition) { if(!condition)std::abort(); }
@@ -16,8 +17,15 @@ public:
     bool program(std::size_t offset,const std::uint8_t* source,std::size_t size,
                  std::string& error) override {
         ++program_count;
-        if(program_count==failed_program_call)flash_.failNextProgramAfter(8);
+        if(failed_program_calls.count(program_count))flash_.failNextProgramAfter(8);
         return flash_.program(offset,source,size,error);
+    }
+    bool programBlocks(std::size_t first_block,const std::uint8_t* source,
+                       std::size_t block_count,std::size_t& completed_blocks,
+                       std::string& error) override {
+        ++extent_program_count;
+        return BlockDevice::programBlocks(first_block,source,block_count,
+                                          completed_blocks,error);
     }
     bool eraseBlock(std::size_t block,std::string& error) override {
         return flash_.eraseBlock(block,error);
@@ -25,13 +33,17 @@ public:
     bool prepareForErase(std::string& error) override {
         ++prepare_erase_count;error.clear();return true;
     }
-    void failProgramCall(std::size_t call) noexcept { failed_program_call=call; }
+    void failProgramCall(std::size_t call) { failed_program_calls.insert(call); }
+    void failProgramCalls(std::size_t first,std::size_t count) {
+        for(std::size_t i=0;i<count;++i)failed_program_calls.insert(first+i);
+    }
     mutable std::size_t read_count = 0;
     std::size_t program_count = 0;
+    std::size_t extent_program_count = 0;
     std::size_t prepare_erase_count = 0;
 private:
     ez3fs::live::NorFlash& flash_;
-    std::size_t failed_program_call = 0;
+    std::set<std::size_t> failed_program_calls;
 };
 
 void verifyInterruptedCompaction(std::size_t failure_offset,
@@ -65,6 +77,24 @@ void verifyInterruptedCompaction(std::size_t failure_offset,
 
 std::vector<std::uint8_t> blockData(std::size_t blocks,std::uint8_t value) {
     return std::vector<std::uint8_t>(blocks*ez3fs::live::NorFlash::block_size,value);
+}
+
+void verifyAlternateExtentRetry() {
+    ez3fs::live::NorFlash flash;std::string error;
+    require(ez3fs::live::Filesystem::format(flash,error));
+    CountingDevice device(flash);ez3fs::live::Filesystem filesystem(device);
+    require(ez3fs::live::Filesystem::open(device,filesystem,error));
+    device.failProgramCall(device.program_count+1);
+    const auto expected=blockData(2,0x5A);
+    require(filesystem.putFile("retried",expected,1,error));
+    require(device.extent_program_count==2);
+    const auto entry=std::find_if(filesystem.entries().begin(),filesystem.entries().end(),
+        [](const ez3fs::live::Entry& candidate){return candidate.name=="retried";});
+    require(entry!=filesystem.entries().end()&&entry->first_block==3);
+    std::vector<std::uint8_t> bytes;
+    require(filesystem.readFile("retried",bytes,error));
+    require(bytes==expected);
+    require(filesystem.verify(error));
 }
 
 void verifyAutomaticGarbageCollection() {
@@ -126,6 +156,7 @@ int main()
     // complete source or destination extent referenced by the newest valid one.
     verifyInterruptedCompaction(2,4,0);
     verifyInterruptedCompaction(3,2,1);
+    verifyAlternateExtentRetry();
     verifyAutomaticGarbageCollection();
     verifyAutomaticCompaction();
 
@@ -151,9 +182,9 @@ int main()
     require(filesystem.generation()>generation);
 
     const auto free_before_data_failure=filesystem.freeBlocks();
-    flash.failNextProgramAfter(8);
+    device.failProgramCalls(device.program_count+1,3);
     require(!filesystem.putFile("docs/partial.txt",{'x'},1236,error));
-    require(filesystem.freeBlocks()==free_before_data_failure-1);
+    require(filesystem.freeBlocks()==free_before_data_failure-3);
 
     const auto before=filesystem.generation();
     const auto free_before=filesystem.freeBlocks();
@@ -169,20 +200,20 @@ int main()
     require(reopened.putFile("docs/recovered.txt",{'y'},1237,error));
     const auto recovered=std::find_if(reopened.entries().begin(),reopened.entries().end(),
         [](const ez3fs::live::Entry& entry){return entry.name=="docs/recovered.txt";});
-    require(recovered!=reopened.entries().end()&&recovered->first_block==7);
+    require(recovered!=reopened.entries().end()&&recovered->first_block==9);
     ez3fs::live::SpaceReport space;std::size_t inspected=0,inspection_total=0;
     require(reopened.inspectSpace(space,error,
         [&](std::size_t completed,std::size_t total){inspected=completed;inspection_total=total;}));
     require(space.active_blocks==4);
-    require(space.erased_blocks==504);
-    require(space.reclaimable_blocks==2);
-    require(space.largest_erased_extent==504);
-    require(space.largest_post_gc_extent==504);
+    require(space.erased_blocks==502);
+    require(space.reclaimable_blocks==4);
+    require(space.largest_erased_extent==502);
+    require(space.largest_post_gc_extent==502);
     require(inspected==510&&inspection_total==510);
     std::size_t reclaimed=0,progress_completed=0,progress_total=0;
     require(reopened.collectGarbage(reclaimed,error,
         [&](std::size_t completed,std::size_t total){progress_completed=completed;progress_total=total;}));
-    require(reclaimed==2);
+    require(reclaimed==4);
     require(reopened_device.prepare_erase_count==reclaimed);
     require(progress_completed==510&&progress_total==510);
     require(reopened.verify(error));
