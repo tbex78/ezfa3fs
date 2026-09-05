@@ -21,11 +21,14 @@ inline constexpr std::array<std::uint8_t,8> format_magic{
     {'E','Z','F','A','3','F','S',0}};
 inline constexpr std::array<std::uint8_t,8> legacy_format_magic{
     {'E','Z','3','L','I','V','E',0}};
+inline constexpr std::array<std::uint8_t,8> direct_boot_format_magic{
+    {'E','Z','F','A','3','D','B',0}};
 
 inline bool hasFormatMagic(const std::uint8_t* bytes) noexcept
 {
     return std::equal(format_magic.begin(),format_magic.end(),bytes) ||
-           std::equal(legacy_format_magic.begin(),legacy_format_magic.end(),bytes);
+           std::equal(legacy_format_magic.begin(),legacy_format_magic.end(),bytes) ||
+           std::equal(direct_boot_format_magic.begin(),direct_boot_format_magic.end(),bytes);
 }
 
 class BlockDevice {
@@ -91,6 +94,11 @@ enum class MaintenanceAction {
     compaction
 };
 
+enum class Layout {
+    transactional,
+    direct_boot
+};
+
 class Filesystem final {
 public:
     using ScanProgress = std::function<void(std::size_t,std::size_t)>;
@@ -98,6 +106,9 @@ public:
 
     explicit Filesystem(BlockDevice& flash) : flash_(flash) {}
     static bool format(BlockDevice& flash,std::string& error);
+    static bool formatDirectBoot(BlockDevice& flash,const std::string& rom_name,
+                                 const std::vector<std::uint8_t>& rom,
+                                 std::uint64_t modified_time,std::string& error);
     static bool open(BlockDevice& flash,Filesystem& filesystem,std::string& error,
                      ScanProgress progress = {});
 
@@ -123,6 +134,8 @@ public:
     const std::vector<Entry>& entries() const noexcept { return entries_; }
     std::uint64_t generation() const noexcept { return generation_; }
     std::size_t freeBlocks() const noexcept;
+    Layout layout() const noexcept { return layout_; }
+    bool isDirectBoot() const noexcept { return layout_==Layout::direct_boot; }
 
 private:
     enum class ExtentSearchResult { found,no_extent,error };
@@ -144,11 +157,15 @@ private:
     bool parentExists(const std::string& path) const;
     Entry* find(const std::string& path);
     const Entry* find(const std::string& path) const;
+    std::size_t firstDataBlock() const noexcept;
+    std::size_t dataEndBlock() const noexcept;
+    std::size_t alternateSuperblock() const noexcept;
     BlockDevice& flash_;
     std::vector<Entry> entries_;
     std::uint64_t generation_ = 0;
     std::size_t active_superblock_ = 0;
     std::size_t next_free_block_ = 2;
+    Layout layout_ = Layout::transactional;
     std::array<bool,NorFlash::block_count> unavailable_blocks_{};
 };
 

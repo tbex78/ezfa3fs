@@ -63,6 +63,7 @@ void usage() {
 #else
     std::cerr<<R"(Usage:
   ez3fs format IMAGE.ezfa3fs
+  ez3fs format --direct-boot IMAGE.ezfa3fs ROM.gba
   ez3fs list IMAGE.ezfa3fs
   ez3fs verify IMAGE.ezfa3fs
   ez3fs mkdir IMAGE.ezfa3fs DIRECTORY
@@ -354,6 +355,14 @@ int liveFormat(const fs::path& path) { ez3fs::live::NorFlash flash;std::string e
     if(!ez3fs::live::Filesystem::format(flash,error)||!flash.save(path.string(),error)){std::cerr<<error<<'\n';return 1;}
     std::cout<<"Formatted EZFA3FS 2.0.0 image "<<path<<".\n";return 0;
 }
+int liveFormatDirectBoot(const fs::path& path,const fs::path& rom_path) {
+    if(!fs::is_regular_file(rom_path)){std::cerr<<"Input is not a regular file: "<<rom_path<<'\n';return 1;}
+    std::vector<std::uint8_t> rom;if(!readFile(rom_path,rom)){std::cerr<<"Could not read input ROM: "<<rom_path<<'\n';return 1;}
+    ez3fs::live::NorFlash flash;std::string error;
+    if(!ez3fs::live::Filesystem::formatDirectBoot(flash,rom_path.filename().string(),rom,fileModifiedTime(rom_path),error)||
+       !flash.save(path.string(),error)){std::cerr<<error<<'\n';return 1;}
+    std::cout<<"Formatted direct-boot EZFA3FS image "<<path<<" with "<<rom_path.filename()<<" at cartridge offset 0.\n";return 0;
+}
 void printLiveEntries(const ez3fs::live::Filesystem& filesystem) { std::cout<<"EZFA3FS generation "<<filesystem.generation()<<"\n";
     for(const auto& entry:filesystem.entries())std::cout<<(entry.directory?"directory ":"file      ")<<std::setw(10)<<entry.size<<"  "<<entry.name<<'\n';
     std::cout<<"Free blocks: "<<filesystem.freeBlocks()<<'\n'; }
@@ -583,6 +592,7 @@ int main(int argc,char** argv) {
     if(argc>=2&&std::string(argv[1])=="card-mount")return cardMount(argc,argv);
 #else
     if(argc==3&&std::string(argv[1])=="format")return liveFormat(argv[2]);
+    if(argc==5&&std::string(argv[1])=="format"&&std::string(argv[2])=="--direct-boot")return liveFormatDirectBoot(argv[3],argv[4]);
     if(argc==3&&std::string(argv[1])=="list")return liveList(argv[2]);
     if(argc==3&&std::string(argv[1])=="verify")return liveVerify(argv[2]);
     if(argc>=4&&std::string(argv[1])=="mount"){bool foreground=false;for(int i=4;i<argc;++i)if(std::string(argv[i])=="--foreground")foreground=true;return liveMount(argv[2],argv[3],foreground);}

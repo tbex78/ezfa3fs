@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZFA3FS 2.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.40.1`.
+`0.41.0`.
 
 ## Geometry and layout
 
@@ -33,6 +33,21 @@ The cartridge's physical bottom-boot erase geometry is not completely
 uniform. Logical block 0 is erased using eight 8-KiB physical sectors. The
 filesystem block-device adapter hides this detail and presents uniform 64-KiB
 logical blocks to the filesystem.
+
+### Direct-boot layout
+
+`ez3fs format --direct-boot IMAGE.ezfa3fs ROM.gba` creates a separate,
+immutable single-ROM layout for the loaderless direct-boot experiment. The ROM
+is stored unchanged from byte `0x00000000`; its two superblocks move to blocks
+510 and 511 and use magic `EZFA3DB\0`. The ROM may therefore use at most 510
+blocks (31.875 MiB).
+
+The direct-boot manifest contains exactly one non-empty root-level `.gba`
+file, whose extent begins at block 0. Direct-boot images reject directories,
+additional files, replacement, rename, removal, garbage collection, and
+compaction. Recreate and fully reprogram the image to change its ROM. This
+preserves byte-zero compatibility with the sibling project's experimental
+loaderless direct-boot writer while retaining a verified EZFA3FS manifest.
 
 ## Superblock
 

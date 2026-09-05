@@ -79,6 +79,28 @@ void verifyFormatIdentityAndLegacyCompatibility() {
     require(block[8]==2&&block[9]==0&&block[10]==0&&block[11]==0);
 }
 
+void verifyDirectBootLayout() {
+    ez3fs::live::NorFlash flash;std::string error;
+    const std::vector<std::uint8_t> rom{0x18,0x00,0x00,0xEA,0x42,0x47,0x41};
+    require(ez3fs::live::Filesystem::formatDirectBoot(flash,"direct.gba",rom,1234,error));
+    std::vector<std::uint8_t> bytes(rom.size());
+    require(flash.read(0,bytes.data(),bytes.size(),error));
+    require(bytes==rom);
+    std::vector<std::uint8_t> superblock(ez3fs::live::NorFlash::block_size);
+    require(flash.read((ez3fs::live::NorFlash::block_count-2)*ez3fs::live::NorFlash::block_size,
+                       superblock.data(),superblock.size(),error));
+    require(std::equal(ez3fs::live::direct_boot_format_magic.begin(),
+                       ez3fs::live::direct_boot_format_magic.end(),superblock.begin()));
+    ez3fs::live::Filesystem filesystem(flash);
+    require(ez3fs::live::Filesystem::open(flash,filesystem,error));
+    require(filesystem.isDirectBoot()&&filesystem.entries().size()==1&&
+            filesystem.entries().front().first_block==0);
+    require(filesystem.readFile("direct.gba",bytes,error)&&bytes==rom);
+    require(!filesystem.putFile("other.gba",rom,1235,error));
+    require(error.find("immutable")!=std::string::npos);
+    require(filesystem.verify(error));
+}
+
 void verifyInterruptedCompaction(std::size_t failure_offset,
                                  std::uint32_t recovered_block,
                                  std::uint64_t generation_advance) {
@@ -186,6 +208,7 @@ void verifyAutomaticCompaction() {
 int main()
 {
     verifyFormatIdentityAndLegacyCompatibility();
+    verifyDirectBootLayout();
     // Losing power while either metadata generation is being updated leaves a
     // complete source or destination extent referenced by the newest valid one.
     verifyInterruptedCompaction(2,4,0);

@@ -266,8 +266,11 @@ bool CartridgeStorage::Impl::initialize(std::string& error, bool allow_erased)
             [](std::uint8_t byte){return byte==0xFF;});
         std::array<std::uint8_t,8> live_header{};
         if (!live::hasFormatMagic(header.data()) && !rawRead(0x10000u,live_header.data(),live_header.size(),error)) return false;
+        std::array<std::uint8_t,8> direct_boot_header{};
+        if (!live::hasFormatMagic(header.data()) && !live::hasFormatMagic(live_header.data()) &&
+            !rawRead(0x01FE0000u,direct_boot_header.data(),direct_boot_header.size(),error)) return false;
         if (!hasEz3fsMagic(header.data()) && !live::hasFormatMagic(header.data()) &&
-            !live::hasFormatMagic(live_header.data()) && !(allow_erased && erased)) {
+            !live::hasFormatMagic(live_header.data()) && !live::hasFormatMagic(direct_boot_header.data()) && !(allow_erased && erased)) {
             error = "unsupported cartridge flash identifier: " +
                     formatFlashId(flash_id) +
                     "; no EZ3FS or EZFA3FS image found at offset 0";
