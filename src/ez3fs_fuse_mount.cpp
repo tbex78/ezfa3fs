@@ -139,7 +139,14 @@ int ez3fsRmdir(const char* path) {std::lock_guard<std::mutex> lock(session().mut
 int ez3fsRename(const char* from,const char* to,unsigned flags) {if(flags!=0)return -EINVAL;
     std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().rename(from,to,error);return finishMutation(changed,error);}
-int ez3fsFlush(const char*,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSession(session());}
+int ez3fsFlush(const char*,struct fuse_file_info*) {
+    std::lock_guard<std::mutex> lock(session().mutex());
+    // macFUSE may flush an open file repeatedly while a copy is still
+    // growing. Committing here rewrites the complete copy-on-write extent and
+    // both metadata generations for every partial size. Keep flush as a
+    // health check; fsync and the final release remain durability boundaries.
+    return beginMutation(session());
+}
 int ez3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSession(session());}
 int ez3fsRelease(const char*,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSession(session());}
 int ez3fsSetxattr(const char* path,const char*,const char*,size_t,int) {

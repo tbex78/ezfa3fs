@@ -31,7 +31,8 @@ The following operations have been tested on a physical cartridge:
 - Recovery from transient USB endpoint stalls and erase/program readback
   mismatches through bounded verified retries.
 
-Direct writable mounting buffers FUSE write chunks until flush or close, uses
+Direct writable mounting buffers FUSE write chunks until explicit `fsync` or
+close, uses
 range-based reads, and verifies successful data-block transactions without
 reconnecting. Metadata verification and USB-error recovery still reopen the
 device when required. Every programmed or erased block retains readback
@@ -279,8 +280,10 @@ writer while this mount is active.
 On macOS, writable cartridge mounts use a 600-second daemon timeout for long
 flash transactions and suppress AppleDouble and `.DS_Store` traffic. Extended
 attribute writes are accepted and discarded because EZ3FS does not persist
-them. Newly created files remain pending until their contents flush
-successfully, so a failed copy does not leave a committed zero-byte file.
+them. Intermediate macFUSE `flush` requests only check mount health; explicit
+`fsync` and final `release` commit each accumulated file once. Newly created
+files remain pending until their contents commit successfully, so a failed copy
+does not leave a committed zero-byte file.
 Contiguous file blocks are programmed within one capture-compatible flash
 write session, switching sessions only at 8-MiB hardware window boundaries.
 Flash readback is reconciled through fresh USB sessions before a block is
