@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.35.4`.
+`0.35.5`.
 
 ## Geometry and layout
 
@@ -225,9 +225,10 @@ inherited across FUSE daemonization:
   --writable --foreground
 ```
 
-After yes/no confirmation, the writable mount scans allocation with visible
-progress, verifies the filesystem, and retains exclusive access to the USB
-writer. Terminal and Finder operations are committed directly to flash.
+After yes/no confirmation, the writable mount verifies every referenced file
+block with visible percentage progress and retains exclusive access to the USB
+writer. It does not rescan the complete free tail. Terminal and Finder
+operations are committed directly to flash.
 Garbage collection and compaction are invoked automatically if an ordinary
 copy-on-write allocation cannot proceed, so manual maintenance is not required
 for correctness during a mounted write.

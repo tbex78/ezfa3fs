@@ -216,7 +216,13 @@ int main()
     require(reclaimed==4);
     require(reopened_device.prepare_erase_count==reclaimed);
     require(progress_completed==510&&progress_total==510);
-    require(reopened.verify(error));
+    std::vector<std::pair<std::size_t,std::size_t>> verification_progress;
+    require(reopened.verify(error,[&](std::size_t completed,std::size_t total) {
+        verification_progress.emplace_back(completed,total);
+    }));
+    require(verification_progress.front()==std::pair<std::size_t,std::size_t>{0,4});
+    require(verification_progress.back()==std::pair<std::size_t,std::size_t>{4,4});
+    require(verification_progress.size()==5);
     require(reopened.putFile("docs/recycled.txt",{'z'},1238,error));
     const auto recycled=std::find_if(reopened.entries().begin(),reopened.entries().end(),
         [](const ez3fs::live::Entry& entry){return entry.name=="docs/recycled.txt";});

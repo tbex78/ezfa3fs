@@ -203,7 +203,17 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground) {
         return 1;
     }
     LiveCartridgeSession cartridge;std::string error;
-    if(!cartridge.open(error)){std::cerr<<error<<'\n';return 1;}
+    const auto progress=[displayed=101u](std::size_t completed,
+                                         std::size_t total) mutable {
+        const auto percent=total==0?100u:
+            static_cast<unsigned>(completed*100/total);
+        if(percent==displayed)return;
+        displayed=percent;
+        std::cerr<<'\r'<<"Verifying EZ3FS-LIVE cartridge: "
+                 <<percent<<'%'<<std::flush;
+        if(completed==total)std::cerr<<'\n';
+    };
+    if(!cartridge.open(error,progress)){std::cerr<<error<<'\n';return 1;}
     const auto maintenance=[](live::MaintenanceAction action) {
         std::cerr<<"EZ3FS-LIVE automatic "
                  <<(action==live::MaintenanceAction::garbage_collection?

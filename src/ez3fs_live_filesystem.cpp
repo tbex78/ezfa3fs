@@ -30,6 +30,9 @@ bool validPath(const std::string& path) {
         if(end==std::string::npos)break;begin=end+1;
     } return true;
 }
+std::size_t dataBlockCount(std::uint64_t size) {
+    return static_cast<std::size_t>((size+NorFlash::block_size-1)/NorFlash::block_size);
+}
 }
 
 NorFlash::NorFlash():bytes_(capacity,0xFF) {}
@@ -310,7 +313,7 @@ bool Filesystem::findBlankExtentBefore(std::size_t limit,
 bool Filesystem::programExtent(std::size_t first_block,
                                const std::vector<std::uint8_t>& bytes,
                                std::string& error) {
-    const auto blocks=(bytes.size()+NorFlash::block_size-1)/NorFlash::block_size;
+    const auto blocks=dataBlockCount(bytes.size());
     std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
     std::copy(bytes.begin(),bytes.end(),extent.begin());
     std::size_t completed=0;
@@ -348,7 +351,7 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
                          MaintenanceObserver maintenance) {
     if(!validPath(path)||!parentExists(path)){error="invalid live file path";return false;}
     if(const auto* existing=find(path);existing&&existing->directory){error="live path is a directory";return false;}
-    const auto blocks=(bytes.size()+NorFlash::block_size-1)/NorFlash::block_size;
+    const auto blocks=dataBlockCount(bytes.size());
     constexpr unsigned extent_attempts=3;
     const auto old=entries_;std::size_t first_block=0;std::string program_error;
     bool programmed=false;
@@ -474,7 +477,7 @@ bool Filesystem::rename(const std::string& from,const std::string& to,std::strin
 bool Filesystem::readFile(const std::string& path,std::vector<std::uint8_t>& bytes,
                           std::string& error) const {
     const auto* entry=find(path);if(!entry||entry->directory){error="live file does not exist";return false;}
-    if(!readFileRange(path,0,static_cast<std::size_t>(entry->size),bytes,error))return false;
+    if(!readEntryRange(*entry,0,static_cast<std::size_t>(entry->size),bytes,error))return false;
     if(Crc32::calculate(bytes.data(),bytes.size())!=entry->crc32){error="live file checksum mismatch";return false;}
     error.clear();return true;
 }
@@ -484,7 +487,14 @@ bool Filesystem::readFileRange(const std::string& path,std::size_t offset,
                                std::string& error) const {
     const auto* entry=find(path);
     if(!entry||entry->directory){error="live file does not exist";return false;}
-    const auto file_size=static_cast<std::size_t>(entry->size);
+    return readEntryRange(*entry,offset,size,bytes,error);
+}
+
+bool Filesystem::readEntryRange(const Entry& entry,std::size_t offset,
+                                std::size_t size,std::vector<std::uint8_t>& bytes,
+                                std::string& error,
+                                const std::function<void()>& block_read) const {
+    const auto file_size=static_cast<std::size_t>(entry.size);
     if(offset>file_size){error="live file read offset is out of bounds";return false;}
     const auto count=std::min(size,file_size-offset);bytes.clear();bytes.reserve(count);
     if(count==0){error.clear();return true;}
@@ -492,22 +502,32 @@ bool Filesystem::readFileRange(const std::string& path,std::size_t offset,
     const auto last=(offset+count-1)/NorFlash::block_size;
     std::vector<std::uint8_t> block(NorFlash::block_size);
     for(std::size_t index=first;index<=last;++index) {
-        if(!flash_.read((entry->first_block+index)*NorFlash::block_size,
+        if(!flash_.read((entry.first_block+index)*NorFlash::block_size,
                         block.data(),block.size(),error))return false;
         const auto begin=index==first?offset%NorFlash::block_size:0;
         const auto end=index==last?((offset+count-1)%NorFlash::block_size)+1:
                                   NorFlash::block_size;
         bytes.insert(bytes.end(),block.begin()+static_cast<std::ptrdiff_t>(begin),
                      block.begin()+static_cast<std::ptrdiff_t>(end));
+        if(block_read)block_read();
     }
     error.clear();return true;
 }
 
-bool Filesystem::verify(std::string& error) const {
+bool Filesystem::verify(std::string& error,ScanProgress progress) const {
+    std::size_t total=0;
+    for(const auto& entry:entries_)
+        if(!entry.directory)total+=dataBlockCount(entry.size);
+    std::size_t completed=0;
+    if(progress)progress(completed,total);
     for(const auto& entry:entries_) {
         if(entry.directory) continue;
         std::vector<std::uint8_t> bytes;
-        if(!readFile(entry.name,bytes,error)) return false;
+        if(!readEntryRange(entry,0,static_cast<std::size_t>(entry.size),bytes,error,
+            [&]{if(progress)progress(++completed,total);}))return false;
+        if(Crc32::calculate(bytes.data(),bytes.size())!=entry.crc32) {
+            error="live file checksum mismatch";return false;
+        }
     }
     error.clear();return true;
 }
