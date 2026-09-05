@@ -11,7 +11,7 @@ public:
     LiveCartridgeSession(const LiveCartridgeSession&) = delete;
     LiveCartridgeSession& operator=(const LiveCartridgeSession&) = delete;
 
-    bool open(std::string& error,
+    bool open(std::string& error,bool verify_referenced_data = false,
               live::Filesystem::ScanProgress verification_progress = {});
     bool close(std::string& error);
     bool isOpen() const noexcept { return open_; }

@@ -197,7 +197,8 @@ int mountLiveContents(const std::vector<InputFile>& contents,const std::string& 
     MountSession mounted(std::make_unique<VirtualMountBackend>(contents,false));
     return runMount(mounted,mountpoint,foreground,"ez3fs-live");
 }
-int mountLiveCartridge(const std::string& mountpoint,bool foreground) {
+int mountLiveCartridge(const std::string& mountpoint,bool foreground,
+                       bool verify_referenced_data) {
     if(!foreground) {
         std::cerr<<"A writable live cartridge mount requires --foreground so the USB session is not inherited across FUSE daemonization.\n";
         return 1;
@@ -213,7 +214,9 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground) {
                  <<percent<<'%'<<std::flush;
         if(completed==total)std::cerr<<'\n';
     };
-    if(!cartridge.open(error,progress)){std::cerr<<error<<'\n';return 1;}
+    if(!cartridge.open(error,verify_referenced_data,progress)){
+        std::cerr<<error<<'\n';return 1;
+    }
     const auto maintenance=[](live::MaintenanceAction action) {
         std::cerr<<"EZ3FS-LIVE automatic "
                  <<(action==live::MaintenanceAction::garbage_collection?
@@ -235,7 +238,7 @@ int mountArchive(const Archive&,const std::string&,bool,const std::string&) {
 int mountLiveContents(const std::vector<InputFile>&,const std::string&,bool) {
     std::cerr<<"FUSE 3 support was not available when ez3fs was built.\n";return 1;
 }
-int mountLiveCartridge(const std::string&,bool) {
+int mountLiveCartridge(const std::string&,bool,bool) {
     std::cerr<<"FUSE 3 support was not available when ez3fs was built.\n";return 1;
 }
 #endif

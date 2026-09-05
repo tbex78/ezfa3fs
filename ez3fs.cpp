@@ -61,7 +61,7 @@ void usage() {
   ez3fs live-space IMAGE.ez3live
   ez3fs live-mount IMAGE.ez3live MOUNTPOINT [--foreground]
   ez3fs live-card-mount MOUNTPOINT [--foreground]
-  ez3fs live-card-mount MOUNTPOINT --writable --foreground
+  ez3fs live-card-mount MOUNTPOINT --writable --foreground [--verify]
   ez3fs live-card-pull IMAGE.ez3live
   ez3fs live-card-write IMAGE.ez3live
   ez3fs live-card-gc
@@ -367,13 +367,16 @@ int liveMount(const fs::path& image,const fs::path& mountpoint,bool foreground) 
     if(!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}auto contents=liveContents(filesystem,error);if(!error.empty()){std::cerr<<error<<'\n';return 1;}
     return ez3fs::mountLiveContents(contents,mountpoint.string(),foreground);
 }
-int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground) {
+int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
+                  bool verify_referenced_data) {
     if(writable){
         if(!foreground){std::cerr<<"Writable cartridge mounting requires --foreground.\n";return 1;}
         std::cout<<"WARNING: changes made through this mount are written directly to the EZ3FS-LIVE cartridge.\n";
         if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
-        return ez3fs::mountLiveCartridge(mountpoint.string(),foreground);
+        return ez3fs::mountLiveCartridge(mountpoint.string(),foreground,
+                                         verify_referenced_data);
     }
+    if(verify_referenced_data){std::cerr<<"--verify is only available for writable live cartridge mounts.\n";return 1;}
     ez3fs::CartridgeStorage storage;std::string error;if(!storage.open(error)){std::cerr<<error<<'\n';return 1;}
     ez3fs::live::NorFlash flash;const bool loaded=flash.load(storage,error);std::string close_error;const bool closed=storage.close(close_error);
     if(!loaded||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;}ez3fs::live::Filesystem filesystem(flash);
@@ -577,7 +580,7 @@ int main(int argc,char** argv) {
     if(argc==3&&std::string(argv[1])=="live-list")return liveList(argv[2]);
     if(argc==3&&std::string(argv[1])=="live-verify")return liveVerify(argv[2]);
     if(argc>=4&&std::string(argv[1])=="live-mount"){bool foreground=false;for(int i=4;i<argc;++i)if(std::string(argv[i])=="--foreground")foreground=true;return liveMount(argv[2],argv[3],foreground);}
-    if(argc>=3&&std::string(argv[1])=="live-card-mount"){bool writable=false,foreground=false;for(int i=3;i<argc;++i){const std::string option(argv[i]);if(option=="--writable")writable=true;else if(option=="--foreground")foreground=true;else{std::cerr<<"Unknown live-card-mount option: "<<option<<'\n';return 1;}}return liveCardMount(argv[2],writable,foreground);}
+    if(argc>=3&&std::string(argv[1])=="live-card-mount"){bool writable=false,foreground=false,verify_referenced_data=false;for(int i=3;i<argc;++i){const std::string option(argv[i]);if(option=="--writable")writable=true;else if(option=="--foreground")foreground=true;else if(option=="--verify")verify_referenced_data=true;else{std::cerr<<"Unknown live-card-mount option: "<<option<<'\n';return 1;}}return liveCardMount(argv[2],writable,foreground,verify_referenced_data);}
     if(argc==4&&std::string(argv[1])=="live-mkdir")return liveMkdir(argv[2],argv[3]);
     if((argc==4||argc==5)&&std::string(argv[1])=="live-put")return livePut(argv[2],argv[3],argc==5?argv[4]:argv[3]);
     if(argc==5&&std::string(argv[1])=="live-get")return liveGet(argv[2],argv[3],argv[4]);
