@@ -615,13 +615,27 @@ bool CartridgeStorage::Impl::eraseLiveBlocks(
        std::adjacent_find(blocks.begin(),blocks.end())!=blocks.end()) {
         error="live erase batch must contain sorted unique blocks";return false;
     }
+    if(std::any_of(blocks.begin(),blocks.end(),[allow_metadata](std::size_t block) {
+           return (!allow_metadata&&block<2)||block>=live::NorFlash::block_count;
+       })) {
+        error="live erase batch contains a block outside the permitted range";
+        return false;
+    }
+    std::size_t sector_count=0;
+    for(const auto block:blocks)
+        sector_count+=CartridgeFlashGeometry::sectorsForLogicalBlock(block).size();
+    std::size_t completed_sectors=0;
+    unsigned displayed_percent=101;
+    const auto report_progress=[&] {
+        const auto percent=static_cast<unsigned>(
+            completed_sectors*100/sector_count);
+        if(percent==displayed_percent)return;
+        displayed_percent=percent;
+        progress<<"\rErasing EZFA3FS extent: "<<percent<<'%'<<std::flush;
+    };
+    report_progress();
     unsigned selected_window=4;
-    std::size_t completed=0;
     for(const auto block:blocks) {
-        if((!allow_metadata&&block<2)||block>=live::NorFlash::block_count) {
-            error="live erase batch contains a block outside the permitted range";
-            return false;
-        }
         const auto sectors=CartridgeFlashGeometry::sectorsForLogicalBlock(block);
         const auto window=sectors.front().window;
         if(window!=selected_window) {
@@ -648,10 +662,9 @@ bool CartridgeStorage::Impl::eraseLiveBlocks(
                           <<static_cast<unsigned>(response[12])<<')'<<std::dec;
                 error=detail.str();return false;
             }
+            ++completed_sectors;
+            report_progress();
         }
-        ++completed;
-        progress<<"\rErasing EZFA3FS extent: "
-                <<(completed*100/blocks.size())<<'%'<<std::flush;
     }
     const bool finished=wait_until_ready?finishLiveWriteOperation(error):
                                          finishWriteOperation(error);
