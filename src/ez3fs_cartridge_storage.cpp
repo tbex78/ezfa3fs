@@ -120,6 +120,15 @@ std::size_t metadataTransferSize(const std::vector<std::uint8_t>& bytes)
 
 #if defined(EZ3FS_HAS_LIBUSB)
 namespace {
+void preciseCommandDataDelay() {
+    // The legacy DLL busy-waits for exactly 0x2EE microseconds. A scheduler
+    // sleep can overshoot on macOS and cause the bridge to acknowledge the
+    // command while ignoring the following large data payload.
+    const auto deadline=std::chrono::steady_clock::now()+
+        std::chrono::microseconds(750);
+    while(std::chrono::steady_clock::now()<deadline) {}
+}
+
 void putLe32(std::vector<std::uint8_t>& bytes, std::size_t offset,
              std::uint32_t value)
 {
@@ -213,7 +222,7 @@ bool CartridgeStorage::Impl::commandEcho(
     const std::vector<std::uint8_t>& data, std::string& error)
 {
     if (!out(command, error)) return false;
-    std::this_thread::sleep_for(std::chrono::microseconds(750));
+    preciseCommandDataDelay();
     if (!out(data, error)) return false;
     std::vector<std::uint8_t> echo;
     if (!in(echo, command.size(), error)) return false;
@@ -462,7 +471,7 @@ bool CartridgeStorage::Impl::programTransaction(
     putLe32(command,4,word_address);
     putLe32(command,8,static_cast<std::uint32_t>(data.size()));
     if(!out(command,error))return false;
-    std::this_thread::sleep_for(std::chrono::microseconds(750));
+    preciseCommandDataDelay();
     if(!out(data,error))return false;
     std::vector<std::uint8_t> response;
     if(!in(response,command.size(),error))return false;
