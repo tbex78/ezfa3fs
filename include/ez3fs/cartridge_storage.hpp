@@ -45,6 +45,10 @@ public:
                                      const std::vector<std::uint8_t>& bytes,
                                      std::size_t& completed_blocks,
                                      std::string& error);
+    bool replaceLiveFilesystemExtent(
+        std::size_t first_block,const std::vector<std::uint8_t>& bytes,
+        const std::vector<std::size_t>& erase_blocks,
+        std::size_t& completed_blocks,std::string& error);
 
 private:
     friend class CartridgeProgrammer;

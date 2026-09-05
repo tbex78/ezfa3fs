@@ -24,6 +24,11 @@ public:
     bool eraseBlock(std::size_t block,std::string& error) override;
     bool eraseBlocks(const std::vector<std::size_t>& blocks,
                      std::string& error) override;
+    bool replaceBlocks(std::size_t first_block,const std::uint8_t* source,
+                       std::size_t block_count,
+                       const std::vector<std::size_t>& erase_blocks,
+                       std::size_t& completed_blocks,
+                       std::string& error) override;
     bool replaceMetadataBlock(std::size_t block,const std::uint8_t* source,
                               std::size_t size,std::string& error) override;
     bool prepareForErase(std::string& error) override;

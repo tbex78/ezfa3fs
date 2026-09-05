@@ -112,6 +112,22 @@ bool CachedBlockDevice::eraseBlocks(const std::vector<std::size_t>& blocks,
     error.clear();return true;
 }
 
+bool CachedBlockDevice::replaceBlocks(
+    std::size_t first_block,const std::uint8_t* source,
+    std::size_t block_count,const std::vector<std::size_t>& erase_blocks,
+    std::size_t& completed_blocks,std::string& error) {
+    invalidate(first_block,block_count);
+    for(const auto block:erase_blocks)invalidate(block,1);
+    const bool replaced=device_.replaceBlocks(first_block,source,block_count,
+                                              erase_blocks,completed_blocks,error);
+    if(replaced) {
+        const auto safe_count=std::min(block_count,completed_blocks);
+        for(std::size_t index=0;index<safe_count;++index)
+            store(first_block+index,source+index*NorFlash::block_size);
+    }
+    return replaced;
+}
+
 bool CachedBlockDevice::replaceMetadataBlock(std::size_t block,
                                              const std::uint8_t* source,
                                              std::size_t size,

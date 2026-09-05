@@ -36,6 +36,20 @@ bool CartridgeLiveDevice::eraseBlocks(const std::vector<std::size_t>& blocks,
                                       std::string& error) {
     return storage_.eraseLiveFilesystemBlocks(blocks,error);
 }
+bool CartridgeLiveDevice::replaceBlocks(
+    std::size_t first_block,const std::uint8_t* source,
+    std::size_t block_count,const std::vector<std::size_t>& erase_blocks,
+    std::size_t& completed_blocks,std::string& error) {
+    if(first_block>=live::NorFlash::block_count||
+       block_count>live::NorFlash::block_count-first_block) {
+        completed_blocks=0;
+        error="cartridge live replacement extent is out of range";
+        return false;
+    }
+    std::vector<std::uint8_t> bytes(source,source+block_count*block_size);
+    return storage_.replaceLiveFilesystemExtent(
+        first_block,bytes,erase_blocks,completed_blocks,error);
+}
 bool CartridgeLiveDevice::replaceMetadataBlock(
     std::size_t block,const std::uint8_t* source,
     std::size_t size,std::string& error) {

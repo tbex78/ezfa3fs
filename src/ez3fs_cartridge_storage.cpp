@@ -37,7 +37,8 @@ public:
     bool eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error,bool allow_metadata=false);
     bool eraseLiveBlocks(const std::vector<std::size_t>& blocks,
                          std::ostream& progress,std::string& error,
-                         bool allow_metadata=false);
+                         bool allow_metadata=false,
+                         bool wait_until_ready=true);
     bool eraseLiveBlockPrefix(std::size_t block,std::size_t byte_count,
                               std::ostream& progress,std::string& error,
                               bool allow_metadata=false);
@@ -580,7 +581,7 @@ bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& prog
 }
 bool CartridgeStorage::Impl::eraseLiveBlocks(
     const std::vector<std::size_t>& blocks,std::ostream& progress,
-    std::string& error,bool allow_metadata) {
+    std::string& error,bool allow_metadata,bool wait_until_ready) {
     if(blocks.empty()){error.clear();return true;}
     if(!std::is_sorted(blocks.begin(),blocks.end())||
        std::adjacent_find(blocks.begin(),blocks.end())!=blocks.end()) {
@@ -624,7 +625,9 @@ bool CartridgeStorage::Impl::eraseLiveBlocks(
         progress<<"\rErasing EZFA3FS extent: "
                 <<(completed*100/blocks.size())<<'%'<<std::flush;
     }
-    if(!finishLiveWriteOperation(error))return false;
+    const bool finished=wait_until_ready?finishLiveWriteOperation(error):
+                                         finishWriteOperation(error);
+    if(!finished)return false;
     progress<<'\n';error.clear();return true;
 }
 bool CartridgeStorage::Impl::eraseLiveBlockPrefix(
@@ -731,7 +734,8 @@ bool CartridgeStorage::Impl::programImage(
 bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t,std::ostream&,std::string& error,bool)
 { error="EZ3FS was built without libusb support";return false; }
 bool CartridgeStorage::Impl::eraseLiveBlocks(const std::vector<std::size_t>&,
-                                             std::ostream&,std::string& error,bool)
+                                             std::ostream&,std::string& error,
+                                             bool,bool)
 { error="EZ3FS was built without libusb support";return false; }
 bool CartridgeStorage::Impl::eraseLiveBlockPrefix(std::size_t,std::size_t,
                                                   std::ostream&,std::string& error,bool)
@@ -1158,6 +1162,109 @@ bool CartridgeStorage::programLiveFilesystemExtent(
         error=operation_error;return false;
     }
     completed_blocks=block_count;error.clear();return true;
+}
+
+bool CartridgeStorage::replaceLiveFilesystemExtent(
+    std::size_t first_block,const std::vector<std::uint8_t>& bytes,
+    const std::vector<std::size_t>& erase_blocks,
+    std::size_t& completed_blocks,std::string& error) {
+    constexpr std::size_t block_size=live::NorFlash::block_size;
+    constexpr unsigned attempts=3;
+    completed_blocks=0;
+    if(bytes.empty()||bytes.size()%block_size||
+       first_block>=live::NorFlash::block_count||
+       bytes.size()/block_size>live::NorFlash::block_count-first_block||
+       !std::is_sorted(erase_blocks.begin(),erase_blocks.end())||
+       std::adjacent_find(erase_blocks.begin(),erase_blocks.end())!=
+           erase_blocks.end()) {
+        error="live filesystem replacement extent is invalid";
+        return false;
+    }
+    const auto block_count=bytes.size()/block_size;
+    const auto extent_end=first_block+block_count;
+    if(std::any_of(erase_blocks.begin(),erase_blocks.end(),
+                   [first_block,extent_end](std::size_t block) {
+                       return block<first_block||block>=extent_end;
+                   })) {
+        error="live filesystem replacement erase is outside its extent";
+        return false;
+    }
+
+    std::size_t next=0;
+    std::string last_error;
+    for(unsigned attempt=1;attempt<=attempts&&next<block_count;++attempt) {
+        std::string operation_error;
+        if(!restartLiveWriteSession(operation_error)) {
+            last_error="could not prepare cartridge writer for extent replacement: "+
+                       operation_error;
+        } else {
+            std::vector<std::size_t> blocks_to_erase;
+            if(attempt==1) {
+                std::copy_if(erase_blocks.begin(),erase_blocks.end(),
+                             std::back_inserter(blocks_to_erase),
+                             [first_block,next](std::size_t block) {
+                                 return block>=first_block+next;
+                             });
+            } else {
+                for(std::size_t index=next;index<block_count;++index)
+                    blocks_to_erase.push_back(first_block+index);
+            }
+
+            // Keep the capture-proven erase -> finish -> select -> program
+            // transition in one initialized USB session. Reading the blank
+            // extent or reopening the device here leaves block zero in the
+            // linear read mapping and the bridge accepts, but drops, its data.
+            const bool erased=blocks_to_erase.empty()||
+                impl_->eraseLiveBlocks(blocks_to_erase,std::cerr,
+                                       operation_error,true,false);
+            if(!erased) {
+                last_error=operation_error;
+            } else {
+                const std::vector<std::uint8_t> remaining(
+                    bytes.begin()+static_cast<std::ptrdiff_t>(next*block_size),
+                    bytes.end());
+                std::size_t transferred_blocks=0;
+                const bool transferred=impl_->programLiveExtent(
+                    first_block+next,remaining,transferred_blocks,std::cerr,
+                    operation_error,true);
+                const auto remaining_count=block_count-next;
+                const auto verify_count=transferred?remaining_count:
+                    std::min(remaining_count,transferred_blocks+1);
+                std::size_t verified=0;
+                for(;verified<verify_count;++verified) {
+                    const auto index=next+verified;
+                    const std::vector<std::uint8_t> expected(
+                        bytes.begin()+static_cast<std::ptrdiff_t>(index*block_size),
+                        bytes.begin()+static_cast<std::ptrdiff_t>((index+1)*block_size));
+                    const auto verification_error=
+                        (transferred||verified<transferred_blocks)?
+                            std::string{}:operation_error;
+                    if(!verifyLiveBlockAfterWrite(
+                            first_block+index,expected,"replacement program",
+                            verification_error,
+                            first_block+index<2||(!transferred&&verified==0),
+                            last_error))break;
+                }
+                next+=verified;
+                completed_blocks=next;
+                if(next==block_count) {
+                    error.clear();
+                    return true;
+                }
+                if(verified==verify_count&&last_error.empty())
+                    last_error=operation_error.empty()?
+                        "cartridge replacement transfer was incomplete":
+                        operation_error;
+            }
+        }
+        if(attempt<attempts) {
+            std::cerr<<"Retrying live extent replacement (attempt "
+                     <<(attempt+1)<<'/'<<attempts<<"): "<<last_error<<'\n';
+        }
+    }
+    error=last_error.empty()?"cartridge replacement extent was incomplete":
+                             last_error;
+    return false;
 }
 bool CartridgeStorage::isOpen() const noexcept { return impl_->is_open; }
 std::array<std::uint8_t,4> CartridgeStorage::flashId() const noexcept { return impl_->flash_id; }

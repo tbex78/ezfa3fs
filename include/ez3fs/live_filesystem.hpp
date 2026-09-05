@@ -42,6 +42,12 @@ public:
     virtual bool eraseBlock(std::size_t block,std::string& error) = 0;
     virtual bool eraseBlocks(const std::vector<std::size_t>& blocks,
                              std::string& error);
+    virtual bool replaceBlocks(std::size_t first_block,
+                               const std::uint8_t* source,
+                               std::size_t block_count,
+                               const std::vector<std::size_t>& erase_blocks,
+                               std::size_t& completed_blocks,
+                               std::string& error);
     virtual bool replaceMetadataBlock(std::size_t block,
                                       const std::uint8_t* source,
                                       std::size_t size,std::string& error);
@@ -160,8 +166,9 @@ private:
                        const std::vector<std::uint8_t>& bytes,std::string& error);
     bool ensureDirectBootSlotCapacity(std::size_t block_count,
                                       std::string& error);
-    bool prepareDirectBootRomExtent(std::size_t block_count,
-                                    std::string& error);
+    bool findStaleDirectBootRomBlocks(std::size_t block_count,
+                                      std::vector<std::size_t>& stale_blocks,
+                                      std::string& error);
     bool readEntryRange(const Entry& entry,std::size_t offset,std::size_t size,
                         std::vector<std::uint8_t>& bytes,std::string& error,
                         const std::function<void()>& block_read = {}) const;

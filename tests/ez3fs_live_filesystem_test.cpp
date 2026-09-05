@@ -37,6 +37,15 @@ public:
         ++erase_batch_count;
         return BlockDevice::eraseBlocks(blocks,error);
     }
+    bool replaceBlocks(std::size_t first_block,const std::uint8_t* source,
+                       std::size_t block_count,
+                       const std::vector<std::size_t>& erase_blocks,
+                       std::size_t& completed_blocks,
+                       std::string& error) override {
+        ++extent_replace_count;
+        return BlockDevice::replaceBlocks(first_block,source,block_count,
+                                          erase_blocks,completed_blocks,error);
+    }
     bool replaceMetadataBlock(std::size_t block,const std::uint8_t* source,
                               std::size_t size,std::string& error) override {
         ++replace_count;
@@ -59,6 +68,7 @@ public:
     std::size_t prepare_erase_count = 0;
     std::size_t prepare_program_count = 0;
     std::size_t erase_batch_count = 0;
+    std::size_t extent_replace_count = 0;
     std::vector<std::size_t> erased_blocks;
 private:
     ez3fs::live::NorFlash& flash_;
@@ -221,9 +231,12 @@ void verifyDirectBootDeleteInvalidatesOnlyFirstBlock() {
     // does not spend time erasing an old tail beyond the replacement extent.
     const auto replacement=blockData(2,0xF0);
     const auto prepared_programs=device.prepare_program_count;
+    const auto replacements=device.extent_replace_count;
+    const auto erase_batches=device.erase_batch_count;
     require(filesystem.putFile("new.gba",replacement,1235,error));
+    require(device.extent_replace_count==replacements+1);
     require(device.prepare_program_count==prepared_programs+1);
-    require(device.erase_batch_count==1);
+    require(device.erase_batch_count==erase_batches+1);
     require(std::count(device.erased_blocks.begin(),device.erased_blocks.end(),1)==
             block1_erases+1);
     require(std::count(device.erased_blocks.begin(),device.erased_blocks.end(),2)==

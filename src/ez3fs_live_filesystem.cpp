@@ -132,6 +132,17 @@ bool BlockDevice::eraseBlocks(const std::vector<std::size_t>& blocks,
     error.clear();return true;
 }
 
+bool BlockDevice::replaceBlocks(
+    std::size_t first_block,const std::uint8_t* source,
+    std::size_t block_count,const std::vector<std::size_t>& erase_blocks,
+    std::size_t& completed_blocks,std::string& error) {
+    completed_blocks=0;
+    if(!erase_blocks.empty()&&
+       (!prepareForErase(error)||!eraseBlocks(erase_blocks,error)))return false;
+    return prepareForProgram(error)&&
+           programBlocks(first_block,source,block_count,completed_blocks,error);
+}
+
 bool NorFlash::eraseBlock(std::size_t block,std::string& error) {
     if(block>=block_count){error="NOR erase block out of bounds";return false;}
     std::fill(bytes_.begin()+static_cast<std::ptrdiff_t>(block*block_size),
@@ -458,10 +469,11 @@ bool Filesystem::ensureDirectBootSlotCapacity(std::size_t block_count,
     error.clear();return true;
 }
 
-bool Filesystem::prepareDirectBootRomExtent(std::size_t block_count,
-                                            std::string& error) {
+bool Filesystem::findStaleDirectBootRomBlocks(
+    std::size_t block_count,std::vector<std::size_t>& stale_blocks,
+    std::string& error) {
     std::vector<std::uint8_t> bytes(NorFlash::block_size);
-    std::vector<std::size_t> stale_blocks;
+    stale_blocks.clear();
     for(std::size_t block=0;block<block_count;++block) {
         if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
             error="could not inspect direct-boot ROM block "+
@@ -469,12 +481,12 @@ bool Filesystem::prepareDirectBootRomExtent(std::size_t block_count,
         }
         const bool blank=std::all_of(bytes.begin(),bytes.end(),
             [](std::uint8_t byte){return byte==0xFF;});
-        if(!blank)stale_blocks.push_back(block);
-    }
-    if(!stale_blocks.empty()&&
-       (!flash_.prepareForErase(error)||!flash_.eraseBlocks(stale_blocks,error))) {
-        error="could not erase stale direct-boot ROM extent: "+error;
-        return false;
+        // The capture-proven direct-ROM workflow always erases the split boot
+        // sector group before programming offset zero. Keep block zero in the
+        // preparation list even when a preceding read reports it blank: that
+        // erase sequence is also the hardware transition that makes the
+        // following block-zero payload reliable.
+        if(block==0||!blank)stale_blocks.push_back(block);
     }
     error.clear();return true;
 }
@@ -511,13 +523,16 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
             if(bytes.empty()) {error="direct-boot EZFA3FS cannot commit an empty boot ROM";return false;}
             if(!ensureDirectBootSlotCapacity(blocks,error))return false;
             // Removing a boot ROM invalidates only block zero. Its remaining
-            // bytes are deliberately reclaimed lazily, so every block needed
-            // by the replacement must be blank before NOR programming.
-            if(!prepareDirectBootRomExtent(blocks,error))return false;
+            // bytes are deliberately reclaimed lazily, so identify every
+            // stale block that the replacement will overwrite. Cartridge
+            // devices erase and program this extent in one writer session;
+            // the in-memory device uses the same operation contract.
+            std::vector<std::size_t> stale_blocks;
+            if(!findStaleDirectBootRomBlocks(blocks,stale_blocks,error))return false;
             std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
             std::copy(bytes.begin(),bytes.end(),extent.begin());std::size_t completed=0;
-            if(!flash_.prepareForProgram(error)||
-               !flash_.programBlocks(0,extent.data(),blocks,completed,error)||
+            if(!flash_.replaceBlocks(0,extent.data(),blocks,stale_blocks,
+                                     completed,error)||
                completed!=blocks) {
                 if(error.empty())error="direct-boot ROM programming was incomplete";return false;
             }
