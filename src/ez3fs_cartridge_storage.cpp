@@ -947,13 +947,28 @@ bool CartridgeStorage::replaceLiveFilesystemMetadata(
         }
         const bool erased=impl_->eraseLiveBlockPrefix(
             block,transfer_size,std::cerr,operation_error,true);
-        if(erased)
-            impl_->programLiveBlockPrefix(block,prefix,std::cerr,
-                                          operation_error,true);
-        if(erased&&verifyLiveBlockAfterWrite(
-                block,prefix,"metadata replacement",operation_error,
-                true,error))return true;
-        if(!erased)error=operation_error;
+        if(!erased) {
+            error=operation_error;
+        } else {
+            const std::vector<std::uint8_t> blank(transfer_size,0xFF);
+            if(verifyLiveBlockAfterWrite(block,blank,"metadata erase",
+                                         operation_error,true,error)) {
+                // Erase verification leaves the bridge in read mode. Start a
+                // fresh writer session only after proving that no old header
+                // bits can block the next generation's 0-to-1 transitions.
+                std::string program_error;
+                if(!restartLiveWriteSession(program_error)) {
+                    error="could not prepare writer after metadata erase: "+
+                          program_error;
+                } else {
+                    const bool programmed=impl_->programLiveBlockPrefix(
+                        block,prefix,std::cerr,program_error,true);
+                    if(verifyLiveBlockAfterWrite(
+                            block,prefix,"metadata replacement",program_error,
+                            !programmed,error))return true;
+                }
+            }
+        }
         if(attempt==attempts)return false;
         std::cerr<<"Retrying live block replacement (attempt "
                  <<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
