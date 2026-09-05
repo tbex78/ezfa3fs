@@ -29,6 +29,7 @@ public:
                                           completed_blocks,error);
     }
     bool eraseBlock(std::size_t block,std::string& error) override {
+        erased_blocks.push_back(block);
         return flash_.eraseBlock(block,error);
     }
     bool replaceMetadataBlock(std::size_t block,const std::uint8_t* source,
@@ -48,6 +49,7 @@ public:
     std::size_t extent_program_count = 0;
     std::size_t replace_count = 0;
     std::size_t prepare_erase_count = 0;
+    std::vector<std::size_t> erased_blocks;
 private:
     ez3fs::live::NorFlash& flash_;
     std::set<std::size_t> failed_program_calls;
@@ -179,19 +181,45 @@ void verifyEmptyDirectBootLayout() {
     require(bytes==blockData(3,0xA5));
 }
 
-void verifyDirectBootDeleteErasesOnlyRomBlocks() {
+void verifyDirectBootDeleteInvalidatesOnlyFirstBlock() {
     ez3fs::live::NorFlash flash;std::string error;
     require(ez3fs::live::Filesystem::formatDirectBootEmpty(flash,error,256));
     CountingDevice device(flash);
     ez3fs::live::Filesystem filesystem(device);
     require(ez3fs::live::Filesystem::open(device,filesystem,error));
-    const std::vector<std::uint8_t> small_rom{0x18,0x00,0x00,0xEA};
-    require(filesystem.putFile("small.gba",small_rom,1234,error));
-    require(filesystem.entries().front().block_count==1);
+    const auto old_rom=blockData(3,0x00);
+    require(filesystem.putFile("old.gba",old_rom,1234,error));
+    require(filesystem.entries().front().block_count==3);
     const auto prepared_before_delete=device.prepare_erase_count;
-    require(filesystem.removeFile("small.gba",error));
+    const auto block0_erases=std::count(device.erased_blocks.begin(),
+                                        device.erased_blocks.end(),0);
+    const auto block1_erases=std::count(device.erased_blocks.begin(),
+                                        device.erased_blocks.end(),1);
+    const auto block2_erases=std::count(device.erased_blocks.begin(),
+                                        device.erased_blocks.end(),2);
+    require(filesystem.removeFile("old.gba",error));
     require(device.prepare_erase_count==prepared_before_delete+1);
+    require(std::count(device.erased_blocks.begin(),device.erased_blocks.end(),0)==
+            block0_erases+1);
+    require(std::count(device.erased_blocks.begin(),device.erased_blocks.end(),1)==
+            block1_erases);
+    require(std::count(device.erased_blocks.begin(),device.erased_blocks.end(),2)==
+            block2_erases);
     require(filesystem.awaitsDirectBootRom());
+
+    // Replacement preflight erases stale blocks that it will overwrite, but
+    // does not spend time erasing an old tail beyond the replacement extent.
+    const auto replacement=blockData(2,0xF0);
+    require(filesystem.putFile("new.gba",replacement,1235,error));
+    require(std::count(device.erased_blocks.begin(),device.erased_blocks.end(),1)==
+            block1_erases+1);
+    require(std::count(device.erased_blocks.begin(),device.erased_blocks.end(),2)==
+            block2_erases);
+    std::vector<std::uint8_t> bytes;
+    require(filesystem.readFile("new.gba",bytes,error)&&bytes==replacement);
+    require(flash.read(2*ez3fs::live::NorFlash::block_size,bytes.data(),
+                       ez3fs::live::NorFlash::block_size,error));
+    require(bytes.front()==0x00);
 }
 
 void verifyInterruptedCompaction(std::size_t failure_offset,
@@ -300,7 +328,7 @@ int main()
     verifyPhysicalEraseGeometry();
     verifyDirectBootLayout();
     verifyEmptyDirectBootLayout();
-    verifyDirectBootDeleteErasesOnlyRomBlocks();
+    verifyDirectBootDeleteInvalidatesOnlyFirstBlock();
     // Losing power while either metadata generation is being updated leaves a
     // complete source or destination extent referenced by the newest valid one.
     verifyInterruptedCompaction(2,4,0);

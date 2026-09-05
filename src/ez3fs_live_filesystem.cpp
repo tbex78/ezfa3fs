@@ -450,6 +450,24 @@ bool Filesystem::ensureDirectBootSlotCapacity(std::size_t block_count,
     error.clear();return true;
 }
 
+bool Filesystem::prepareDirectBootRomExtent(std::size_t block_count,
+                                            std::string& error) {
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);
+    for(std::size_t block=0;block<block_count;++block) {
+        if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
+            error="could not inspect direct-boot ROM block "+
+                  std::to_string(block)+": "+error;return false;
+        }
+        const bool blank=std::all_of(bytes.begin(),bytes.end(),
+            [](std::uint8_t byte){return byte==0xFF;});
+        if(!blank&&(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error))) {
+            error="could not erase stale direct-boot ROM block "+
+                  std::to_string(block)+": "+error;return false;
+        }
+    }
+    error.clear();return true;
+}
+
 bool Filesystem::canCreateFile(const std::string& path,std::string& error) const {
     if(isDirectBoot()) {
         if(!directBootRom()) {
@@ -481,6 +499,10 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
             }
             if(bytes.empty()) {error="direct-boot EZFA3FS cannot commit an empty boot ROM";return false;}
             if(!ensureDirectBootSlotCapacity(blocks,error))return false;
+            // Removing a boot ROM invalidates only block zero. Its remaining
+            // bytes are deliberately reclaimed lazily, so every block needed
+            // by the replacement must be blank before NOR programming.
+            if(!prepareDirectBootRomExtent(blocks,error))return false;
             std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
             std::copy(bytes.begin(),bytes.end(),extent.begin());std::size_t completed=0;
             if(!flash_.programBlocks(0,extent.data(),blocks,completed,error)||completed!=blocks) {
@@ -606,16 +628,16 @@ bool Filesystem::removeFile(const std::string& path,std::string& error) {
     const auto old=entries_;const auto it=std::find_if(entries_.begin(),entries_.end(),[&](const Entry& e){return e.name==path&&!e.directory;});
     if(it==entries_.end()){error="live file does not exist";return false;}
     if(isDirectBootRom(*it)){
-        const auto programmed_blocks=static_cast<std::size_t>(it->block_count);
         const auto old=entries_;entries_.erase(it);
         if(!commit(error)){entries_=old;return false;}
-        // The boot slot is reserved address space, not allocated ROM data.
-        // Erasing its full capacity makes deleting a small ROM needlessly
-        // erase hundreds of blocks that are already blank.
-        for(std::size_t block=0;block<programmed_blocks;++block)
-            if(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error)){
-                error="boot ROM metadata was cleared but block "+std::to_string(block)+" could not be erased: "+error;return false;
-            }
+        // Direct-boot hardware ignores the manifest and executes cartridge
+        // offset zero. Erasing only its first logical block invalidates the
+        // ROM immediately; the remaining occupied blocks are erased lazily
+        // if they are needed by the replacement.
+        if(!flash_.prepareForErase(error)||!flash_.eraseBlock(0,error)) {
+            error="boot ROM metadata was cleared but block 0 could not be erased: "+
+                  error;return false;
+        }
         next_free_block_=allocationStartBlock();error.clear();return true;
     }
     entries_.erase(it);if(commit(error))return true;entries_=old;return false;

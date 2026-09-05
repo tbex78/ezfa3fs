@@ -157,6 +157,8 @@ private:
                        const std::vector<std::uint8_t>& bytes,std::string& error);
     bool ensureDirectBootSlotCapacity(std::size_t block_count,
                                       std::string& error);
+    bool prepareDirectBootRomExtent(std::size_t block_count,
+                                    std::string& error);
     bool readEntryRange(const Entry& entry,std::size_t offset,std::size_t size,
                         std::vector<std::uint8_t>& bytes,std::string& error,
                         const std::function<void()>& block_read = {}) const;
