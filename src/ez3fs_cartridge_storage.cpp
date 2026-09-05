@@ -62,7 +62,16 @@ private:
               std::uint32_t word_address = 0);
     bool waitReady(unsigned attempts, std::string& error);
     bool initialize(std::string& error, bool allow_erased);
-    bool probePrefix(std::string& error);
+    bool probePrefix(std::uint8_t a0,std::uint8_t a1,
+                     std::uint8_t b0,std::uint8_t b1,
+                     std::uint8_t c0,std::uint8_t c1,
+                     bool include_tail,std::string& error);
+    bool resetAfterFlashId(bool use_f0,std::string& error);
+    bool probeFlashWindow(std::uint8_t a0,std::uint8_t a1,
+                          std::uint8_t b0,std::uint8_t b1,
+                          std::uint8_t c0,std::uint8_t c1,
+                          std::array<std::uint8_t,4>& id,
+                          std::string& error);
     bool readFlashId(std::array<std::uint8_t, 4>& id, std::string& error);
     bool prepareMapping(std::uint64_t end, std::string& error);
     bool mappingBody(std::uint32_t limit, std::string& error);
@@ -210,13 +219,32 @@ bool CartridgeStorage::Impl::waitReady(unsigned attempts, std::string& error)
     return false;
 }
 
-bool CartridgeStorage::Impl::probePrefix(std::string& error)
+bool CartridgeStorage::Impl::probePrefix(
+    std::uint8_t a0,std::uint8_t a1,std::uint8_t b0,std::uint8_t b1,
+    std::uint8_t c0,std::uint8_t c1,bool include_tail,std::string& error)
 {
-    if (!tx92(0x55,0xAA,error) || !tx92(0,0,error) ||
-        !tx92(0,0,error) || !tx92(0,0,error)) return false;
+    if (!tx92(0x55,0xAA,error) || !tx92(a0,a1,error) ||
+        !tx92(b0,b1,error) || !tx92(c0,c1,error)) return false;
     std::this_thread::sleep_for(std::chrono::milliseconds(125));
-    return tx92(0xAA,0x55,error) && tx92(0,0,error) &&
-           tx92(0,0,error) && tx92(0,0,error);
+    if(!include_tail)return true;
+    return tx92(0xAA,0x55,error)&&tx92(0,0,error)&&
+           tx92(0,0,error)&&tx92(0,0,error);
+}
+
+bool CartridgeStorage::Impl::resetAfterFlashId(bool use_f0,std::string& error)
+{
+    return tx92(use_f0?0xF0:0xFF,use_f0?0:0xFF,error)&&
+           tx92One(1,0x04,error)&&tx92One(0,0,error)&&tx92One(0,0,error);
+}
+
+bool CartridgeStorage::Impl::probeFlashWindow(
+    std::uint8_t a0,std::uint8_t a1,std::uint8_t b0,std::uint8_t b1,
+    std::uint8_t c0,std::uint8_t c1,std::array<std::uint8_t,4>& id,
+    std::string& error)
+{
+    return probePrefix(a0,a1,b0,b1,c0,c1,true,error)&&
+           tx92(0x90,0,error)&&readFlashId(id,error)&&
+           resetAfterFlashId(false,error);
 }
 
 bool CartridgeStorage::Impl::readFlashId(
@@ -248,12 +276,34 @@ bool CartridgeStorage::Impl::initialize(std::string& error, bool allow_erased)
     }
 
     std::array<std::uint8_t,4> ignored{};
-    if (!probePrefix(error) || !tx92(0xAA,0,error,0x555) ||
+    if (!probePrefix(0,0,0,0,0,0,true,error) || !tx92(0xAA,0,error,0x555) ||
         !tx92(0x55,0,error,0x2AA) || !tx92(0x90,0,error,0x555) ||
         !readFlashId(ignored,error) || !tx92(0x90,0,error) ||
-        !tx92(0xF0,0,error) || !probePrefix(error) ||
-        !tx92(0x90,0,error) || !readFlashId(flash_id,error) ||
-        !tx92(0xFF,0xFF,error)) return false;
+        !resetAfterFlashId(true,error) ||
+        !probeFlashWindow(0,0,0,0,0,0,flash_id,error))return false;
+
+    if(allow_erased) {
+        // The original manager primes all four 8-MiB windows before writing.
+        // Live reconnects must repeat this sequence; jumping from a shortened
+        // window-0 probe directly to a higher write window is rejected by
+        // real hardware with completion status 0x01.
+        const std::array<std::array<std::uint8_t,6>,3> upper{{
+            {{2,0,0,0x40,0,0}},{{2,0,0,0x80,0,0}},{{2,0,0,0xC0,0,0}}}};
+        for(const auto& probe:upper)
+            if(!probeFlashWindow(probe[0],probe[1],probe[2],probe[3],
+                                 probe[4],probe[5],ignored,error))return false;
+        if(!probeFlashWindow(0,0,0,0,2,0,ignored,error)||
+           !probePrefix(0,0,0,0,0,0,false,error))return false;
+    }
+
+    const std::vector<std::uint8_t> c95 =
+        {0x5A,0xA5,0x95,0,0x80,0,0,0,0,0,0,0,0};
+    if (!out(c95,error) || !in(response,c95.size(),error) || response != c95) {
+        if (error.empty()) error = "cartridge read-prime echo mismatch";
+        return false;
+    }
+    std::array<std::uint8_t,0xAC> prime{};
+    if(!rawRead(0,prime.data(),prime.size(),error))return false;
 
     const std::array<std::uint8_t,4> b8{{0x1C,0,0xB8,0}};
     const std::array<std::uint8_t,4> b9{{0x1C,0,0xB9,0}};
@@ -263,7 +313,7 @@ bool CartridgeStorage::Impl::initialize(std::string& error, bool allow_erased)
         // Accept only an EZ3FS signature at offset zero; arbitrary cartridges
         // still cannot enter the EZ3-specific mapping path.
         std::array<std::uint8_t,8> header{};
-        if (!rawRead(0,header.data(),header.size(),error)) return false;
+        std::copy_n(prime.begin(),header.size(),header.begin());
         const bool erased = std::all_of(header.begin(),header.end(),
             [](std::uint8_t byte){return byte==0xFF;});
         std::array<std::uint8_t,8> live_header{};
@@ -285,14 +335,7 @@ bool CartridgeStorage::Impl::initialize(std::string& error, bool allow_erased)
         }
     }
 
-    const std::vector<std::uint8_t> c95 =
-        {0x5A,0xA5,0x95,0,0x80,0,0,0,0,0,0,0,0};
-    if (!out(c95,error) || !in(response,c95.size(),error) || response != c95) {
-        if (error.empty()) error = "cartridge read-prime echo mismatch";
-        return false;
-    }
-    std::array<std::uint8_t,0xAC> prime{};
-    return rawRead(0, prime.data(), prime.size(), error);
+    error.clear();return true;
 }
 
 bool CartridgeStorage::Impl::mappingBody(std::uint32_t limit,
