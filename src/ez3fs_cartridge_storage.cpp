@@ -8,6 +8,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -34,8 +35,15 @@ public:
     bool read(std::uint64_t offset, std::uint8_t* destination,
               std::size_t size, std::string& error);
     bool eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error,bool allow_metadata=false);
+    bool eraseLiveBlockPrefix(std::size_t block,std::size_t byte_count,
+                              std::ostream& progress,std::string& error,
+                              bool allow_metadata=false);
     bool programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,
                           std::ostream& progress,std::string& error,bool allow_metadata=false);
+    bool programLiveBlockPrefix(std::size_t block,
+                                const std::vector<std::uint8_t>& bytes,
+                                std::ostream& progress,std::string& error,
+                                bool allow_metadata=false);
     bool programLiveExtent(std::size_t first_block,
                            const std::vector<std::uint8_t>& bytes,
                            std::size_t& completed_blocks,
@@ -91,6 +99,21 @@ private:
                       std::ostream& progress, std::string& error);
 };
 
+namespace {
+std::size_t metadataTransferSize(const std::vector<std::uint8_t>& bytes)
+{
+    constexpr std::size_t transfer_granularity=
+        CartridgeFlashGeometry::boot_sector_size;
+    const auto last=std::find_if(bytes.rbegin(),bytes.rend(),
+        [](std::uint8_t byte){return byte!=0xFF;});
+    const auto meaningful=std::max<std::size_t>(1,static_cast<std::size_t>(
+        std::distance(bytes.begin(),last.base())));
+    return std::min(bytes.size(),
+        ((meaningful+transfer_granularity-1)/transfer_granularity)*
+        transfer_granularity);
+}
+} // namespace
+
 #if defined(EZ3FS_HAS_LIBUSB)
 namespace {
 void putLe32(std::vector<std::uint8_t>& bytes, std::size_t offset,
@@ -125,6 +148,7 @@ std::string formatFlashId(const std::array<std::uint8_t,4>& id)
     }
     return output.str();
 }
+
 } // namespace
 
 bool CartridgeStorage::Impl::out(const std::vector<std::uint8_t>& bytes,
@@ -531,8 +555,19 @@ bool CartridgeStorage::Impl::programImage(
 }
 bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error,bool allow_metadata)
 {
-    if((!allow_metadata&&block<2)||block>=0x200){error="live erase block is outside the permitted range";return false;}
-    const auto sectors=CartridgeFlashGeometry::sectorsForLogicalBlock(block);
+    return eraseLiveBlockPrefix(block,live::NorFlash::block_size,progress,
+                                error,allow_metadata);
+}
+bool CartridgeStorage::Impl::eraseLiveBlockPrefix(
+    std::size_t block,std::size_t byte_count,std::ostream& progress,
+    std::string& error,bool allow_metadata)
+{
+    if((!allow_metadata&&block<2)||block>=0x200||byte_count==0||
+       byte_count>live::NorFlash::block_size) {
+        error="live erase block prefix is outside the permitted range";return false;
+    }
+    const auto sectors=CartridgeFlashGeometry::sectorsCoveringBlockPrefix(
+        block,byte_count);
     if(!selectWriteWindow(sectors.front().window,error))return false;
     for(const auto& sector:sectors){const auto address=sector.word_address;
         std::vector<std::uint8_t> command={0x5A,0xA5,0x96,0,static_cast<std::uint8_t>(address),static_cast<std::uint8_t>(address>>8),static_cast<std::uint8_t>(address>>16),static_cast<std::uint8_t>(address>>24),0,0,0,0,0};
@@ -552,6 +587,26 @@ bool CartridgeStorage::Impl::programLiveBlock(std::size_t block,const std::vecto
 {
     std::size_t completed=0;
     return programLiveExtent(block,bytes,completed,progress,error,allow_metadata);
+}
+bool CartridgeStorage::Impl::programLiveBlockPrefix(
+    std::size_t block,const std::vector<std::uint8_t>& bytes,
+    std::ostream& progress,std::string& error,bool allow_metadata)
+{
+    constexpr std::size_t blocks_per_window=0x80;
+    if(bytes.empty()||bytes.size()>live::NorFlash::block_size||block>=0x200||
+       (!allow_metadata&&block<2)) {
+        error="live block-prefix programming is outside the permitted range";
+        return false;
+    }
+    const auto window=static_cast<unsigned>(block/blocks_per_window);
+    const auto local=static_cast<std::uint32_t>(
+        (block%blocks_per_window)*0x8000u);
+    if(!selectWriteWindow(window,error)||
+       !programTransaction(local,bytes,"cartridge live metadata program",error)||
+       !finishLiveWriteOperation(error))return false;
+    progress<<"Programmed cartridge block "<<block<<" metadata prefix ("
+            <<bytes.size()/1024<<" KiB).\n";
+    error.clear();return true;
 }
 bool CartridgeStorage::Impl::programLiveExtent(
     std::size_t first_block,const std::vector<std::uint8_t>& bytes,
@@ -605,7 +660,14 @@ bool CartridgeStorage::Impl::programImage(
 }
 bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t,std::ostream&,std::string& error,bool)
 { error="EZ3FS was built without libusb support";return false; }
+bool CartridgeStorage::Impl::eraseLiveBlockPrefix(std::size_t,std::size_t,
+                                                  std::ostream&,std::string& error,bool)
+{ error="EZ3FS was built without libusb support";return false; }
 bool CartridgeStorage::Impl::programLiveBlock(std::size_t,const std::vector<std::uint8_t>&,std::ostream&,std::string& error,bool)
+{ error="EZ3FS was built without libusb support";return false; }
+bool CartridgeStorage::Impl::programLiveBlockPrefix(std::size_t,
+                                                    const std::vector<std::uint8_t>&,
+                                                    std::ostream&,std::string& error,bool)
 { error="EZ3FS was built without libusb support";return false; }
 bool CartridgeStorage::Impl::programLiveExtent(std::size_t,const std::vector<std::uint8_t>&,
                                                std::size_t& completed,std::ostream&,
@@ -735,11 +797,11 @@ bool CartridgeStorage::restartLiveWriteSession(std::string& error) {
 }
 bool CartridgeStorage::eraseLiveBlock(std::size_t block,std::string& error) { return impl_->eraseLiveBlock(block,std::cerr,error); }
 bool CartridgeStorage::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) { return impl_->programLiveBlock(block,bytes,std::cerr,error); }
-bool CartridgeStorage::readLiveBlockAfterWrite(std::size_t block,
+bool CartridgeStorage::readLiveBlockAfterWrite(std::size_t block,std::size_t size,
                                                std::vector<std::uint8_t>& bytes,
                                                std::string& error,
                                                bool reopen_first) {
-    bytes.resize(live::NorFlash::block_size);
+    bytes.resize(size);
     if(!reopen_first&&read(block*live::NorFlash::block_size,bytes.data(),bytes.size(),error)) {
         error.clear();return true;
     }
@@ -770,7 +832,7 @@ bool CartridgeStorage::verifyLiveBlockAfterWrite(
         // Reserve the more invasive USB reinitialization for the final check;
         // metadata and failed completion responses still reopen immediately.
         const bool reopen=reopen_first||attempt==verification_attempts;
-        if(readLiveBlockAfterWrite(block,readback,read_error,reopen)) {
+        if(readLiveBlockAfterWrite(block,expected.size(),readback,read_error,reopen)) {
             const auto mismatch=std::mismatch(readback.begin(),readback.end(),
                                               expected.begin());
             if(mismatch.first==readback.end()){error.clear();return true;}
@@ -840,6 +902,43 @@ bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::v
         std::string restart_error;
         if(!restartLiveWriteSession(restart_error)) {
             error+="; retry writer restart failed: "+restart_error;return false;
+        }
+    }
+    return false;
+}
+bool CartridgeStorage::replaceLiveFilesystemMetadata(
+    std::size_t block,const std::vector<std::uint8_t>& bytes,
+    std::string& error) {
+    constexpr unsigned attempts=3;
+    if(block>=live::NorFlash::block_count||
+       bytes.size()!=live::NorFlash::block_size) {
+        error="live filesystem block replacement is out of range";return false;
+    }
+    const auto transfer_size=metadataTransferSize(bytes);
+    const std::vector<std::uint8_t> prefix(bytes.begin(),
+        bytes.begin()+static_cast<std::ptrdiff_t>(transfer_size));
+    for(unsigned attempt=1;attempt<=attempts;++attempt) {
+        std::string operation_error;
+        if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error)) {
+            error="could not restore cartridge writer before block replacement: "+
+                  operation_error;return false;
+        }
+        const bool erased=impl_->eraseLiveBlockPrefix(
+            block,transfer_size,std::cerr,operation_error,true);
+        if(erased)
+            impl_->programLiveBlockPrefix(block,prefix,std::cerr,
+                                          operation_error,true);
+        if(erased&&verifyLiveBlockAfterWrite(
+                block,prefix,"metadata replacement",operation_error,
+                true,error))return true;
+        if(!erased)error=operation_error;
+        if(attempt==attempts)return false;
+        std::cerr<<"Retrying live block replacement (attempt "
+                 <<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
+        std::string restart_error;
+        if(!restartLiveWriteSession(restart_error)) {
+            error+="; replacement writer restart failed: "+restart_error;
+            return false;
         }
     }
     return false;

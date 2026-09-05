@@ -87,13 +87,27 @@ bool LiveMountBackend::persistFile(const std::string& path,
                                maintenance_observer_);
 }
 
+bool LiveMountBackend::commitReady(const PendingFile& pending) const noexcept {
+    // POSIX copy tools may synchronize an empty destination before sending
+    // its data. An empty direct-boot ROM is not a valid cartridge state.
+    return !filesystem_.awaitsDirectBootRom()||!pending.bytes.empty();
+}
+
+bool LiveMountBackend::commitFile(const std::string& path,std::string& error) {
+    const auto current=pending_files_.find(normalize(path));
+    if(current==pending_files_.end()||!commitReady(current->second)) {
+        error.clear();
+        return true;
+    }
+    if(!persistFile(current->first,current->second,error))return false;
+    pending_files_.erase(current);
+    error.clear();
+    return true;
+}
+
 bool LiveMountBackend::commit(std::string& error) {
     for(auto current=pending_files_.begin();current!=pending_files_.end();) {
-        // POSIX copy tools create and may flush a zero-length destination
-        // before sending its data.  An empty direct-boot ROM is not a valid
-        // on-cartridge state, so retain that staged file until a later write
-        // makes it commit-ready.
-        if(filesystem_.awaitsDirectBootRom()&&current->second.bytes.empty()) {
+        if(!commitReady(current->second)) {
             ++current;continue;
         }
         if(!persistFile(current->first,current->second,error))return false;

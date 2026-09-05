@@ -31,6 +31,11 @@ public:
     bool eraseBlock(std::size_t block,std::string& error) override {
         return flash_.eraseBlock(block,error);
     }
+    bool replaceMetadataBlock(std::size_t block,const std::uint8_t* source,
+                              std::size_t size,std::string& error) override {
+        ++replace_count;
+        return BlockDevice::replaceMetadataBlock(block,source,size,error);
+    }
     bool prepareForErase(std::string& error) override {
         ++prepare_erase_count;error.clear();return true;
     }
@@ -41,6 +46,7 @@ public:
     mutable std::size_t read_count = 0;
     std::size_t program_count = 0;
     std::size_t extent_program_count = 0;
+    std::size_t replace_count = 0;
     std::size_t prepare_erase_count = 0;
 private:
     ez3fs::live::NorFlash& flash_;
@@ -94,6 +100,10 @@ void verifyPhysicalEraseGeometry() {
     const auto top=ez3fs::CartridgeFlashGeometry::sectorsForLogicalBlock(511);
     require(top.size()==8&&top.front().window==3&&
             top.front().word_address==0x3F8000&&top.back().word_address==0x3FF000);
+    const auto top_prefix=ez3fs::CartridgeFlashGeometry::sectorsCoveringBlockPrefix(
+        511,ez3fs::CartridgeFlashGeometry::boot_sector_size);
+    require(top_prefix.size()==1&&top_prefix.front().window==3&&
+            top_prefix.front().word_address==0x3F8000);
 }
 
 void verifyDirectBootLayout() {
@@ -289,7 +299,9 @@ int main()
     require(ez3fs::live::Filesystem::open(device,filesystem,error));
     require(device.read_count==2);
     require(filesystem.generation()==1);
+    const auto replacements_before_create=device.replace_count;
     require(filesystem.createDirectory("docs",error));
+    require(device.replace_count==replacements_before_create+1);
     require(filesystem.putFile("docs/readme.txt",{'o','k'},1234,error));
     std::vector<std::uint8_t> bytes;
     require(filesystem.readFile("docs/readme.txt",bytes,error));

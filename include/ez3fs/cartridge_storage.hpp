@@ -34,6 +34,9 @@ public:
     bool programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error);
     bool eraseLiveFilesystemBlock(std::size_t block,std::string& error);
     bool programLiveFilesystemBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error);
+    bool replaceLiveFilesystemMetadata(std::size_t block,
+                                       const std::vector<std::uint8_t>& bytes,
+                                       std::string& error);
     bool programLiveFilesystemExtent(std::size_t first_block,
                                      const std::vector<std::uint8_t>& bytes,
                                      std::size_t& completed_blocks,
@@ -43,7 +46,7 @@ private:
     friend class CartridgeProgrammer;
     friend class CartridgeLiveDevice;
     bool openLiveWriteSessionWithRetry(std::string& error);
-    bool readLiveBlockAfterWrite(std::size_t block,
+    bool readLiveBlockAfterWrite(std::size_t block,std::size_t size,
                                  std::vector<std::uint8_t>& bytes,
                                  std::string& error,bool reopen_first);
     bool verifyLiveBlockAfterWrite(std::size_t block,

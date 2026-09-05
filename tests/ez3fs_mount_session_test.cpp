@@ -42,7 +42,7 @@ int main() {
     require(session.mountedAt()!=0);
     require(session.mutationAllowed(error));
 
-    require(!session.commit(error));
+    require(!session.commitFile("/file",error));
     const auto commit_error=error;
     require(session.commitFailed());
     require(!session.mutationAllowed(error));

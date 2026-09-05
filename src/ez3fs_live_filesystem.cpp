@@ -118,6 +118,13 @@ bool BlockDevice::programBlocks(std::size_t first_block,
     error.clear();return true;
 }
 
+bool BlockDevice::replaceMetadataBlock(std::size_t block,
+                                       const std::uint8_t* source,
+                                       std::size_t size,std::string& error) {
+    return eraseBlock(block,error)&&
+           program(block*NorFlash::block_size,source,size,error);
+}
+
 bool NorFlash::eraseBlock(std::size_t block,std::string& error) {
     if(block>=block_count){error="NOR erase block out of bounds";return false;}
     std::fill(bytes_.begin()+static_cast<std::ptrdiff_t>(block*block_size),
@@ -251,13 +258,13 @@ bool Filesystem::commit(std::string& error) {
         std::copy(entry.name.begin(),entry.name.end(),reinterpret_cast<char*>(base+32));
     }
     if(manifest.size()>NorFlash::block_size-superblock_header){error="live manifest exceeds superblock capacity";return false;}
-    const auto target=alternateSuperblock();if(!flash_.eraseBlock(target,error))return false;
+    const auto target=alternateSuperblock();
     std::vector<std::uint8_t> block(NorFlash::block_size,0xFF);const auto& selected_magic=layout_==Layout::direct_boot?direct_boot_format_magic:format_magic;std::copy(selected_magic.begin(),selected_magic.end(),block.begin());
     put<std::uint16_t>(block.data(),8,major);put<std::uint16_t>(block.data(),10,layout_==Layout::direct_boot?direct_boot_minor:minor);put<std::uint64_t>(block.data(),12,generation_+1);
     put<std::uint32_t>(block.data(),20,static_cast<std::uint32_t>(manifest.size()));
     put<std::uint32_t>(block.data(),24,Crc32::calculate(manifest.data(),manifest.size()));put<std::uint32_t>(block.data(),28,commit_marker);
     std::copy(manifest.begin(),manifest.end(),block.begin()+superblock_header);
-    if(!flash_.program(target*NorFlash::block_size,block.data(),block.size(),error))return false;
+    if(!flash_.replaceMetadataBlock(target,block.data(),block.size(),error))return false;
     active_superblock_=target;++generation_;error.clear();return true;
 }
 

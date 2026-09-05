@@ -63,6 +63,11 @@ int commitSession(MountSession& value) {
     if(value.commit(error))return 0;
     return mutationFailure(value,error);
 }
+int commitSessionFile(MountSession& value,const char* path) {
+    std::string error;
+    if(value.commitFile(path,error))return 0;
+    return mutationFailure(value,error);
+}
 int finishMutation(bool changed,const std::string& error) {
     if(!changed)return mutationFailure(session(),error);
     return commitSession(session());
@@ -144,11 +149,11 @@ int ez3fsFlush(const char*,struct fuse_file_info*) {
     // macFUSE may flush an open file repeatedly while a copy is still
     // growing. Committing here rewrites the complete copy-on-write extent and
     // both metadata generations for every partial size. Keep flush as a
-    // health check; fsync and the final release remain durability boundaries.
+    // health check; the final release remains the file durability boundary.
     return beginMutation(session());
 }
-int ez3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSession(session());}
-int ez3fsRelease(const char*,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSession(session());}
+int ez3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return beginMutation(session());}
+int ez3fsRelease(const char* path,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return commitSessionFile(session(),path);}
 int ez3fsSetxattr(const char* path,const char*,const char*,size_t,int) {
     std::lock_guard<std::mutex> lock(session().mutex());MountNode node;
     if(!session().backend().lookup(path,node))return -ENOENT;

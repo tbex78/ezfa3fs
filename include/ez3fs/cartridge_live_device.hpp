@@ -16,6 +16,8 @@ public:
                        std::size_t block_count,std::size_t& completed_blocks,
                        std::string& error) override;
     bool eraseBlock(std::size_t block,std::string& error) override;
+    bool replaceMetadataBlock(std::size_t block,const std::uint8_t* source,
+                              std::size_t size,std::string& error) override;
     bool prepareForErase(std::string& error) override;
 private:
     CartridgeStorage& storage_;

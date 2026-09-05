@@ -20,7 +20,16 @@ bool MountSession::mutationAllowed(std::string& error) const {
 
 bool MountSession::commit(std::string& error) {
     if (!mutationAllowed(error)) return false;
-    if (backend_->commit(error)) return true;
+    return finishCommit(backend_->commit(error),error);
+}
+
+bool MountSession::commitFile(const std::string& path,std::string& error) {
+    if (!mutationAllowed(error)) return false;
+    return finishCommit(backend_->commitFile(path,error),error);
+}
+
+bool MountSession::finishCommit(bool committed,std::string& error) {
+    if (committed) return true;
     commit_failed_ = true;
     commit_error_ = error.empty() ? "mount commit failed" : error;
     error = commit_error_;
