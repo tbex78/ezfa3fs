@@ -26,7 +26,13 @@ namespace ez3fs {
 class CartridgeStorage::Impl final {
 public:
     friend class CartridgeProgrammer;
-    ~Impl() { shutdown(); }
+    ~Impl() {
+#if defined(EZ3FS_HAS_LIBUSB)
+        std::string ignored;
+        if(handle)restoreSaveBanks(ignored);
+#endif
+        shutdown();
+    }
 
     bool open(std::string& error);
     bool openForProgramming(std::string& error,bool trust_validated_format=false);
@@ -63,6 +69,10 @@ private:
     libusb_device_handle* handle = nullptr;
     bool claimed = false;
     std::uint32_t mapped_limit = 0x00800000u;
+    static constexpr std::size_t save_bank_size = 0x8000;
+    static constexpr std::size_t save_bank_count = 4;
+    std::vector<std::uint8_t> save_backup;
+    bool save_dirty = false;
 
     bool out(const std::vector<std::uint8_t>& bytes, std::string& error);
     bool in(std::vector<std::uint8_t>& bytes, std::size_t size,
@@ -72,6 +82,10 @@ private:
                      std::string& error);
     bool tx92(std::uint8_t first, std::uint8_t second, std::string& error,
               std::uint32_t word_address = 0);
+    bool selectSaveBank(std::uint16_t selector,std::string& error);
+    bool readSaveBanks(std::vector<std::uint8_t>& bytes,std::string& error);
+    bool captureSaveBanks(std::string& error);
+    bool restoreSaveBanks(std::string& error);
     bool waitReady(unsigned attempts, std::string& error);
     bool activateWriter(std::string& error);
     bool initialize(std::string& error,bool allow_erased,
@@ -81,7 +95,7 @@ private:
                      std::uint8_t c0,std::uint8_t c1,
                      bool include_tail,std::string& error,bool writer_probe=false);
     bool unlockWindow(std::string& error,bool writer);
-    bool resetAfterFlashId(bool use_f0,std::string& error);
+    bool resetAfterFlashId(bool use_f0,std::string& error,bool writer);
     bool probeFlashWindow(std::uint8_t a0,std::uint8_t a1,
                           std::uint8_t b0,std::uint8_t b1,
                           std::uint8_t c0,std::uint8_t c1,
@@ -243,6 +257,84 @@ bool CartridgeStorage::Impl::tx92(std::uint8_t first, std::uint8_t second,
     return commandEcho(command, {first, second}, error);
 }
 
+bool CartridgeStorage::Impl::selectSaveBank(std::uint16_t selector,
+                                             std::string& error)
+{
+    const auto low=static_cast<std::uint8_t>(selector&0xFFu);
+    const auto high=static_cast<std::uint8_t>(selector>>8);
+    return tx92(0x55,0xAA,error)&&tx92(0,0,error)&&tx92(0,0,error)&&
+           tx92(low,high,error)&&tx92(0,0,error)&&tx92(0,0,error)&&
+           tx92(0,0,error)&&tx92(0,0,error);
+}
+
+bool CartridgeStorage::Impl::readSaveBanks(std::vector<std::uint8_t>& bytes,
+                                            std::string& error)
+{
+    bytes.clear();
+    bytes.reserve(save_bank_count*save_bank_size);
+    const std::vector<std::uint8_t> command=
+        {0x5A,0xA5,0x91,0x01,0,0,0,0,0,0x80,0,0,0};
+    for(std::size_t bank=0;bank<save_bank_count;++bank) {
+        const auto selector=static_cast<std::uint16_t>(0x0900u+bank*0x10u);
+        if(!selectSaveBank(selector,error)||!out(command,error))return false;
+        std::vector<std::uint8_t> contents;
+        if(!in(contents,save_bank_size,error))return false;
+        bytes.insert(bytes.end(),contents.begin(),contents.end());
+    }
+    return true;
+}
+
+bool CartridgeStorage::Impl::captureSaveBanks(std::string& error)
+{
+    if(!save_backup.empty())return true;
+    if(!readSaveBanks(save_backup,error)) {
+        save_backup.clear();
+        if(error.empty())error="could not preserve cartridge save banks";
+        return false;
+    }
+    return true;
+}
+
+bool CartridgeStorage::Impl::restoreSaveBanks(std::string& error)
+{
+    if(!save_dirty)return true;
+    if(save_backup.size()!=save_bank_count*save_bank_size) {
+        error="cartridge save banks were modified without a valid backup";
+        return false;
+    }
+    const std::vector<std::uint8_t> command=
+        {0x5A,0xA5,0x92,0x01,0,0,0,0,0,0x80,0,0,0};
+    for(std::size_t bank=0;bank<save_bank_count;++bank) {
+        const auto selector=static_cast<std::uint16_t>(0x0900u+bank*0x10u);
+        const auto first=save_backup.begin()+
+            static_cast<std::ptrdiff_t>(bank*save_bank_size);
+        const std::vector<std::uint8_t> contents(first,first+save_bank_size);
+        if(!selectSaveBank(selector,error)||!out(command,error))return false;
+        preciseCommandDataDelay();
+        if(!out(contents,error))return false;
+        std::vector<std::uint8_t> echo;
+        if(!in(echo,command.size(),error))return false;
+        if(echo!=command) {
+            error="cartridge save-bank restore command echo mismatch";
+            return false;
+        }
+    }
+    std::vector<std::uint8_t> readback;
+    if(!readSaveBanks(readback,error))return false;
+    if(readback!=save_backup) {
+        const auto mismatch=std::mismatch(readback.begin(),readback.end(),
+                                          save_backup.begin());
+        std::ostringstream detail;
+        detail<<"cartridge save-bank restore differs at byte 0x"<<std::hex
+              <<static_cast<std::size_t>(mismatch.first-readback.begin());
+        error=detail.str();
+        return false;
+    }
+    save_dirty=false;
+    save_backup.clear();
+    return true;
+}
+
 bool CartridgeStorage::Impl::waitReady(unsigned attempts, std::string& error)
 {
     const std::vector<std::uint8_t> command =
@@ -309,10 +401,12 @@ bool CartridgeStorage::Impl::unlockWindow(std::string& error,bool writer)
                      tx92One(1,0x06,error));
 }
 
-bool CartridgeStorage::Impl::resetAfterFlashId(bool use_f0,std::string& error)
+bool CartridgeStorage::Impl::resetAfterFlashId(bool use_f0,std::string& error,
+                                                bool writer)
 {
-    return tx92(use_f0?0xF0:0xFF,use_f0?0:0xFF,error)&&
-           tx92One(1,0x04,error)&&tx92One(0,0,error)&&tx92One(0,0,error);
+    if(!tx92(use_f0?0xF0:0xFF,use_f0?0:0xFF,error))return false;
+    return !writer||(tx92One(1,0x04,error)&&tx92One(0,0,error)&&
+                     tx92One(0,0,error));
 }
 
 bool CartridgeStorage::Impl::probeFlashWindow(
@@ -322,7 +416,7 @@ bool CartridgeStorage::Impl::probeFlashWindow(
 {
     return probePrefix(a0,a1,b0,b1,c0,c1,true,error,writer_probe)&&
            tx92(0x90,0,error)&&readFlashId(id,error)&&
-           resetAfterFlashId(false,error);
+           resetAfterFlashId(false,error,writer_probe);
 }
 
 bool CartridgeStorage::Impl::readFlashId(
@@ -358,7 +452,7 @@ bool CartridgeStorage::Impl::initialize(std::string& error,bool allow_erased,
     if (!probePrefix(0,0,0,0,0,0,true,error,allow_erased) || !tx92(0xAA,0,error,0x555) ||
         !tx92(0x55,0,error,0x2AA) || !tx92(0x90,0,error,0x555) ||
         !readFlashId(ignored,error) || !tx92(0x90,0,error) ||
-        !resetAfterFlashId(true,error) ||
+        !resetAfterFlashId(true,error,allow_erased) ||
         !probeFlashWindow(0,0,0,0,0,0,flash_id,error,allow_erased))return false;
 
     if(allow_erased) {
@@ -484,6 +578,11 @@ bool CartridgeStorage::Impl::tx92One(std::uint8_t selector,
                                      std::uint8_t value,
                                      std::string& error)
 {
+    // Hardware isolation in the companion project proved that these legacy
+    // writer-control transfers address bytes in the selected save bank.
+    // Mark the snapshot dirty before sending so partial USB failures are also
+    // covered by session-close restoration.
+    save_dirty=true;
     const std::vector<std::uint8_t> command =
         {0x5A,0xA5,0x92,0x01,selector,0,0,0,0x01,0,0,0,0};
     return commandEcho(command,{value},error);
@@ -842,7 +941,15 @@ bool CartridgeStorage::Impl::openForProgramming(std::string& error,
     result=libusb_claim_interface(handle,0);
     if(result!=0){error=usbError("could not claim USB interface 0",result);shutdown();return false;}
     claimed=true;
+    if(!captureSaveBanks(error)){shutdown();return false;}
     if(!initialize(error,true,trust_validated_format)||!activateWriter(error)) {
+        const auto writer_error=error;
+        std::string restore_error;
+        if(!restoreSaveBanks(restore_error))
+            error=writer_error+"; could not restore cartridge save banks: "+
+                  restore_error;
+        else
+            error=writer_error;
         shutdown();return false;
     }
     is_open=true;return true;
@@ -858,8 +965,15 @@ bool CartridgeStorage::Impl::close(std::string& error,bool settle_before_release
         if (finished&&settle_before_release)
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     }
+    std::string restore_error;
+    const bool restored=!settle_before_release||!handle||
+                        restoreSaveBanks(restore_error);
     shutdown();
-    return finished;
+    if(!restored) {
+        if(!error.empty())error+="; ";
+        error+="could not restore cartridge save banks: "+restore_error;
+    }
+    return finished&&restored;
 #else
     (void)settle_before_release;
     error.clear(); return true;
