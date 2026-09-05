@@ -39,4 +39,22 @@ int main() {
     require(backend.truncate("/docs/renamed.txt",1,error));
     require(backend.removeFile("/docs/renamed.txt",error));
     require(backend.removeDirectory("/docs",error));
+
+    ez3fs::live::NorFlash direct_flash;
+    require(ez3fs::live::Filesystem::formatDirectBootEmpty(direct_flash,error));
+    ez3fs::live::Filesystem direct_filesystem(direct_flash);
+    require(ez3fs::live::Filesystem::open(direct_flash,direct_filesystem,error));
+    ez3fs::LiveMountBackend direct_backend(direct_filesystem);
+    const auto empty_generation=direct_filesystem.generation();
+    require(direct_backend.createFile("/game.gba",error));
+    require(direct_backend.commit(error));
+    require(direct_filesystem.generation()==empty_generation);
+    require(direct_backend.lookup("/game.gba",node));
+    require(node.size==0);
+    const std::uint8_t rom[]={'G','B','A'};
+    require(direct_backend.write("/game.gba",0,rom,sizeof(rom),error));
+    require(direct_backend.commit(error));
+    require(direct_filesystem.generation()>empty_generation);
+    require(direct_filesystem.readFile("game.gba",output,error));
+    require(output==std::vector<std::uint8_t>({'G','B','A'}));
 }

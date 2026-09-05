@@ -74,6 +74,7 @@ private:
                             const std::vector<std::uint8_t>& data,
                             const char* operation,std::string& error);
     bool finishWriteOperation(std::string& error);
+    bool finishLiveWriteOperation(std::string& error);
 #endif
     bool eraseAll(std::ostream& progress, std::string& error);
     bool programImage(const std::vector<std::uint8_t>& image,
@@ -403,6 +404,15 @@ bool CartridgeStorage::Impl::finishWriteOperation(std::string& error)
     return finished;
 }
 
+bool CartridgeStorage::Impl::finishLiveWriteOperation(std::string& error)
+{
+    // A command completion echo only confirms that the USB bridge accepted
+    // the operation.  Live metadata is read immediately afterward, so wait
+    // until the cartridge reports ready before exposing that state to the
+    // verifier.  Full-image programming retains its historical fast path.
+    return finishWriteOperation(error) && waitReady(10,error);
+}
+
 bool CartridgeStorage::Impl::eraseAll(std::ostream& progress,
                                       std::string& error)
 {
@@ -487,7 +497,7 @@ bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& prog
         }
         progress<<"Erase response status: 0x"<<std::hex<<static_cast<unsigned>(response[12])<<std::dec<<"\n";
     }
-    if(!finishWriteOperation(error))return false;progress<<"Erased cartridge block "<<block<<".\n";return true;
+    if(!finishLiveWriteOperation(error))return false;progress<<"Erased cartridge block "<<block<<".\n";return true;
 }
 bool CartridgeStorage::Impl::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::ostream& progress,std::string& error,bool allow_metadata)
 {
@@ -511,7 +521,7 @@ bool CartridgeStorage::Impl::programLiveExtent(
         const auto block=first_block+i;
         const auto window=static_cast<unsigned>(block/blocks_per_window);
         if(window!=selected_window) {
-            if(selected_window!=4&&!finishWriteOperation(error))return false;
+            if(selected_window!=4&&!finishLiveWriteOperation(error))return false;
             if(!selectWriteWindow(window,error))return false;
             selected_window=window;
         }
@@ -528,7 +538,7 @@ bool CartridgeStorage::Impl::programLiveExtent(
             progress<<"\rProgramming EZFA3FS extent: "
                     <<(completed_blocks*100/block_count)<<'%'<<std::flush;
     }
-    if(!finishWriteOperation(error))return false;
+    if(!finishLiveWriteOperation(error))return false;
     if(block_count>1)progress<<'\n';
     else progress<<"Programmed cartridge block "<<first_block<<".\n";
     error.clear();return true;

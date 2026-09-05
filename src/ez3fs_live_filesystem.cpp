@@ -220,6 +220,9 @@ const Entry* Filesystem::directBootRom() const noexcept {
 bool Filesystem::isDirectBootRom(const Entry& entry) const noexcept {
     return isDirectBoot()&&!entry.directory&&entry.first_block==0&&validDirectBootRomName(entry.name);
 }
+bool Filesystem::awaitsDirectBootRom() const noexcept {
+    return isDirectBoot()&&directBootRom()==nullptr;
+}
 bool Filesystem::parentExists(const std::string& path) const {
     const auto slash=path.rfind('/');return slash==std::string::npos||
         (find(path.substr(0,slash))&&find(path.substr(0,slash))->directory);

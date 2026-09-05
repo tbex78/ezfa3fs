@@ -88,10 +88,16 @@ bool LiveMountBackend::persistFile(const std::string& path,
 }
 
 bool LiveMountBackend::commit(std::string& error) {
-    while(!pending_files_.empty()) {
-        auto current=pending_files_.begin();
+    for(auto current=pending_files_.begin();current!=pending_files_.end();) {
+        // POSIX copy tools create and may flush a zero-length destination
+        // before sending its data.  An empty direct-boot ROM is not a valid
+        // on-cartridge state, so retain that staged file until a later write
+        // makes it commit-ready.
+        if(filesystem_.awaitsDirectBootRom()&&current->second.bytes.empty()) {
+            ++current;continue;
+        }
         if(!persistFile(current->first,current->second,error))return false;
-        pending_files_.erase(current);
+        current=pending_files_.erase(current);
     }
     error.clear();return true;
 }

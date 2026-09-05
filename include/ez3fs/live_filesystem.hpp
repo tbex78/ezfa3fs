@@ -138,6 +138,7 @@ public:
     std::size_t freeBlocks() const noexcept;
     Layout layout() const noexcept { return layout_; }
     bool isDirectBoot() const noexcept { return layout_==Layout::direct_boot; }
+    bool awaitsDirectBootRom() const noexcept;
 
 private:
     enum class ExtentSearchResult { found,no_extent,error };
