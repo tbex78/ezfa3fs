@@ -865,6 +865,24 @@ bool CartridgeStorage::restartLiveWriteSession(std::string& error) {
     if(!closed&&!close_error.empty())error+="; close also failed: "+close_error;
     return false;
 }
+bool CartridgeStorage::readLiveFilesystem(
+    std::uint64_t offset,std::uint8_t* destination,std::size_t size,
+    std::string& error) {
+    constexpr unsigned attempts=3;
+    for(unsigned attempt=1;attempt<=attempts;++attempt) {
+        if(read(offset,destination,size,error))return true;
+        if(attempt==attempts)return false;
+        const auto read_error=error;
+        std::cerr<<"Retrying live cartridge read (attempt "<<(attempt+1)
+                 <<'/'<<attempts<<"): "<<read_error<<'\n';
+        std::string restart_error;
+        if(!restartLiveWriteSession(restart_error)) {
+            error=read_error+"; live read restart failed: "+restart_error;
+            return false;
+        }
+    }
+    return false;
+}
 bool CartridgeStorage::eraseLiveBlock(std::size_t block,std::string& error) { return impl_->eraseLiveBlock(block,std::cerr,error); }
 bool CartridgeStorage::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) { return impl_->programLiveBlock(block,bytes,std::cerr,error); }
 bool CartridgeStorage::readLiveBlockAfterWrite(std::size_t block,std::size_t size,

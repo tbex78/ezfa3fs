@@ -7,7 +7,7 @@ The project provides two programs:
 - `ez3fs` manages the current transactional **EZFA3FS** format.
 - `ezfs-legacy` preserves the earlier packed **EZ3FS** image and staging workflow.
 
-Application version: **0.45.18**. EZFA3FS is format **2.0.0** in its standard layout and **2.1.0** in its slotted direct-boot layout. Legacy EZ3FS remains format **1.2**.
+Application version: **0.45.19**. EZFA3FS is format **2.0.0** in its standard layout and **2.1.0** in its slotted direct-boot layout. Legacy EZ3FS remains format **1.2**.
 
 The macOS/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
@@ -124,7 +124,7 @@ Directories are reported as mode `0755` and files as `0644`. Unsupported ownersh
 
 Do not use macFUSE `noappledouble` or `noapplexattr` options. Finder can interpret those rejections as copy failures.
 
-If a mutation cannot be verified after its retries, the mount rejects subsequent mutations until remounted. The previously committed generation remains the recovery point.
+Live cartridge reads retry transient USB failures by reopening the validated writer session and restoring the requested mapping. If a mutation cannot be verified after its retries, the mount rejects subsequent mutations until remounted. The previously committed generation remains the recovery point.
 
 ## Verify copied data
 

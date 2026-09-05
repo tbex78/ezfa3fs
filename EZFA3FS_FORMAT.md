@@ -1,6 +1,6 @@
 # EZFA3FS transactional format
 
-This document describes the 32 MiB EZFA3FS format implemented by application version **0.45.18**. The standard layout is format **2.0.0**; the slotted direct-boot layout is **2.1.0**.
+This document describes the 32 MiB EZFA3FS format implemented by application version **0.45.19**. The standard layout is format **2.0.0**; the slotted direct-boot layout is **2.1.0**.
 
 EZFA3FS is an independent indexed filesystem for EZ-Flash Advance III NOR flash. It is not FAT, has no partition table, and does not use the original EZ3 menu or ROM patching. All multibyte integers are little-endian.
 
@@ -106,7 +106,7 @@ An empty `.gba` created through FUSE is transient and is not committed until it 
 
 Verification checks image size, versions, both superblocks, generation selection, manifest CRC32, entries, namespace hierarchy, reserved ranges, extent bounds and overlap, and every regular-file CRC32. SHA-256 is not stored; extract a file and use `shasum -a 256` for cryptographic comparison.
 
-Every cartridge erase and program is verified by readback. Transient USB or writer failures are retried up to three times, with writer reinitialization when possible. If a mounted mutation cannot be verified, later mutations are rejected until remounting. The last committed superblock is the recovery point.
+Every cartridge erase and program is verified by readback. Transient USB reads, writes, or writer failures are retried up to three times, with writer reinitialization and mapping restoration when possible. If a mounted mutation cannot be verified, later mutations are rejected until remounting. The last committed superblock is the recovery point.
 
 ## Space management
 

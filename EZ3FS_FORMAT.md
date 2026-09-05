@@ -1,6 +1,6 @@
 # Legacy EZ3FS packed format 1.2
 
-This document describes the packed `.ez3fs` format retained by `ezfs-legacy`. Application version **0.45.18** reads format minors 0 through 2 and writes format **1.2**.
+This document describes the packed `.ez3fs` format retained by `ezfs-legacy`. Application version **0.45.19** reads format minors 0 through 2 and writes format **1.2**.
 
 EZ3FS is an indexed archive occupying the complete 32 MiB cartridge. It is not FAT32, has no partition table, and does not contain the original EZ3 menu. Changing an image repacks its index and data; use EZFA3FS for direct transactional cartridge updates.
 
