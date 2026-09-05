@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZFA3FS 2.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.43.0`.
+`0.44.0`.
 
 ## Geometry and layout
 

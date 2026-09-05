@@ -12,7 +12,7 @@
 
 namespace ez3fs::live {
 namespace {
-constexpr std::uint16_t major=2, minor=0;
+constexpr std::uint16_t major=2, minor=0, direct_boot_minor=1;
 constexpr std::uint16_t legacy_major=1, legacy_minor=0;
 constexpr std::uint32_t commit_marker=0xC0FF17EDu;
 constexpr std::size_t superblock_header=32;
@@ -131,17 +131,19 @@ bool Filesystem::format(BlockDevice& flash,std::string& error) {
     Filesystem filesystem(flash);return filesystem.commit(error);
 }
 
-bool Filesystem::formatDirectBootEmpty(BlockDevice& flash,std::string& error) {
+bool Filesystem::formatDirectBootEmpty(BlockDevice& flash,std::string& error,
+                                       std::size_t boot_slot_blocks) {
+    if(boot_slot_blocks==0||boot_slot_blocks>NorFlash::block_count-2){error="direct-boot slot must be between 1 and 510 blocks";return false;}
     for(std::size_t block=0;block<NorFlash::block_count;++block)
         if(!flash.eraseBlock(block,error))return false;
-    Filesystem filesystem(flash);filesystem.layout_=Layout::direct_boot;
+    Filesystem filesystem(flash);filesystem.layout_=Layout::direct_boot;filesystem.boot_slot_blocks_=boot_slot_blocks;
     return filesystem.commit(error);
 }
 
 bool Filesystem::formatDirectBoot(BlockDevice& flash,const std::string& rom_name,
                                   const std::vector<std::uint8_t>& rom,
                                   std::uint64_t modified_time,std::string& error) {
-    if(!formatDirectBootEmpty(flash,error))return false;
+    if(!formatDirectBootEmpty(flash,error,dataBlockCount(rom.size())))return false;
     Filesystem filesystem(flash);
     return open(flash,filesystem,error)&&filesystem.putFile(rom_name,rom,modified_time,error);
 }
@@ -162,14 +164,17 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
             get<std::uint16_t>(bytes.data(),8)==major&&get<std::uint16_t>(bytes.data(),10)==minor;
         const bool legacy_format=std::equal(legacy_format_magic.begin(),legacy_format_magic.end(),bytes.begin())&&
             get<std::uint16_t>(bytes.data(),8)==legacy_major&&get<std::uint16_t>(bytes.data(),10)==legacy_minor;
+        const auto direct_minor=get<std::uint16_t>(bytes.data(),10);
         const bool direct_format=std::equal(direct_boot_format_magic.begin(),direct_boot_format_magic.end(),bytes.begin())&&
-            get<std::uint16_t>(bytes.data(),8)==major&&get<std::uint16_t>(bytes.data(),10)==minor;
+            get<std::uint16_t>(bytes.data(),8)==major&&(direct_minor==minor||direct_minor==direct_boot_minor);
         if((layout==Layout::transactional?(!current_format&&!legacy_format):!direct_format)||get<std::uint32_t>(bytes.data(),28)!=commit_marker)continue;
         const auto length=get<std::uint32_t>(bytes.data(),20);
         if(length>NorFlash::block_size-superblock_header||
            Crc32::calculate(bytes.data()+superblock_header,length)!=get<std::uint32_t>(bytes.data(),24))continue;
         std::vector<Entry> parsed;std::set<std::string> names;std::size_t direct_boot_blocks=0;
-        const auto count=get<std::uint32_t>(bytes.data()+superblock_header,0);std::size_t offset=4;bool valid=true;
+        const bool slotted_direct=layout==Layout::direct_boot&&direct_minor==direct_boot_minor;
+        const auto slot_blocks=slotted_direct?get<std::uint32_t>(bytes.data()+superblock_header,0):0;
+        const auto count=get<std::uint32_t>(bytes.data()+superblock_header,slotted_direct?4:0);std::size_t offset=slotted_direct?8:4;bool valid= !slotted_direct||(slot_blocks>0&&slot_blocks<=NorFlash::block_count-2);
         for(std::uint32_t i=0;i<count&&valid;++i) {
             if(offset+32>length){valid=false;break;}
             const auto name_length=get<std::uint16_t>(bytes.data()+superblock_header,offset);
@@ -184,16 +189,16 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
                (!entry.directory&&(entry.first_block<(layout==Layout::direct_boot?0:2)||
                    static_cast<std::uint64_t>(entry.first_block)+entry.block_count>(layout==Layout::direct_boot?NorFlash::block_count-2:NorFlash::block_count)||
                    entry.size>static_cast<std::uint64_t>(entry.block_count)*NorFlash::block_size))){valid=false;break;}
-            if(layout==Layout::direct_boot&&parsed.empty()&&
+            if(layout==Layout::direct_boot&&!slotted_direct&&parsed.empty()&&
                (!validDirectBootRomName(entry.name)||entry.directory||entry.first_block!=0)){valid=false;break;}
             if(layout==Layout::direct_boot&&!parsed.empty()&&!entry.directory&&
                entry.first_block<direct_boot_blocks){valid=false;break;}
-            if(layout==Layout::direct_boot&&parsed.empty())direct_boot_blocks=entry.block_count;
+            if(layout==Layout::direct_boot&&parsed.empty()&&!entry.directory&&entry.first_block==0)direct_boot_blocks=entry.block_count;
             parsed.push_back(std::move(entry));offset+=32+name_length;
         }
         if(!valid||offset!=length||(layout==Layout::direct_boot&&parsed.size()>1))continue;
         const auto generation=get<std::uint64_t>(bytes.data(),12);
-        if(!found||generation>newest){found=true;newest=generation;chosen=block;chosen_layout=layout;entries=std::move(parsed);}
+        if(!found||generation>newest){found=true;newest=generation;chosen=block;chosen_layout=layout;result.boot_slot_blocks_=slotted_direct?slot_blocks:direct_boot_blocks;entries=std::move(parsed);}
         // Ordinary EZFA3FS images retain their two metadata blocks at the
         // beginning of the cartridge.  Avoid tail probes on their hot mount
         // path; direct-boot metadata is consulted only as a fallback.
@@ -220,9 +225,7 @@ bool Filesystem::parentExists(const std::string& path) const {
         (find(path.substr(0,slash))&&find(path.substr(0,slash))->directory);
 }
 std::size_t Filesystem::firstDataBlock() const noexcept { return layout_==Layout::direct_boot?0:2; }
-std::size_t Filesystem::allocationStartBlock() const noexcept {
-    const auto* rom=directBootRom();return rom?rom->block_count:firstDataBlock();
-}
+std::size_t Filesystem::allocationStartBlock() const noexcept { return isDirectBoot()?boot_slot_blocks_:firstDataBlock(); }
 std::size_t Filesystem::dataEndBlock() const noexcept { return layout_==Layout::direct_boot?NorFlash::block_count-2:NorFlash::block_count; }
 std::size_t Filesystem::alternateSuperblock() const noexcept {
     if(layout_==Layout::direct_boot)return active_superblock_==NorFlash::block_count-2?NorFlash::block_count-1:NorFlash::block_count-2;
@@ -230,7 +233,9 @@ std::size_t Filesystem::alternateSuperblock() const noexcept {
 }
 
 bool Filesystem::commit(std::string& error) {
-    std::vector<std::uint8_t> manifest;manifest.resize(4);put<std::uint32_t>(manifest.data(),0,static_cast<std::uint32_t>(entries_.size()));
+    std::vector<std::uint8_t> manifest;manifest.resize(isDirectBoot()?8:4);
+    if(isDirectBoot())put<std::uint32_t>(manifest.data(),0,static_cast<std::uint32_t>(boot_slot_blocks_));
+    put<std::uint32_t>(manifest.data(),isDirectBoot()?4:0,static_cast<std::uint32_t>(entries_.size()));
     std::set<std::string> names;
     for(const auto& entry:entries_) {
         if(!names.insert(entry.name).second||entry.name.size()>std::numeric_limits<std::uint16_t>::max()){error="invalid live manifest entry";return false;}
@@ -243,7 +248,7 @@ bool Filesystem::commit(std::string& error) {
     if(manifest.size()>NorFlash::block_size-superblock_header){error="live manifest exceeds superblock capacity";return false;}
     const auto target=alternateSuperblock();if(!flash_.eraseBlock(target,error))return false;
     std::vector<std::uint8_t> block(NorFlash::block_size,0xFF);const auto& selected_magic=layout_==Layout::direct_boot?direct_boot_format_magic:format_magic;std::copy(selected_magic.begin(),selected_magic.end(),block.begin());
-    put<std::uint16_t>(block.data(),8,major);put<std::uint16_t>(block.data(),10,minor);put<std::uint64_t>(block.data(),12,generation_+1);
+    put<std::uint16_t>(block.data(),8,major);put<std::uint16_t>(block.data(),10,layout_==Layout::direct_boot?direct_boot_minor:minor);put<std::uint64_t>(block.data(),12,generation_+1);
     put<std::uint32_t>(block.data(),20,static_cast<std::uint32_t>(manifest.size()));
     put<std::uint32_t>(block.data(),24,Crc32::calculate(manifest.data(),manifest.size()));put<std::uint32_t>(block.data(),28,commit_marker);
     std::copy(manifest.begin(),manifest.end(),block.begin()+superblock_header);
@@ -396,7 +401,7 @@ bool Filesystem::programExtent(std::size_t first_block,
 bool Filesystem::canCreateFile(const std::string& path,std::string& error) const {
     if(isDirectBoot()) {
         if(!directBootRom()) {
-            if(entries_.empty()&&validDirectBootRomName(path)){error.clear();return true;}
+            if(validDirectBootRomName(path)){error.clear();return true;}
             error="direct-boot EZFA3FS requires its first file to be one root-level .gba ROM";return false;
         }
     }
@@ -419,7 +424,7 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
     if(isDirectBoot()) {
         const auto blocks=dataBlockCount(bytes.size());
         if(!directBootRom()) {
-            if(!entries_.empty()||!validDirectBootRomName(path)||bytes.empty()||blocks>dataEndBlock()) {
+            if(!validDirectBootRomName(path)||bytes.empty()||blocks>boot_slot_blocks_) {
                 error="direct-boot EZFA3FS requires one non-empty root-level .gba ROM no larger than 31.875 MiB";return false;
             }
             std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
@@ -546,7 +551,15 @@ bool Filesystem::compactFiles(CompactionReport& report,std::string& error) {
 bool Filesystem::removeFile(const std::string& path,std::string& error) {
     const auto old=entries_;const auto it=std::find_if(entries_.begin(),entries_.end(),[&](const Entry& e){return e.name==path&&!e.directory;});
     if(it==entries_.end()){error="live file does not exist";return false;}
-    if(isDirectBootRom(*it)){error="the direct-boot ROM at cartridge offset 0 is immutable";return false;}
+    if(isDirectBootRom(*it)){
+        const auto old=entries_;entries_.erase(it);
+        if(!commit(error)){entries_=old;return false;}
+        for(std::size_t block=0;block<boot_slot_blocks_;++block)
+            if(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error)){
+                error="boot slot metadata was cleared but block "+std::to_string(block)+" could not be erased: "+error;return false;
+            }
+        next_free_block_=allocationStartBlock();error.clear();return true;
+    }
     entries_.erase(it);if(commit(error))return true;entries_=old;return false;
 }
 bool Filesystem::removeDirectory(const std::string& path,std::string& error) {

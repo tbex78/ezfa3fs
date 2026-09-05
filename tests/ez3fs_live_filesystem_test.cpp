@@ -107,6 +107,10 @@ void verifyDirectBootLayout() {
     require(filesystem.removeFile("extras/readme.txt",error));
     std::size_t reclaimed=0;require(filesystem.collectGarbage(reclaimed,error)&&reclaimed==1);
     require(filesystem.readFile("direct.gba",bytes,error)&&bytes==rom);
+    require(filesystem.removeFile("direct.gba",error));
+    require(!filesystem.canCreateFile(".DS_Store",error));
+    require(filesystem.putFile("replacement.gba",rom,1237,error));
+    require(filesystem.readFile("replacement.gba",bytes,error)&&bytes==rom);
     require(filesystem.verify(error));
 }
 

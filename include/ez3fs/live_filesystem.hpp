@@ -106,7 +106,8 @@ public:
 
     explicit Filesystem(BlockDevice& flash) : flash_(flash) {}
     static bool format(BlockDevice& flash,std::string& error);
-    static bool formatDirectBootEmpty(BlockDevice& flash,std::string& error);
+    static bool formatDirectBootEmpty(BlockDevice& flash,std::string& error,
+                                      std::size_t boot_slot_blocks=256);
     static bool formatDirectBoot(BlockDevice& flash,const std::string& rom_name,
                                  const std::vector<std::uint8_t>& rom,
                                  std::uint64_t modified_time,std::string& error);
@@ -170,6 +171,7 @@ private:
     std::size_t active_superblock_ = 0;
     std::size_t next_free_block_ = 2;
     Layout layout_ = Layout::transactional;
+    std::size_t boot_slot_blocks_ = 0;
     std::array<bool,NorFlash::block_count> unavailable_blocks_{};
 };
 
