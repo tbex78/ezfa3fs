@@ -27,6 +27,9 @@
 #pragma clang diagnostic ignored "-Wnested-anon-types"
 #endif
 #include <fuse3/fuse.h>
+#if defined(__APPLE__)
+#include <fuse3/fuse_lowlevel.h>
+#endif
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #endif
@@ -110,6 +113,24 @@ int metadataMutation(const char* path) {
     return beginMutation(session());
 }
 
+int resizeFile(const char* path,off_t size,struct fuse_file_info* info) {
+    if(size<0)return -EINVAL;
+    MountNode node;
+    if(!session().backend().lookup(path,node))return -ENOENT;
+    if(node.directory)return -EISDIR;
+    if(!session().backend().writable())return -EROFS;
+    if(const int failure=beginMutation(session());failure!=0)return failure;
+    if(static_cast<std::uint64_t>(size)==node.size)return 0;
+    std::string error;
+    if(!session().backend().truncate(path,static_cast<std::size_t>(size),error))
+        return mutationFailure(session(),error);
+    if(fileHandle(info)) {
+        markFileHandleDirty(info);
+        return 0;
+    }
+    return commitSessionFile(session(),path);
+}
+
 int ez3fsGetattr(const char* path,struct stat* status,struct fuse_file_info*) {
     std::lock_guard<std::mutex> lock(session().mutex());MountNode info;if(!session().backend().lookup(path,info))return -ENOENT;
     std::memset(status,0,sizeof(*status));status->st_mode=(info.directory?S_IFDIR|0755:S_IFREG|0644);
@@ -146,6 +167,24 @@ int ez3fsChown(const char* path,uid_t,gid_t,struct fuse_file_info*) {
 int ez3fsUtimens(const char* path,const struct timespec[2],struct fuse_file_info*) {
     std::lock_guard<std::mutex> lock(session().mutex());return metadataMutation(path);
 }
+#if defined(__APPLE__)
+int ez3fsSetattr(const char* path,struct fuse_darwin_attr* attributes,
+                 int to_set,struct fuse_file_info* info) {
+    std::lock_guard<std::mutex> lock(session().mutex());
+    if((to_set&FUSE_SET_ATTR_SIZE)!=0) {
+        if(!attributes)return -EINVAL;
+        return resizeFile(path,attributes->size,info);
+    }
+    // macFUSE combines chmod, chown, timestamps, and BSD flags in this
+    // Darwin-specific callback. EZFA3FS exposes those as fixed metadata, so
+    // acknowledge them without creating another cartridge transaction.
+    return metadataMutation(path);
+}
+int ez3fsChflags(const char* path,struct fuse_file_info*,unsigned int) {
+    std::lock_guard<std::mutex> lock(session().mutex());
+    return metadataMutation(path);
+}
+#endif
 int ez3fsAccess(const char* path,int) {
     std::lock_guard<std::mutex> lock(session().mutex());MountNode node;
     return session().backend().lookup(path,node)?0:-ENOENT;
@@ -164,14 +203,20 @@ int ez3fsWrite(const char* path,const char* buffer,size_t size,off_t offset,stru
     if(!session().backend().write(path,static_cast<std::size_t>(offset),reinterpret_cast<const std::uint8_t*>(buffer),size,error))return mutationFailure(session(),error);
     markFileHandleDirty(info);return static_cast<int>(size);
 }
-int ez3fsTruncate(const char* path,off_t size,struct fuse_file_info* info) {if(size<0)return -EINVAL;
-    std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
-    const bool changed=session().backend().truncate(path,static_cast<std::size_t>(size),error);if(changed)markFileHandleDirty(info);return changed?0:mutationFailure(session(),error);}
+int ez3fsTruncate(const char* path,off_t size,struct fuse_file_info* info) {
+    std::lock_guard<std::mutex> lock(session().mutex());
+    return resizeFile(path,size,info);
+}
 int ez3fsUnlink(const char* path) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().removeFile(path,error);return finishMutation(changed,error);}
 int ez3fsRmdir(const char* path) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().removeDirectory(path,error);return finishMutation(changed,error);}
-int ez3fsRename(const char* from,const char* to,unsigned flags) {if(flags!=0)return -EINVAL;
+int ez3fsRename(const char* from,const char* to,unsigned flags) {
+#if defined(RENAME_NOREPLACE)
+    if((flags&~static_cast<unsigned>(RENAME_NOREPLACE))!=0)return -ENOTSUP;
+#else
+    if(flags!=0)return -ENOTSUP;
+#endif
     std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().rename(from,to,error);return finishMutation(changed,error);}
 int ez3fsFlush(const char*,struct fuse_file_info*) {
@@ -219,6 +264,9 @@ int ez3fsStatfs(const char*,struct statvfs* status) {std::lock_guard<std::mutex>
 
 fuse_operations operations() {fuse_operations value{};value.getattr=ez3fsGetattr;value.readdir=ez3fsReaddir;value.open=ez3fsOpen;
     value.read=ez3fsRead;value.chmod=ez3fsChmod;value.chown=ez3fsChown;value.utimens=ez3fsUtimens;value.access=ez3fsAccess;
+#if defined(__APPLE__)
+    value.setattr=ez3fsSetattr;value.chflags=ez3fsChflags;
+#endif
     value.mkdir=ez3fsMkdir;value.create=ez3fsCreate;value.write=ez3fsWrite;value.truncate=ez3fsTruncate;
     value.unlink=ez3fsUnlink;value.rmdir=ez3fsRmdir;value.rename=ez3fsRename;value.flush=ez3fsFlush;value.fsync=ez3fsFsync;
     value.release=ez3fsRelease;value.setxattr=ez3fsSetxattr;value.getxattr=ez3fsGetxattr;value.listxattr=ez3fsListxattr;

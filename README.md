@@ -44,7 +44,9 @@ metadata superblocks are never erased by the collector.
 
 Unix permission bits are not part of either image format. FUSE exposes fixed
 `0755` directory and `0644` file modes; `chmod` on a writable mount is
-accepted as a compatibility no-op so standard copy tools can complete.
+accepted as a compatibility no-op so standard copy tools can complete. On
+macOS, Finder's combined attribute and BSD-flag updates receive the same
+fixed-metadata treatment and do not cause extra cartridge writes.
 
 ## Build
 
