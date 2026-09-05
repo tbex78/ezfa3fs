@@ -102,6 +102,12 @@ void verifyDirectBootLayout() {
         [](const ez3fs::live::Entry& entry){return entry.name=="extras/readme.txt";});
     require(extra!=filesystem.entries().end()&&extra->first_block==1);
     require(filesystem.readFile("direct.gba",bytes,error)&&bytes==rom);
+    ez3fs::live::Filesystem reopened(flash);
+    require(ez3fs::live::Filesystem::open(flash,reopened,error));
+    require(reopened.generation()==filesystem.generation());
+    require(reopened.entries().size()==3);
+    require(reopened.readFile("extras/readme.txt",bytes,error));
+    require(bytes==std::vector<std::uint8_t>({'o','k'}));
     require(!filesystem.putFile("direct.gba",rom,1236,error));
     require(error.find("immutable")!=std::string::npos);
     require(filesystem.removeFile("extras/readme.txt",error));
@@ -110,6 +116,7 @@ void verifyDirectBootLayout() {
     require(filesystem.removeFile("direct.gba",error));
     require(!filesystem.canCreateFile(".DS_Store",error));
     require(filesystem.putFile("replacement.gba",rom,1237,error));
+    require(filesystem.entries().front().name=="replacement.gba");
     require(filesystem.readFile("replacement.gba",bytes,error)&&bytes==rom);
     require(filesystem.verify(error));
 }

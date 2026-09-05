@@ -171,9 +171,10 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
         const auto length=get<std::uint32_t>(bytes.data(),20);
         if(length>NorFlash::block_size-superblock_header||
            Crc32::calculate(bytes.data()+superblock_header,length)!=get<std::uint32_t>(bytes.data(),24))continue;
-        std::vector<Entry> parsed;std::set<std::string> names;std::size_t direct_boot_blocks=0;
+        std::vector<Entry> parsed;std::set<std::string> names;
         const bool slotted_direct=layout==Layout::direct_boot&&direct_minor==direct_boot_minor;
         const auto slot_blocks=slotted_direct?get<std::uint32_t>(bytes.data()+superblock_header,0):0;
+        std::size_t direct_boot_blocks=slotted_direct?slot_blocks:0;
         const auto count=get<std::uint32_t>(bytes.data()+superblock_header,slotted_direct?4:0);std::size_t offset=slotted_direct?8:4;bool valid= !slotted_direct||(slot_blocks>0&&slot_blocks<=NorFlash::block_count-2);
         for(std::uint32_t i=0;i<count&&valid;++i) {
             if(offset+32>length){valid=false;break;}
@@ -193,10 +194,11 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
                (!validDirectBootRomName(entry.name)||entry.directory||entry.first_block!=0)){valid=false;break;}
             if(layout==Layout::direct_boot&&!parsed.empty()&&!entry.directory&&
                entry.first_block<direct_boot_blocks){valid=false;break;}
-            if(layout==Layout::direct_boot&&parsed.empty()&&!entry.directory&&entry.first_block==0)direct_boot_blocks=entry.block_count;
+            if(layout==Layout::direct_boot&&!slotted_direct&&parsed.empty()&&
+               !entry.directory&&entry.first_block==0)direct_boot_blocks=entry.block_count;
             parsed.push_back(std::move(entry));offset+=32+name_length;
         }
-        if(!valid||offset!=length||(layout==Layout::direct_boot&&parsed.size()>1))continue;
+        if(!valid||offset!=length)continue;
         const auto generation=get<std::uint64_t>(bytes.data(),12);
         if(!found||generation>newest){found=true;newest=generation;chosen=block;chosen_layout=layout;result.boot_slot_blocks_=slotted_direct?slot_blocks:direct_boot_blocks;entries=std::move(parsed);}
         // Ordinary EZFA3FS images retain their two metadata blocks at the
@@ -435,7 +437,7 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
             if(!flash_.programBlocks(0,extent.data(),blocks,completed,error)||completed!=blocks) {
                 if(error.empty())error="direct-boot ROM programming was incomplete";return false;
             }
-            entries_.push_back({path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),0,static_cast<std::uint32_t>(blocks),false});
+            entries_.insert(entries_.begin(),{path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),0,static_cast<std::uint32_t>(blocks),false});
             next_free_block_=blocks;
             if(commit(error))return true;
             entries_.clear();return false;
