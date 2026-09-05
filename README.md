@@ -4,7 +4,7 @@ EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
 NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
 FAT partition, or ROM-patching workflow.
 
-Application version: **0.35.3**.
+Application version: **0.35.4**.
 
 Two incompatible formats are supported:
 
@@ -256,6 +256,8 @@ Flash readback is reconciled through fresh USB sessions before a block is
 erased and retried. If a commit still fails, the mount remains readable but
 rejects every later mutation before it reaches the cartridge; unmount and
 remount before attempting another write.
+Writer reinitialization is bounded and retried; a failed reinitialization
+aborts maintenance safely without issuing another USB erase or program command.
 
 Unmount from another terminal before disconnecting:
 

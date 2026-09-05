@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZ3FS-LIVE 1.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.35.3`.
+`0.35.4`.
 
 ## Geometry and layout
 
@@ -243,6 +243,8 @@ accept but discard extended attributes because the format does not store them.
 Contiguous data blocks share one captured-protocol programming session, with a
 session transition only at each 8-MiB hardware window boundary. A failed data
 extent is retried at another erased location before the mount reports failure.
+USB writer reinitialization uses bounded retries, and a failed reinitialization
+stops maintenance before another erase or program command can be issued.
 
 Unmount from another terminal before disconnecting the writer:
 

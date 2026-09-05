@@ -126,6 +126,7 @@ std::string formatFlashId(const std::array<std::uint8_t,4>& id)
 bool CartridgeStorage::Impl::out(const std::vector<std::uint8_t>& bytes,
                                  std::string& error)
 {
+    if(!handle){error="USB OUT attempted without an open cartridge session";return false;}
     for (unsigned attempt = 0; attempt < 2; ++attempt) {
         int transferred = 0;
         const int result = libusb_bulk_transfer(handle, 0x02,
@@ -153,6 +154,7 @@ bool CartridgeStorage::Impl::out(const std::vector<std::uint8_t>& bytes,
 bool CartridgeStorage::Impl::in(std::vector<std::uint8_t>& bytes,
                                 std::size_t size, std::string& error)
 {
+    if(!handle){error="USB IN attempted without an open cartridge session";return false;}
     for (unsigned attempt = 0; attempt < 2; ++attempt) {
         bytes.assign(size, 0);
         int transferred = 0;
@@ -652,10 +654,22 @@ CartridgeStorage::CartridgeStorage() : impl_(new Impl) {}
 CartridgeStorage::~CartridgeStorage() = default;
 bool CartridgeStorage::open(std::string& error) { return impl_->open(error); }
 bool CartridgeStorage::close(std::string& error) { return impl_->close(error); }
-bool CartridgeStorage::openForLiveWrite(std::string& error) { return impl_->openForProgramming(error); }
+bool CartridgeStorage::openForLiveWrite(std::string& error) { return openLiveWriteSessionWithRetry(error); }
+bool CartridgeStorage::openLiveWriteSessionWithRetry(std::string& error) {
+    constexpr unsigned attempts=3;
+    for(unsigned attempt=1;attempt<=attempts;++attempt) {
+        if(impl_->openForProgramming(error))return true;
+        if(attempt<attempts) {
+            std::cerr<<"Retrying cartridge writer initialization (attempt "
+                     <<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
+            std::this_thread::sleep_for(std::chrono::milliseconds(250*attempt));
+        }
+    }
+    return false;
+}
 bool CartridgeStorage::restartLiveWriteSession(std::string& error) {
     std::string close_error;const bool closed=close(close_error);
-    if(openForLiveWrite(error))return true;
+    if(openLiveWriteSessionWithRetry(error))return true;
     if(!closed&&!close_error.empty())error+="; close also failed: "+close_error;
     return false;
 }
@@ -671,7 +685,7 @@ bool CartridgeStorage::readLiveBlockAfterWrite(std::size_t block,
     }
     const auto direct_error=error;std::string close_error;const bool closed=close(close_error);
     std::string reopen_error;
-    if(!openForLiveWrite(reopen_error)) {
+    if(!openLiveWriteSessionWithRetry(reopen_error)) {
         error="could not reopen cartridge after live write: "+reopen_error;
         if(!closed&&!close_error.empty())error+="; close also failed: "+close_error;
         return false;
@@ -688,12 +702,15 @@ bool CartridgeStorage::verifyLiveBlockAfterWrite(
     const char* operation,const std::string& operation_error,
     bool reopen_first,std::string& error) {
     constexpr unsigned verification_attempts=3;
-    std::string verification_error;
+    std::string verification_error,last_mismatch;
     for(unsigned attempt=1;attempt<=verification_attempts;++attempt) {
         std::vector<std::uint8_t> readback;
         std::string read_error;
-        if(readLiveBlockAfterWrite(block,readback,read_error,
-                                   reopen_first||attempt>1)) {
+        // Successful data writes normally need only a short settling reread.
+        // Reserve the more invasive USB reinitialization for the final check;
+        // metadata and failed completion responses still reopen immediately.
+        const bool reopen=reopen_first||attempt==verification_attempts;
+        if(readLiveBlockAfterWrite(block,readback,read_error,reopen)) {
             const auto mismatch=std::mismatch(readback.begin(),readback.end(),
                                               expected.begin());
             if(mismatch.first==readback.end()){error.clear();return true;}
@@ -704,9 +721,11 @@ bool CartridgeStorage::verifyLiveBlockAfterWrite(
                   <<" (read 0x"<<static_cast<unsigned>(*mismatch.first)
                   <<", expected 0x"<<static_cast<unsigned>(*mismatch.second)
                   <<')'<<std::dec;
-            verification_error=detail.str();
+            last_mismatch=detail.str();verification_error=last_mismatch;
         } else {
             verification_error=read_error;
+            if(!last_mismatch.empty())
+                verification_error+="; last readback result: "+last_mismatch;
         }
         if(attempt<verification_attempts)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -720,7 +739,12 @@ bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& e
     constexpr unsigned attempts=3;
     const std::vector<std::uint8_t> erased(live::NorFlash::block_size,0xFF);
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
-        std::string operation_error;const bool completed=impl_->eraseLiveBlock(block,std::cerr,operation_error,true);
+        std::string operation_error;
+        if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error)) {
+            error="could not restore cartridge writer before erase retry: "+operation_error;
+            return false;
+        }
+        const bool completed=impl_->eraseLiveBlock(block,std::cerr,operation_error,true);
         // Metadata occupies the flash's boot sectors.  The cartridge can keep
         // returning the pre-write/erased view there until the USB session is
         // reopened, even after a successful write-window completion.
@@ -733,7 +757,12 @@ bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& e
 bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::string& error) {
     constexpr unsigned attempts=3;
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
-        std::string operation_error;const bool completed=impl_->programLiveBlock(block,bytes,std::cerr,operation_error,true);
+        std::string operation_error;
+        if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error)) {
+            error="could not restore cartridge writer before program retry: "+operation_error;
+            return false;
+        }
+        const bool completed=impl_->programLiveBlock(block,bytes,std::cerr,operation_error,true);
         if(verifyLiveBlockAfterWrite(block,bytes,"program",operation_error,
                                      !completed||block<2,error))return true;
         if(attempt==attempts)return false;
@@ -759,6 +788,10 @@ bool CartridgeStorage::programLiveFilesystemExtent(
     constexpr std::size_t block_size=live::NorFlash::block_size;
     completed_blocks=0;
     std::string operation_error;
+    if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error)) {
+        error="could not restore cartridge writer before extent programming: "+operation_error;
+        return false;
+    }
     const bool transferred=impl_->programLiveExtent(first_block,bytes,
         completed_blocks,std::cerr,operation_error,true);
     const auto block_count=bytes.size()/block_size;
