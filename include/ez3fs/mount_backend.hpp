@@ -31,6 +31,10 @@ public:
     virtual bool removeFile(const std::string& path,std::string& error) = 0;
     virtual bool removeDirectory(const std::string& path,std::string& error) = 0;
     virtual bool rename(const std::string& from,const std::string& to,std::string& error) = 0;
+    virtual bool commitFile(const std::string& path,std::string& error) {
+        (void)path;
+        return commit(error);
+    }
     virtual bool commit(std::string& error) = 0;
     virtual std::uint64_t capacityBytes() const noexcept = 0;
     virtual std::uint64_t freeBytes() const = 0;
