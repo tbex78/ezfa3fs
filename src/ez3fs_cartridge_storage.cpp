@@ -76,8 +76,6 @@ private:
                             const char* operation,std::string& error);
     bool finishWriteOperation(std::string& error);
     bool finishLiveWriteOperation(std::string& error);
-    void finalizeFailedLiveWrite(const std::string& operation_error,
-                                 std::string& error);
 #endif
     bool eraseAll(std::ostream& progress, std::string& error);
     bool programImage(const std::vector<std::uint8_t>& image,
@@ -300,7 +298,10 @@ bool CartridgeStorage::Impl::initialize(std::string& error, bool allow_erased)
 bool CartridgeStorage::Impl::mappingBody(std::uint32_t limit,
                                          std::string& error)
 {
-    if (!tx92(0xFF,0xFF,error) || !tx92(0x55,0xAA,error)) return false;
+    // Capture-derived writer verification transition. The one-byte selector
+    // tail and second complete status sequence are required: without them,
+    // reads above 8 MiB can expose an erased or stale flash view.
+    if (!finishWriteOperation(error) || !tx92(0x55,0xAA,error)) return false;
     if (limit == 0x01000000u) {
         if (!tx92(2,0,error) || !tx92(0,0x80,error) || !tx92(0,0,error)) return false;
     } else if (limit == 0x01800000u) {
@@ -310,8 +311,9 @@ bool CartridgeStorage::Impl::mappingBody(std::uint32_t limit,
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(125));
     return tx92(0xAA,0x55,error) && tx92(0,0,error) && tx92(0,0,error) &&
-           tx92(0,0,error) && tx92(0xFF,0xFF,error) &&
-           tx92(0x55,0xAA,error) && tx92(0,0,error) &&
+           tx92(0,0,error) && tx92One(0,0xAA,error) &&
+           tx92One(0,0x55,error) && tx92One(1,0x06,error) &&
+           finishWriteOperation(error) && tx92(0x55,0xAA,error) && tx92(0,0,error) &&
            tx92(0,0,error) && tx92(0,0,error);
 }
 
@@ -416,16 +418,6 @@ bool CartridgeStorage::Impl::finishLiveWriteOperation(std::string& error)
     return finishWriteOperation(error) && waitReady(10,error);
 }
 
-void CartridgeStorage::Impl::finalizeFailedLiveWrite(
-    const std::string& operation_error,std::string& error)
-{
-    std::string finalization_error;
-    const bool finalized=finishLiveWriteOperation(finalization_error);
-    error=operation_error;
-    if(!finalized&&!finalization_error.empty())
-        error+="; live writer finalization failed: "+finalization_error;
-}
-
 bool CartridgeStorage::Impl::eraseAll(std::ostream& progress,
                                       std::string& error)
 {
@@ -500,15 +492,12 @@ bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& prog
     for(const auto& sector:sectors){const auto address=sector.word_address;
         std::vector<std::uint8_t> command={0x5A,0xA5,0x96,0,static_cast<std::uint8_t>(address),static_cast<std::uint8_t>(address>>8),static_cast<std::uint8_t>(address>>16),static_cast<std::uint8_t>(address>>24),0,0,0,0,0};
         std::vector<std::uint8_t> response;
-        if(!out(command,error)||!in(response,command.size(),error)) {
-            const auto operation_error=error;
-            finalizeFailedLiveWrite(operation_error,error);return false;
-        }
+        if(!out(command,error)||!in(response,command.size(),error))return false;
         if(response.size()!=command.size()||!std::equal(command.begin(),command.begin()+12,response.begin())||response[12]!=0){
             std::ostringstream detail;detail<<"cartridge live block erase response mismatch";
             if(response.size()==command.size())detail<<" (status 0x"<<std::hex<<static_cast<unsigned>(response[12])<<')'<<std::dec;
             else detail<<" (received "<<response.size()<<" bytes, expected "<<command.size()<<')';
-            finalizeFailedLiveWrite(detail.str(),error);return false;
+            error=detail.str();return false;
         }
         progress<<"Erase response status: 0x"<<std::hex<<static_cast<unsigned>(response[12])<<std::dec<<"\n";
     }
@@ -545,8 +534,6 @@ bool CartridgeStorage::Impl::programLiveExtent(
             bytes.begin()+static_cast<std::ptrdiff_t>(i*block_size),
             bytes.begin()+static_cast<std::ptrdiff_t>((i+1)*block_size));
         if(!programTransaction(local,data,"cartridge live block program",error)) {
-            const auto operation_error=error;
-            finalizeFailedLiveWrite(operation_error,error);
             if(block_count>1)progress<<'\n';
             return false;
         }
