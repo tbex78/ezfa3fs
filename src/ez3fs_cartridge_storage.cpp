@@ -319,8 +319,11 @@ bool CartridgeStorage::Impl::initialize(std::string& error, bool allow_erased)
         std::array<std::uint8_t,8> live_header{};
         if (!live::hasFormatMagic(header.data()) && !rawRead(0x10000u,live_header.data(),live_header.size(),error)) return false;
         std::array<std::uint8_t,8> direct_boot_header{};
-        if (!live::hasFormatMagic(header.data()) && !live::hasFormatMagic(live_header.data()) &&
-            !rawRead(0x01FE0000u,direct_boot_header.data(),direct_boot_header.size(),error)) return false;
+        if (!live::hasFormatMagic(header.data()) && !live::hasFormatMagic(live_header.data())) {
+            if(!mappingBody(0x02000000u,error))return false;
+            mapped_limit=0x02000000u;
+            if(!rawRead(0x01FE0000u,direct_boot_header.data(),direct_boot_header.size(),error))return false;
+        }
         std::array<std::uint8_t,8> alternate_direct_boot_header{};
         if (!live::hasFormatMagic(header.data()) && !live::hasFormatMagic(live_header.data()) &&
             !live::hasFormatMagic(direct_boot_header.data()) &&
@@ -341,10 +344,10 @@ bool CartridgeStorage::Impl::initialize(std::string& error, bool allow_erased)
 bool CartridgeStorage::Impl::mappingBody(std::uint32_t limit,
                                          std::string& error)
 {
-    // Capture-derived writer verification transition. The one-byte selector
-    // tail and second complete status sequence are required: without them,
-    // reads above 8 MiB can expose an erased or stale flash view.
-    if (!finishWriteOperation(error) || !tx92(0x55,0xAA,error)) return false;
+    // Capture-derived standalone read transition. Unlike verification that
+    // begins inside an active full-image program session, a reopened and
+    // 0x95-primed reader must not send the one-byte writer selectors here.
+    if (!tx92(0xFF,0xFF,error) || !tx92(0x55,0xAA,error)) return false;
     if (limit == 0x01000000u) {
         if (!tx92(2,0,error) || !tx92(0,0x80,error) || !tx92(0,0,error)) return false;
     } else if (limit == 0x01800000u) {
@@ -354,9 +357,8 @@ bool CartridgeStorage::Impl::mappingBody(std::uint32_t limit,
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(125));
     return tx92(0xAA,0x55,error) && tx92(0,0,error) && tx92(0,0,error) &&
-           tx92(0,0,error) && tx92One(0,0xAA,error) &&
-           tx92One(0,0x55,error) && tx92One(1,0x06,error) &&
-           finishWriteOperation(error) && tx92(0x55,0xAA,error) && tx92(0,0,error) &&
+           tx92(0,0,error) && tx92(0xFF,0xFF,error) &&
+           tx92(0x55,0xAA,error) && tx92(0,0,error) &&
            tx92(0,0,error) && tx92(0,0,error);
 }
 
