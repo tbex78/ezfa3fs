@@ -45,7 +45,8 @@ public:
 private:
     friend class CartridgeProgrammer;
     friend class CartridgeLiveDevice;
-    bool openLiveWriteSessionWithRetry(std::string& error);
+    bool openLiveWriteSessionWithRetry(std::string& error,
+                                       bool trust_validated_format);
     bool readLiveBlockAfterWrite(std::size_t block,std::size_t size,
                                  std::vector<std::uint8_t>& bytes,
                                  std::string& error,bool reopen_first);
