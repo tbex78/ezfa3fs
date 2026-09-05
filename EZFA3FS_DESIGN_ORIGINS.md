@@ -62,6 +62,8 @@ Many protocol details could only be established empirically. Hardware tests repo
 
 Failures such as `LIBUSB_ERROR_PIPE`, incomplete erase responses, stale read mappings, and program readback mismatches revealed state transitions that were not apparent from a successful capture alone.
 
+Programming requires a second capture-derived activation after the manager probe: three successful `0x98` readiness exchanges separated by one-second quiet intervals. A command echo alone is not proof that the bridge accepted a following flash operation; omitting this activation can produce nonzero erase status or blank program readback despite an apparently accepted command.
+
 ## Hardware constraints
 
 ### NOR-flash programming
@@ -140,7 +142,7 @@ Because files require contiguous extents, enough total free space does not guara
 
 ### Integrity checks
 
-CRC32 values protect manifests and file contents against accidental corruption. Hardware writes and erases are also checked through immediate readback.
+CRC32 values protect manifests and file contents against accidental corruption. Standalone hardware erases and all programmed data are checked through readback. Direct-boot replacement deliberately avoids a read-mode transition between erase and program, then verifies the final programmed extent.
 
 CRC32 is not a cryptographic hash. SHA-256 comparisons are performed externally after extracting or pulling a file.
 
@@ -154,7 +156,7 @@ Direct-boot hardware does not understand the filesystem manifest. It executes da
 - Other files are placed after the reserved boot slot.
 - Removing the ROM commits a manifest without it and erases logical block 0 to invalidate the old GBA header and entry point.
 - Remaining old ROM blocks are erased lazily if a replacement ROM needs them.
-- Replacement programming inspects its required extent and erases nonblank blocks before writing.
+- Replacement programming inspects its required extent, then keeps stale-block erasure and ROM programming in one writer session before final readback verification.
 
 This design keeps boot-ROM deletion fast while respecting NOR-flash programming rules during replacement.
 

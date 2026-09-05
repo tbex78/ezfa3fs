@@ -73,6 +73,7 @@ private:
     bool tx92(std::uint8_t first, std::uint8_t second, std::string& error,
               std::uint32_t word_address = 0);
     bool waitReady(unsigned attempts, std::string& error);
+    bool activateWriter(std::string& error);
     bool initialize(std::string& error,bool allow_erased,
                     bool trust_validated_format=false);
     bool probePrefix(std::uint8_t a0,std::uint8_t a1,
@@ -255,6 +256,33 @@ bool CartridgeStorage::Impl::waitReady(unsigned attempts, std::string& error)
     }
     error = "cartridge was not ready after bounded polling";
     return false;
+}
+
+bool CartridgeStorage::Impl::activateWriter(std::string& error)
+{
+    // The captured Windows workflow performs this transition after the full
+    // manager probe and before erase/program traffic.  The three polls are
+    // intentionally not folded into waitReady(): all three successful replies
+    // and their one-second quiet intervals are part of the proven sequence.
+    const std::vector<std::uint8_t> command =
+        {0x5A,0xA5,0x98,0,0,0,0,0,0,0,0,0,0};
+    for(unsigned poll=0;poll<3;++poll) {
+        std::vector<std::uint8_t> response;
+        if(!out(command,error)||!in(response,1,error))return false;
+        if(response[0]!=1) {
+            std::ostringstream detail;
+            detail<<"unexpected cartridge writer activation response 0x"
+                  <<std::hex<<static_cast<unsigned>(response[0])<<std::dec
+                  <<" at poll "<<(poll+1)<<"/3";
+            error=detail.str();
+            return false;
+        }
+        if(poll+1<3)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    error.clear();
+    return true;
 }
 
 bool CartridgeStorage::Impl::probePrefix(
@@ -792,7 +820,9 @@ bool CartridgeStorage::Impl::openForProgramming(std::string& error,
     result=libusb_claim_interface(handle,0);
     if(result!=0){error=usbError("could not claim USB interface 0",result);shutdown();return false;}
     claimed=true;
-    if(!initialize(error,true,trust_validated_format)){shutdown();return false;}
+    if(!initialize(error,true,trust_validated_format)||!activateWriter(error)) {
+        shutdown();return false;
+    }
     is_open=true;return true;
 #endif
 }
@@ -1285,9 +1315,23 @@ bool CartridgeProgrammer::programAndVerify(
         }
     }
     if(!storage_.impl_->openForProgramming(error)) return false;
-    progress << "Erasing the complete 32-MiB cartridge...\n";
-    if(!storage_.impl_->eraseAll(progress,error) ||
-       !storage_.impl_->programImage(image,progress,error)) {
+    constexpr unsigned write_attempts=3;
+    bool written=false;
+    for(unsigned attempt=1;attempt<=write_attempts;++attempt) {
+        progress << "Erasing the complete 32-MiB cartridge...\n";
+        if(storage_.impl_->eraseAll(progress,error)&&
+           storage_.impl_->programImage(image,progress,error)) {
+            written=true;
+            break;
+        }
+        if(attempt==write_attempts)break;
+        progress<<"Retrying complete cartridge write (attempt "
+                <<(attempt+1)<<'/'<<write_attempts<<"): "<<error<<'\n';
+        std::string close_error;
+        storage_.impl_->close(close_error,false);
+        if(!storage_.impl_->openForProgramming(error,true))break;
+    }
+    if(!written) {
         std::string ignored;storage_.close(ignored);return false;
     }
     if(!storage_.close(error)) return false;
