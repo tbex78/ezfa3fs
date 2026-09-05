@@ -689,19 +689,14 @@ bool CartridgeStorage::Impl::programLiveExtent(
             if(!selectWriteWindow(window,error))return false;
             selected_window=window;
         }
-        const auto regions=CartridgeFlashGeometry::sectorsForLogicalBlock(block);
-        const auto region_size=regions.size()==1?block_size:
-            CartridgeFlashGeometry::boot_sector_size;
-        for(std::size_t region=0;region<regions.size();++region) {
-            const auto begin=i*block_size+region*region_size;
-            std::vector<std::uint8_t> data(
-                bytes.begin()+static_cast<std::ptrdiff_t>(begin),
-                bytes.begin()+static_cast<std::ptrdiff_t>(begin+region_size));
-            if(!programTransaction(regions[region].word_address,data,
-                                   "cartridge live block program",error)) {
-                if(block_count>1)progress<<'\n';
-                return false;
-            }
+        const auto local=static_cast<std::uint32_t>(
+            (block%blocks_per_window)*0x8000u);
+        std::vector<std::uint8_t> data(
+            bytes.begin()+static_cast<std::ptrdiff_t>(i*block_size),
+            bytes.begin()+static_cast<std::ptrdiff_t>((i+1)*block_size));
+        if(!programTransaction(local,data,"cartridge live block program",error)) {
+            if(block_count>1)progress<<'\n';
+            return false;
         }
         ++completed_blocks;
         if(block_count>1)

@@ -1,6 +1,6 @@
 # EZFA3FS transactional format
 
-This document describes the 32 MiB EZFA3FS format implemented by application version **0.45.17**. The standard layout is format **2.0.0**; the slotted direct-boot layout is **2.1.0**.
+This document describes the 32 MiB EZFA3FS format implemented by application version **0.45.18**. The standard layout is format **2.0.0**; the slotted direct-boot layout is **2.1.0**.
 
 EZFA3FS is an independent indexed filesystem for EZ-Flash Advance III NOR flash. It is not FAT, has no partition table, and does not use the original EZ3 menu or ROM patching. All multibyte integers are little-endian.
 
@@ -14,8 +14,7 @@ The physical erase geometry is asymmetric:
 - Logical blocks 1 through 510 each use one 64 KiB erase sector.
 - Logical block 511 consists of eight 8 KiB erase sectors.
 
-Allocation and manifests use logical blocks. The cartridge adapter translates operations on blocks 0 and 511 into physical sector commands.
-Live programming of either split boot block is likewise issued as eight 8 KiB transactions; ordinary logical blocks use one 64 KiB transaction.
+Allocation and manifests use logical blocks. The cartridge adapter translates erase operations on blocks 0 and 511 into physical sector commands. Programming remains one capture-proven 64 KiB transaction per logical block, including blocks 0 and 511.
 
 ## Layouts
 
