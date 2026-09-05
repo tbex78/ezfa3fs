@@ -4,7 +4,7 @@ EZ3FS is an independent filesystem tool for the 32-MiB EZ-Flash Advance III
 NOR cartridge. It does not contain the original EZ3 menu, loader, ROM catalog,
 FAT partition, or ROM-patching workflow.
 
-Application version: **0.42.0**.
+Application version: **0.43.0**.
 
 `ez3fs` manages the live filesystem. `ezfs-legacy` preserves the packed-image
 workflow. Two incompatible formats are supported:
@@ -191,8 +191,9 @@ ROM argument, program the empty image, then use a writable `card-mount` or
 ```
 
 The first accepted file must be one root-level `.gba`; it is placed at offset
-zero and permanently locks the image. Finder sidecar files and every later
-mutation are rejected.
+zero and permanently pinned there. Later files and directories are stored only
+after the ROM's rounded 64-KiB extent. The boot ROM itself cannot be replaced,
+renamed, or removed; Finder sidecars are rejected until the ROM is present.
 
 When `put` has no destination argument, the source path is used as the
 destination:

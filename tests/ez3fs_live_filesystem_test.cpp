@@ -96,8 +96,17 @@ void verifyDirectBootLayout() {
     require(filesystem.isDirectBoot()&&filesystem.entries().size()==1&&
             filesystem.entries().front().first_block==0);
     require(filesystem.readFile("direct.gba",bytes,error)&&bytes==rom);
-    require(!filesystem.putFile("other.gba",rom,1235,error));
-    require(error.find("exactly one")!=std::string::npos);
+    require(filesystem.createDirectory("extras",error));
+    require(filesystem.putFile("extras/readme.txt",{'o','k'},1235,error));
+    const auto extra=std::find_if(filesystem.entries().begin(),filesystem.entries().end(),
+        [](const ez3fs::live::Entry& entry){return entry.name=="extras/readme.txt";});
+    require(extra!=filesystem.entries().end()&&extra->first_block==1);
+    require(filesystem.readFile("direct.gba",bytes,error)&&bytes==rom);
+    require(!filesystem.putFile("direct.gba",rom,1236,error));
+    require(error.find("immutable")!=std::string::npos);
+    require(filesystem.removeFile("extras/readme.txt",error));
+    std::size_t reclaimed=0;require(filesystem.collectGarbage(reclaimed,error)&&reclaimed==1);
+    require(filesystem.readFile("direct.gba",bytes,error)&&bytes==rom);
     require(filesystem.verify(error));
 }
 
@@ -108,14 +117,15 @@ void verifyEmptyDirectBootLayout() {
     require(ez3fs::live::Filesystem::open(flash,filesystem,error));
     require(filesystem.isDirectBoot()&&filesystem.entries().empty());
     require(!filesystem.canCreateFile(".DS_Store",error));
-    require(error.find("exactly one")!=std::string::npos);
+    require(error.find("root-level .gba")!=std::string::npos);
     const std::vector<std::uint8_t> rom{0x18,0x00,0x00,0xEA,0x44};
     require(filesystem.putFile("first.GBA",rom,1234,error));
     std::vector<std::uint8_t> bytes(rom.size());
     require(flash.read(0,bytes.data(),bytes.size(),error)&&bytes==rom);
     require(filesystem.entries().size()==1&&filesystem.entries().front().first_block==0);
-    require(!filesystem.putFile("second.gba",rom,1235,error));
-    require(error.find("exactly one")!=std::string::npos);
+    require(filesystem.putFile("second.gba",rom,1235,error));
+    require(!filesystem.putFile("first.GBA",rom,1236,error));
+    require(error.find("immutable")!=std::string::npos);
 }
 
 void verifyInterruptedCompaction(std::size_t failure_offset,

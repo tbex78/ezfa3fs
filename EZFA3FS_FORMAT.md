@@ -11,7 +11,7 @@ table, FAT filesystem, or ROM patches.
 
 EZFA3FS 2.0.0 is experimental but has been exercised on physical hardware
 from both terminal commands and Finder. The current application version is
-`0.42.0`.
+`0.43.0`.
 
 ## Geometry and layout
 
@@ -45,11 +45,13 @@ blocks (31.875 MiB).
 The direct-boot manifest contains exactly one non-empty root-level `.gba`
 file, whose extent begins at block 0. An empty direct-boot image may accept its
 first root-level `.gba` through `put` or a writable cartridge mount; the
-metadata is committed only after its ROM extent is programmed. Direct-boot
-images then reject directories, additional files, replacement, rename,
-removal, garbage collection, and compaction. Recreate and fully reprogram the
-image to change its ROM. This preserves byte-zero compatibility with the
-sibling project's experimental loaderless direct-boot writer while retaining a
+metadata is committed only after its ROM extent is programmed. Later files and
+directories allocate strictly after the ROM's rounded extent and before the
+tail metadata blocks. Garbage collection and compaction may reclaim or move
+those later file extents, but never the boot-ROM extent. The boot ROM itself
+cannot be replaced, renamed, or removed; recreate and fully reprogram the
+image to change it. This preserves byte-zero compatibility with the sibling
+project's experimental loaderless direct-boot writer while retaining a
 verified EZFA3FS manifest.
 
 ## Superblock

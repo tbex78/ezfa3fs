@@ -168,7 +168,7 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
         const auto length=get<std::uint32_t>(bytes.data(),20);
         if(length>NorFlash::block_size-superblock_header||
            Crc32::calculate(bytes.data()+superblock_header,length)!=get<std::uint32_t>(bytes.data(),24))continue;
-        std::vector<Entry> parsed;std::set<std::string> names;
+        std::vector<Entry> parsed;std::set<std::string> names;std::size_t direct_boot_blocks=0;
         const auto count=get<std::uint32_t>(bytes.data()+superblock_header,0);std::size_t offset=4;bool valid=true;
         for(std::uint32_t i=0;i<count&&valid;++i) {
             if(offset+32>length){valid=false;break;}
@@ -184,8 +184,11 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
                (!entry.directory&&(entry.first_block<(layout==Layout::direct_boot?0:2)||
                    static_cast<std::uint64_t>(entry.first_block)+entry.block_count>(layout==Layout::direct_boot?NorFlash::block_count-2:NorFlash::block_count)||
                    entry.size>static_cast<std::uint64_t>(entry.block_count)*NorFlash::block_size))){valid=false;break;}
-            if(layout==Layout::direct_boot&&(!validDirectBootRomName(entry.name)||entry.directory||
-               entry.first_block!=0||parsed.size()!=0)){valid=false;break;}
+            if(layout==Layout::direct_boot&&parsed.empty()&&
+               (!validDirectBootRomName(entry.name)||entry.directory||entry.first_block!=0)){valid=false;break;}
+            if(layout==Layout::direct_boot&&!parsed.empty()&&!entry.directory&&
+               entry.first_block<direct_boot_blocks){valid=false;break;}
+            if(layout==Layout::direct_boot&&parsed.empty())direct_boot_blocks=entry.block_count;
             parsed.push_back(std::move(entry));offset+=32+name_length;
         }
         if(!valid||offset!=length||(layout==Layout::direct_boot&&parsed.size()>1))continue;
@@ -204,11 +207,22 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
 
 Entry* Filesystem::find(const std::string& path){auto it=std::find_if(entries_.begin(),entries_.end(),[&](const Entry& e){return e.name==path;});return it==entries_.end()?nullptr:&*it;}
 const Entry* Filesystem::find(const std::string& path) const{auto it=std::find_if(entries_.begin(),entries_.end(),[&](const Entry& e){return e.name==path;});return it==entries_.end()?nullptr:&*it;}
+const Entry* Filesystem::directBootRom() const noexcept {
+    if(!isDirectBoot()||entries_.empty())return nullptr;
+    const auto& entry=entries_.front();
+    return isDirectBootRom(entry)?&entry:nullptr;
+}
+bool Filesystem::isDirectBootRom(const Entry& entry) const noexcept {
+    return isDirectBoot()&&!entry.directory&&entry.first_block==0&&validDirectBootRomName(entry.name);
+}
 bool Filesystem::parentExists(const std::string& path) const {
     const auto slash=path.rfind('/');return slash==std::string::npos||
         (find(path.substr(0,slash))&&find(path.substr(0,slash))->directory);
 }
 std::size_t Filesystem::firstDataBlock() const noexcept { return layout_==Layout::direct_boot?0:2; }
+std::size_t Filesystem::allocationStartBlock() const noexcept {
+    const auto* rom=directBootRom();return rom?rom->block_count:firstDataBlock();
+}
 std::size_t Filesystem::dataEndBlock() const noexcept { return layout_==Layout::direct_boot?NorFlash::block_count-2:NorFlash::block_count; }
 std::size_t Filesystem::alternateSuperblock() const noexcept {
     if(layout_==Layout::direct_boot)return active_superblock_==NorFlash::block_count-2?NorFlash::block_count-1:NorFlash::block_count-2;
@@ -300,9 +314,10 @@ Filesystem::ExtentSearchResult Filesystem::findBlankExtent(
         return false;
     };
     error.clear();
-    if(inspect(next_free_block_,NorFlash::block_count)){error.clear();return ExtentSearchResult::found;}
+    const auto start=allocationStartBlock();
+    if(inspect(std::max(next_free_block_,start),dataEndBlock())){error.clear();return ExtentSearchResult::found;}
     if(!error.empty())return ExtentSearchResult::error;
-    if(next_free_block_>2&&inspect(2,next_free_block_)){error.clear();return ExtentSearchResult::found;}
+    if(next_free_block_>start&&inspect(start,std::min(next_free_block_,dataEndBlock()))){error.clear();return ExtentSearchResult::found;}
     if(!error.empty())return ExtentSearchResult::error;
     error.clear();return ExtentSearchResult::no_extent;
 }
@@ -338,10 +353,11 @@ bool Filesystem::findBlankExtentBefore(std::size_t limit,
                                        std::size_t block_count,
                                        std::size_t& first_block,
                                        std::string& error) {
-    if(block_count==0||limit<=2||block_count>limit-2){error.clear();return false;}
-    std::vector<std::uint8_t> bytes(NorFlash::block_size);std::size_t run=0,run_start=2;
+    const auto start=allocationStartBlock();
+    if(block_count==0||limit<=start||block_count>limit-start){error.clear();return false;}
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);std::size_t run=0,run_start=start;
     error.clear();
-    for(std::size_t block=2;block<limit;++block) {
+    for(std::size_t block=start;block<limit;++block) {
         if(blockReferenced(block)||unavailable_blocks_[block]){run=0;continue;}
         if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
             error="could not inspect compaction destination block "+std::to_string(block)+": "+error;return false;
@@ -379,8 +395,10 @@ bool Filesystem::programExtent(std::size_t first_block,
 
 bool Filesystem::canCreateFile(const std::string& path,std::string& error) const {
     if(isDirectBoot()) {
-        if(entries_.empty()&&validDirectBootRomName(path)){error.clear();return true;}
-        error="direct-boot EZFA3FS accepts exactly one root-level .gba ROM";return false;
+        if(!directBootRom()) {
+            if(entries_.empty()&&validDirectBootRomName(path)){error.clear();return true;}
+            error="direct-boot EZFA3FS requires its first file to be one root-level .gba ROM";return false;
+        }
     }
     if(!validPath(path)||!parentExists(path)||find(path)) {
         error="invalid or existing live file path";return false;
@@ -389,7 +407,7 @@ bool Filesystem::canCreateFile(const std::string& path,std::string& error) const
 }
 
 bool Filesystem::createDirectory(const std::string& path,std::string& error) {
-    if(isDirectBoot()){error="direct-boot EZFA3FS images cannot contain directories";return false;}
+    if(isDirectBoot()&&!directBootRom()){error="direct-boot EZFA3FS requires its root .gba ROM before directories";return false;}
     if(!validPath(path)||!parentExists(path)||find(path)){error="invalid or existing live directory path";return false;}
     const auto old=entries_;entries_.push_back({path,0,0,0,0,0,true});
     if(commit(error))return true;entries_=old;return false;
@@ -400,18 +418,23 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
                          MaintenanceObserver maintenance) {
     if(isDirectBoot()) {
         const auto blocks=dataBlockCount(bytes.size());
-        if(!entries_.empty()||!validDirectBootRomName(path)||bytes.empty()||blocks>dataEndBlock()) {
-            error="direct-boot EZFA3FS accepts exactly one non-empty root-level .gba ROM no larger than 31.875 MiB";return false;
+        if(!directBootRom()) {
+            if(!entries_.empty()||!validDirectBootRomName(path)||bytes.empty()||blocks>dataEndBlock()) {
+                error="direct-boot EZFA3FS requires one non-empty root-level .gba ROM no larger than 31.875 MiB";return false;
+            }
+            std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
+            std::copy(bytes.begin(),bytes.end(),extent.begin());std::size_t completed=0;
+            if(!flash_.programBlocks(0,extent.data(),blocks,completed,error)||completed!=blocks) {
+                if(error.empty())error="direct-boot ROM programming was incomplete";return false;
+            }
+            entries_.push_back({path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),0,static_cast<std::uint32_t>(blocks),false});
+            next_free_block_=blocks;
+            if(commit(error))return true;
+            entries_.clear();return false;
         }
-        std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
-        std::copy(bytes.begin(),bytes.end(),extent.begin());std::size_t completed=0;
-        if(!flash_.programBlocks(0,extent.data(),blocks,completed,error)||completed!=blocks) {
-            if(error.empty())error="direct-boot ROM programming was incomplete";return false;
+        if(const auto* existing=find(path);existing&&isDirectBootRom(*existing)) {
+            error="the direct-boot ROM at cartridge offset 0 is immutable";return false;
         }
-        entries_.push_back({path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),0,static_cast<std::uint32_t>(blocks),false});
-        next_free_block_=blocks;
-        if(commit(error))return true;
-        entries_.clear();return false;
     }
     if(!validPath(path)||!parentExists(path)){error="invalid live file path";return false;}
     if(const auto* existing=find(path);existing&&existing->directory){error="live path is a directory";return false;}
@@ -437,12 +460,11 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
 
 bool Filesystem::collectGarbage(std::size_t& reclaimed_blocks,
                                 std::string& error,ScanProgress progress) {
-    if(isDirectBoot()){reclaimed_blocks=0;error="direct-boot EZFA3FS images cannot be garbage-collected";return false;}
-    reclaimed_blocks=0;constexpr std::size_t first_data_block=2;
-    constexpr std::size_t total=NorFlash::block_count-first_data_block;
+    reclaimed_blocks=0;const auto first_data_block=firstDataBlock();
+    const auto total=dataEndBlock()-first_data_block;
     std::vector<std::uint8_t> bytes(NorFlash::block_size);std::vector<std::size_t> garbage;
     if(progress)progress(0,total);
-    for(std::size_t block=first_data_block;block<NorFlash::block_count;++block) {
+    for(std::size_t block=first_data_block;block<dataEndBlock();++block) {
         if(!blockReferenced(block)) {
             if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
                 error="could not inspect garbage-collection block "+std::to_string(block)+": "+error;return false;
@@ -468,12 +490,11 @@ bool Filesystem::collectGarbage(std::size_t& reclaimed_blocks,
         }
         unavailable_blocks_[block]=false;++reclaimed_blocks;
     }
-    next_free_block_=first_data_block;error.clear();return true;
+    next_free_block_=allocationStartBlock();error.clear();return true;
 }
 
 bool Filesystem::compact(CompactionReport& report,std::string& error,
                          ScanProgress progress) {
-    if(isDirectBoot()){report={};error="direct-boot EZFA3FS images cannot be compacted";return false;}
     report={};
     if(!collectGarbage(report.garbage_blocks_reclaimed,error,progress))return false;
     return compactFiles(report,error);
@@ -483,7 +504,7 @@ bool Filesystem::compactFiles(CompactionReport& report,std::string& error) {
     for(;;) {
         std::vector<std::size_t> candidates;
         for(std::size_t i=0;i<entries_.size();++i)
-            if(!entries_[i].directory&&entries_[i].block_count)candidates.push_back(i);
+            if(!entries_[i].directory&&entries_[i].block_count&&!isDirectBootRom(entries_[i]))candidates.push_back(i);
         std::sort(candidates.begin(),candidates.end(),[this](std::size_t left,std::size_t right){
             return entries_[left].first_block>entries_[right].first_block;
         });
@@ -515,7 +536,7 @@ bool Filesystem::compactFiles(CompactionReport& report,std::string& error) {
                 unavailable_blocks_[block]=false;
             }
             ++report.files_relocated;report.blocks_relocated+=original.block_count;
-            next_free_block_=2;relocated=true;break;
+            next_free_block_=allocationStartBlock();relocated=true;break;
         }
         if(!relocated)break;
     }
@@ -523,20 +544,20 @@ bool Filesystem::compactFiles(CompactionReport& report,std::string& error) {
 }
 
 bool Filesystem::removeFile(const std::string& path,std::string& error) {
-    if(isDirectBoot()){error="direct-boot EZFA3FS images are immutable";return false;}
     const auto old=entries_;const auto it=std::find_if(entries_.begin(),entries_.end(),[&](const Entry& e){return e.name==path&&!e.directory;});
-    if(it==entries_.end()){error="live file does not exist";return false;}entries_.erase(it);if(commit(error))return true;entries_=old;return false;
+    if(it==entries_.end()){error="live file does not exist";return false;}
+    if(isDirectBootRom(*it)){error="the direct-boot ROM at cartridge offset 0 is immutable";return false;}
+    entries_.erase(it);if(commit(error))return true;entries_=old;return false;
 }
 bool Filesystem::removeDirectory(const std::string& path,std::string& error) {
-    if(isDirectBoot()){error="direct-boot EZFA3FS images cannot contain directories";return false;}
     const auto old=entries_;const auto it=std::find_if(entries_.begin(),entries_.end(),[&](const Entry& e){return e.name==path&&e.directory;});
     if(it==entries_.end()){error="live directory does not exist";return false;}const auto prefix=path+'/';
     if(std::any_of(entries_.begin(),entries_.end(),[&](const Entry& e){return e.name.rfind(prefix,0)==0;})){error="live directory is not empty";return false;}
     entries_.erase(it);if(commit(error))return true;entries_=old;return false;
 }
 bool Filesystem::rename(const std::string& from,const std::string& to,std::string& error) {
-    if(isDirectBoot()){error="direct-boot EZFA3FS images are immutable";return false;}
     auto* source=find(from);if(!source||find(to)||!validPath(to)||!parentExists(to)){error="invalid live rename";return false;}
+    if(isDirectBootRom(*source)){error="the direct-boot ROM at cartridge offset 0 is immutable";return false;}
     const auto old=entries_;
     if(source->directory){const auto prefix=from+'/';for(auto& entry:entries_)if(entry.name==from||entry.name.rfind(prefix,0)==0)entry.name=to+entry.name.substr(from.size());}
     else source->name=to;

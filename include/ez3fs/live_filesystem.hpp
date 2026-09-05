@@ -158,7 +158,10 @@ private:
     bool parentExists(const std::string& path) const;
     Entry* find(const std::string& path);
     const Entry* find(const std::string& path) const;
+    const Entry* directBootRom() const noexcept;
+    bool isDirectBootRom(const Entry& entry) const noexcept;
     std::size_t firstDataBlock() const noexcept;
+    std::size_t allocationStartBlock() const noexcept;
     std::size_t dataEndBlock() const noexcept;
     std::size_t alternateSuperblock() const noexcept;
     BlockDevice& flash_;
