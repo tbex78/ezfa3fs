@@ -323,7 +323,7 @@ int liveCardWrite(const fs::path& image,bool verify_after_write) {
     return 0;
 }
 int liveCardFormat(bool direct_boot) {
-    std::cout<<"WARNING: this will erase the complete 32-MiB cartridge, clear all four save banks, and create an empty "
+    std::cout<<"WARNING: this will erase the complete 32-MiB cartridge, zero all four save banks, and create an empty "
              <<(direct_boot?"direct-boot ":"")<<"EZFA3FS filesystem.\n"
              <<"Confirm cartridge format\n";
     if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}

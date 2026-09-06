@@ -376,7 +376,7 @@ bool CartridgeStorage::Impl::restoreSaveBanks(std::string& error)
 
 bool CartridgeStorage::Impl::clearSaveBanks(std::string& error)
 {
-    const std::vector<std::uint8_t> blank(save_bank_size,0xFF);
+    const std::vector<std::uint8_t> blank(save_bank_size,0x00);
     for(std::size_t bank=0;bank<save_bank_count;++bank) {
         const auto selector=static_cast<std::uint16_t>(0x0900u+bank*0x10u);
         std::vector<std::uint8_t> readback;
