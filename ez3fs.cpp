@@ -64,31 +64,31 @@ void usage() {
 )";
 #else
     std::cerr<<R"(Usage:
-  ez3fs format IMAGE.ezfa3fs
-  ez3fs format --direct-boot IMAGE.ezfa3fs ROM.gba
-  ez3fs list IMAGE.ezfa3fs
-  ez3fs verify IMAGE.ezfa3fs
-  ez3fs mkdir IMAGE.ezfa3fs DIRECTORY
-  ez3fs put IMAGE.ezfa3fs SOURCE_FILE [DESTINATION]
-  ez3fs get IMAGE.ezfa3fs FILE OUTPUT_FILE
-  ez3fs rm IMAGE.ezfa3fs FILE
-  ez3fs rmdir IMAGE.ezfa3fs DIRECTORY
-  ez3fs gc IMAGE.ezfa3fs
-  ez3fs compact IMAGE.ezfa3fs
-  ez3fs space IMAGE.ezfa3fs
-  ez3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
-  ez3fs card-mount MOUNTPOINT [--foreground]
-  ez3fs card-mount MOUNTPOINT --writable --foreground [--verify]
-  ez3fs card-pull IMAGE.ezfa3fs
-  ez3fs card-write IMAGE.ezfa3fs
-  ez3fs card-gc
-  ez3fs card-compact
-  ez3fs card-space
-  ez3fs card-read-block BLOCK OUTPUT.bin
-  ez3fs card-erase-plan BLOCK
-  ez3fs card-erase-block BLOCK
-  ez3fs card-program-block BLOCK INPUT.bin
-  ez3fs --version
+  ezfa3fs format IMAGE.ezfa3fs
+  ezfa3fs format --direct-boot IMAGE.ezfa3fs ROM.gba
+  ezfa3fs list IMAGE.ezfa3fs
+  ezfa3fs verify IMAGE.ezfa3fs
+  ezfa3fs mkdir IMAGE.ezfa3fs DIRECTORY
+  ezfa3fs put IMAGE.ezfa3fs SOURCE_FILE [DESTINATION]
+  ezfa3fs get IMAGE.ezfa3fs FILE OUTPUT_FILE
+  ezfa3fs rm IMAGE.ezfa3fs FILE
+  ezfa3fs rmdir IMAGE.ezfa3fs DIRECTORY
+  ezfa3fs gc IMAGE.ezfa3fs
+  ezfa3fs compact IMAGE.ezfa3fs
+  ezfa3fs space IMAGE.ezfa3fs
+  ezfa3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
+  ezfa3fs card-mount MOUNTPOINT [--foreground]
+  ezfa3fs card-mount MOUNTPOINT --writable --foreground [--verify]
+  ezfa3fs card-pull IMAGE.ezfa3fs
+  ezfa3fs card-write IMAGE.ezfa3fs
+  ezfa3fs card-gc
+  ezfa3fs card-compact
+  ezfa3fs card-space
+  ezfa3fs card-read-block BLOCK OUTPUT.bin
+  ezfa3fs card-erase-plan BLOCK
+  ezfa3fs card-erase-block BLOCK
+  ezfa3fs card-program-block BLOCK INPUT.bin
+  ezfa3fs --version
 )";
 #endif
 }
@@ -594,7 +594,7 @@ int main(int argc,char** argv) {
 #if defined(EZ3FS_LEGACY_CLI)
         std::cout<<"ezfs-legacy ";
 #else
-        std::cout<<"ez3fs ";
+        std::cout<<"ezfa3fs ";
 #endif
         std::cout<<ez3fs::project_version<<'\n';return 0;
     }

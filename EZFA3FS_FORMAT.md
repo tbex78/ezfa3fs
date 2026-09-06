@@ -1,6 +1,6 @@
 # EZFA3FS transactional format
 
-This document describes the 32 MiB EZFA3FS format implemented by application version **0.46.1**. The standard layout is experimental format **0.1.0**; the slotted direct-boot layout is experimental format **0.2.0**. The reader accepts the former 2.0.0 and 2.1.0 identifiers, and a subsequent metadata commit migrates them to the corresponding experimental identifier.
+This document describes the 32 MiB EZFA3FS format implemented by application version **0.47.0**. The standard layout is experimental format **0.1.0**; the slotted direct-boot layout is experimental format **0.2.0**. The reader accepts the former 2.0.0 and 2.1.0 identifiers, and a subsequent metadata commit migrates them to the corresponding experimental identifier.
 
 EZFA3FS is an independent indexed filesystem for EZ-Flash Advance III NOR flash. It is not FAT, has no partition table, and does not use the original EZ3 menu or ROM patching. All multibyte integers are little-endian.
 

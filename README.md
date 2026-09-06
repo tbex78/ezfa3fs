@@ -4,10 +4,10 @@ EZ3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartridg
 
 The project provides two programs:
 
-- `ez3fs` manages the current transactional **EZFA3FS** format.
+- `ezfa3fs` manages the current transactional **EZFA3FS** format.
 - `ezfs-legacy` preserves the earlier packed **EZ3FS** image and staging workflow.
 
-Application version: **0.46.1**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable. Legacy EZ3FS remains format **1.2**.
+Application version: **0.47.0**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable. Legacy EZ3FS remains format **1.2**.
 
 The macOS/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
@@ -23,17 +23,17 @@ cmake --build build/cmake
 ctest --test-dir build/cmake --output-on-failure
 ```
 
-The binaries are `build/cmake/ez3fs` and `build/cmake/ezfs-legacy`.
+The binaries are `build/cmake/ezfa3fs` and `build/cmake/ezfs-legacy`.
 
 ## Standard image workflow
 
 ```sh
-./build/cmake/ez3fs format cartridge.ezfa3fs
-./build/cmake/ez3fs mkdir cartridge.ezfa3fs documents
-./build/cmake/ez3fs put cartridge.ezfa3fs test.txt documents/test.txt
-./build/cmake/ez3fs list cartridge.ezfa3fs
-./build/cmake/ez3fs verify cartridge.ezfa3fs
-./build/cmake/ez3fs card-write cartridge.ezfa3fs
+./build/cmake/ezfa3fs format cartridge.ezfa3fs
+./build/cmake/ezfa3fs mkdir cartridge.ezfa3fs documents
+./build/cmake/ezfa3fs put cartridge.ezfa3fs test.txt documents/test.txt
+./build/cmake/ezfa3fs list cartridge.ezfa3fs
+./build/cmake/ezfa3fs verify cartridge.ezfa3fs
+./build/cmake/ezfa3fs card-write cartridge.ezfa3fs
 ```
 
 `card-write` verifies the image, asks for `y/N` confirmation, then erases, programs, and verifies the complete 32 MiB cartridge.
@@ -42,13 +42,13 @@ Mount the cartridge read-only:
 
 ```sh
 mkdir -p mountpoint
-./build/cmake/ez3fs card-mount mountpoint --foreground
+./build/cmake/ezfa3fs card-mount mountpoint --foreground
 ```
 
 Mount with direct transactional writes:
 
 ```sh
-./build/cmake/ez3fs card-mount mountpoint --writable --foreground
+./build/cmake/ezfa3fs card-mount mountpoint --writable --foreground
 ```
 
 Add `--verify` for a full allocation scan before mounting. The default writable mount reads only the metadata needed to start, which is much faster on cartridges containing large files. Unmount from another terminal with `umount mountpoint`.
@@ -60,13 +60,13 @@ The experimental direct-boot layout places one root-level GBA ROM at cartridge b
 Create it with a ROM:
 
 ```sh
-./build/cmake/ez3fs format --direct-boot direct-boot.ezfa3fs game.gba
+./build/cmake/ezfa3fs format --direct-boot direct-boot.ezfa3fs game.gba
 ```
 
 Or create an empty image with a 16 MiB boot slot and copy the first ROM through a writable mount later:
 
 ```sh
-./build/cmake/ez3fs format --direct-boot direct-boot.ezfa3fs
+./build/cmake/ezfa3fs format --direct-boot direct-boot.ezfa3fs
 ```
 
 The first persistent file must be a non-empty root-level `.gba` file. The slot expands when possible if the ROM needs more room. Additional files and directories live after the reserved slot, so direct boot remains compatible with a multi-file filesystem.
@@ -78,19 +78,19 @@ The ROM at offset zero is immutable while present. Delete it, then copy a new ro
 Image commands:
 
 ```text
-ez3fs format IMAGE.ezfa3fs
-ez3fs format --direct-boot IMAGE.ezfa3fs [ROM.gba]
-ez3fs list IMAGE.ezfa3fs
-ez3fs verify IMAGE.ezfa3fs
-ez3fs mkdir IMAGE.ezfa3fs DIRECTORY
-ez3fs put IMAGE.ezfa3fs SOURCE_FILE [DESTINATION]
-ez3fs get IMAGE.ezfa3fs FILE OUTPUT_FILE
-ez3fs rm IMAGE.ezfa3fs FILE
-ez3fs rmdir IMAGE.ezfa3fs DIRECTORY
-ez3fs gc IMAGE.ezfa3fs
-ez3fs compact IMAGE.ezfa3fs
-ez3fs space IMAGE.ezfa3fs
-ez3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
+ezfa3fs format IMAGE.ezfa3fs
+ezfa3fs format --direct-boot IMAGE.ezfa3fs [ROM.gba]
+ezfa3fs list IMAGE.ezfa3fs
+ezfa3fs verify IMAGE.ezfa3fs
+ezfa3fs mkdir IMAGE.ezfa3fs DIRECTORY
+ezfa3fs put IMAGE.ezfa3fs SOURCE_FILE [DESTINATION]
+ezfa3fs get IMAGE.ezfa3fs FILE OUTPUT_FILE
+ezfa3fs rm IMAGE.ezfa3fs FILE
+ezfa3fs rmdir IMAGE.ezfa3fs DIRECTORY
+ezfa3fs gc IMAGE.ezfa3fs
+ezfa3fs compact IMAGE.ezfa3fs
+ezfa3fs space IMAGE.ezfa3fs
+ezfa3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
 ```
 
 When `DESTINATION` is omitted from `put`, the source path is also the destination.
@@ -98,22 +98,22 @@ When `DESTINATION` is omitted from `put`, the source path is also the destinatio
 Cartridge commands:
 
 ```text
-ez3fs card-mount MOUNTPOINT [--foreground]
-ez3fs card-mount MOUNTPOINT --writable --foreground [--verify]
-ez3fs card-pull IMAGE.ezfa3fs
-ez3fs card-write IMAGE.ezfa3fs
-ez3fs card-gc
-ez3fs card-compact
-ez3fs card-space
+ezfa3fs card-mount MOUNTPOINT [--foreground]
+ezfa3fs card-mount MOUNTPOINT --writable --foreground [--verify]
+ezfa3fs card-pull IMAGE.ezfa3fs
+ezfa3fs card-write IMAGE.ezfa3fs
+ezfa3fs card-gc
+ezfa3fs card-compact
+ezfa3fs card-space
 ```
 
 Low-level diagnostics:
 
 ```text
-ez3fs card-read-block BLOCK OUTPUT.bin
-ez3fs card-erase-plan BLOCK
-ez3fs card-erase-block BLOCK
-ez3fs card-program-block BLOCK INPUT.bin
+ezfa3fs card-read-block BLOCK OUTPUT.bin
+ezfa3fs card-erase-plan BLOCK
+ezfa3fs card-erase-block BLOCK
+ezfa3fs card-program-block BLOCK INPUT.bin
 ```
 
 Raw erase and program commands modify cartridge blocks after confirmation. Standard metadata occupies blocks 0 and 1; direct-boot metadata occupies blocks 510 and 511. Using raw commands on metadata or active data can destroy the filesystem.
@@ -131,9 +131,9 @@ Live cartridge reads retry transient USB failures by reopening the validated wri
 ## Verify copied data
 
 ```sh
-./build/cmake/ez3fs card-pull pulled.ezfa3fs
-./build/cmake/ez3fs verify pulled.ezfa3fs
-./build/cmake/ez3fs get pulled.ezfa3fs path/to/game.gba recovered.gba
+./build/cmake/ezfa3fs card-pull pulled.ezfa3fs
+./build/cmake/ezfa3fs verify pulled.ezfa3fs
+./build/cmake/ezfa3fs get pulled.ezfa3fs path/to/game.gba recovered.gba
 shasum -a 256 source.gba recovered.gba
 ```
 
@@ -148,14 +148,14 @@ NOR operations remain slow: changed blocks are programmed and read back, and met
 Inspect capacity and fragmentation with:
 
 ```sh
-./build/cmake/ez3fs card-space
+./build/cmake/ezfa3fs card-space
 ```
 
 It reports active, erased, and unreferenced blocks; potentially available capacity; largest extents; fragmentation; and whether garbage collection is recommended. Run maintenance only while unmounted:
 
 ```sh
-./build/cmake/ez3fs card-gc
-./build/cmake/ez3fs card-compact
+./build/cmake/ezfa3fs card-gc
+./build/cmake/ezfa3fs card-compact
 ```
 
 Garbage collection erases unreferenced blocks. Compaction relocates active files to form a larger contiguous erased extent. Allocation may invoke maintenance automatically when no suitable extent remains, so keeping erased space available avoids a long pause during a copy.

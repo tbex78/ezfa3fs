@@ -4,7 +4,7 @@ WARNFLAGS = -Wall -Wextra -Wpedantic
 CPPFLAGS = -Iinclude
 LDFLAGS =
 LDLIBS =
-PROGRAMS = ez3fs ezfs-legacy
+PROGRAMS = ezfa3fs ezfs-legacy
 SOURCES = ez3fs.cpp src/ez3fs_archive.cpp src/ez3fs_archive_comparison.cpp src/ez3fs_archive_loader.cpp src/ez3fs_live_filesystem.cpp src/ez3fs_live_cartridge_session.cpp src/ez3fs_cartridge_live_device.cpp src/ez3fs_live_mount_backend.cpp src/ez3fs_new_image_file.cpp src/ez3fs_recovery_snapshot.cpp src/ez3fs_virtual_filesystem.cpp src/ez3fs_virtual_mount_backend.cpp src/ez3fs_fuse_mount.cpp src/ez3fs_cartridge_storage.cpp
 FUSE3_CFLAGS = `if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists fuse3 >/dev/null 2>&1; then pkg-config --cflags fuse3; fi`
 FUSE3_LIBS = `if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists fuse3 >/dev/null 2>&1; then pkg-config --libs fuse3; fi`
@@ -14,7 +14,7 @@ LIBUSB_LIBS = `if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists l
 LIBUSB_DEFINE = `if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libusb-1.0 >/dev/null 2>&1; then printf '%s\n' '-DEZ3FS_HAS_LIBUSB=1'; fi`
 
 all: $(PROGRAMS)
-ez3fs: $(SOURCES) include/ez3fs/archive.hpp include/ez3fs/archive_comparison.hpp include/ez3fs/live_filesystem.hpp include/ez3fs/virtual_filesystem.hpp include/ez3fs/fuse_mount.hpp include/ez3fs/cartridge_storage.hpp include/ez3fs/cartridge_programmer.hpp include/ez3fs/timestamp.hpp include/ez3fs/recovery_snapshot.hpp include/ez3fs/version.hpp
+ezfa3fs: $(SOURCES) include/ez3fs/archive.hpp include/ez3fs/archive_comparison.hpp include/ez3fs/live_filesystem.hpp include/ez3fs/virtual_filesystem.hpp include/ez3fs/fuse_mount.hpp include/ez3fs/cartridge_storage.hpp include/ez3fs/cartridge_programmer.hpp include/ez3fs/timestamp.hpp include/ez3fs/recovery_snapshot.hpp include/ez3fs/version.hpp
 	$(CXX) $(CPPFLAGS) $(FUSE3_CFLAGS) $(FUSE3_DEFINE) $(LIBUSB_CFLAGS) $(LIBUSB_DEFINE) $(CXXFLAGS) $(WARNFLAGS) $(SOURCES) $(LDFLAGS) $(FUSE3_LIBS) $(LIBUSB_LIBS) $(LDLIBS) -o $@
 
 ezfs-legacy: $(SOURCES) include/ez3fs/archive.hpp include/ez3fs/archive_comparison.hpp include/ez3fs/live_filesystem.hpp include/ez3fs/virtual_filesystem.hpp include/ez3fs/fuse_mount.hpp include/ez3fs/cartridge_storage.hpp include/ez3fs/cartridge_programmer.hpp include/ez3fs/timestamp.hpp include/ez3fs/recovery_snapshot.hpp include/ez3fs/version.hpp

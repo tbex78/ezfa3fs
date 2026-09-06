@@ -275,7 +275,7 @@ fuse_operations operations() {fuse_operations value{};value.getattr=ez3fsGetattr
 int runMount(MountSession& mounted,const std::string& mountpoint,
              bool foreground,const std::string& filesystem_name) {
     auto callbacks=operations();
-    std::vector<std::string> arguments{"ez3fs","-o","fsname="+filesystem_name};
+    std::vector<std::string> arguments{"ezfa3fs","-o","fsname="+filesystem_name};
 #if defined(__APPLE__)
     if(filesystem_name=="ez3fs-card") {
         arguments.push_back("-o");arguments.push_back("volname=EZ3FS Cartridge");
