@@ -35,7 +35,8 @@ public:
     }
 
     bool open(std::string& error);
-    bool openForProgramming(std::string& error,bool trust_validated_format=false);
+    bool openForProgramming(std::string& error,bool trust_validated_format=false,
+                            bool preserve_save_banks=true);
     bool close(std::string& error,bool settle_before_release=true);
     void shutdown() noexcept;
     bool read(std::uint64_t offset, std::uint8_t* destination,
@@ -73,6 +74,7 @@ private:
     static constexpr std::size_t save_bank_count = 4;
     std::vector<std::uint8_t> save_backup;
     bool save_dirty = false;
+    bool save_preservation_enabled = true;
 
     bool out(const std::vector<std::uint8_t>& bytes, std::string& error);
     bool in(std::vector<std::uint8_t>& bytes, std::size_t size,
@@ -120,6 +122,7 @@ private:
     bool finishWriteOperation(std::string& error);
     bool finishLiveWriteOperation(std::string& error);
 #endif
+    bool clearSaveBanks(std::string& error);
     bool eraseAll(std::ostream& progress, std::string& error);
     bool programImage(const std::vector<std::uint8_t>& image,
                       std::ostream& progress, std::string& error);
@@ -371,6 +374,24 @@ bool CartridgeStorage::Impl::restoreSaveBanks(std::string& error)
     return true;
 }
 
+bool CartridgeStorage::Impl::clearSaveBanks(std::string& error)
+{
+    const std::vector<std::uint8_t> blank(save_bank_size,0xFF);
+    for(std::size_t bank=0;bank<save_bank_count;++bank) {
+        const auto selector=static_cast<std::uint16_t>(0x0900u+bank*0x10u);
+        std::vector<std::uint8_t> readback;
+        if(!writeSaveBank(selector,blank,error)||
+           !readSaveBank(selector,readback,error)||readback!=blank) {
+            if(error.empty())error="save-bank clear verification failed for bank "+
+                                   std::to_string(bank+1);
+            return false;
+        }
+    }
+    save_dirty=false;
+    save_backup.clear();
+    error.clear();return true;
+}
+
 bool CartridgeStorage::Impl::waitReady(unsigned attempts, std::string& error)
 {
     const std::vector<std::uint8_t> command =
@@ -618,7 +639,7 @@ bool CartridgeStorage::Impl::tx92One(std::uint8_t selector,
     // writer-control transfers address bytes in the selected save bank.
     // Mark the snapshot dirty before sending so partial USB failures are also
     // covered by session-close restoration.
-    save_dirty=true;
+    if(save_preservation_enabled)save_dirty=true;
     const std::vector<std::uint8_t> command =
         {0x5A,0xA5,0x92,0x01,selector,0,0,0,0x01,0,0,0,0};
     return commandEcho(command,{value},error);
@@ -935,6 +956,12 @@ bool CartridgeStorage::Impl::programImage(
 {
     error="EZFA3FS was built without libusb support";return false;
 }
+bool CartridgeStorage::Impl::programImageRange(
+    std::size_t,const std::vector<std::uint8_t>&,std::ostream&,
+    std::string& error)
+{ error="EZFA3FS was built without libusb support";return false; }
+bool CartridgeStorage::Impl::clearSaveBanks(std::string& error)
+{ error="EZFA3FS was built without libusb support";return false; }
 bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t,std::ostream&,std::string& error,bool)
 { error="EZFA3FS was built without libusb support";return false; }
 bool CartridgeStorage::Impl::eraseLiveBlocks(const std::vector<std::size_t>&,
@@ -980,9 +1007,12 @@ bool CartridgeStorage::Impl::open(std::string& error)
 }
 
 bool CartridgeStorage::Impl::openForProgramming(std::string& error,
-                                                bool trust_validated_format)
+                                                bool trust_validated_format,
+                                                bool preserve_save_banks)
 {
 #if !defined(EZFA3FS_HAS_LIBUSB)
+    (void)trust_validated_format;
+    (void)preserve_save_banks;
     error="EZFA3FS was built without libusb support";return false;
 #else
     error.clear();shutdown();
@@ -996,11 +1026,12 @@ bool CartridgeStorage::Impl::openForProgramming(std::string& error,
     result=libusb_claim_interface(handle,0);
     if(result!=0){error=usbError("could not claim USB interface 0",result);shutdown();return false;}
     claimed=true;
-    if(!captureSaveBanks(error)){shutdown();return false;}
+    save_preservation_enabled=preserve_save_banks;
+    if(preserve_save_banks&&!captureSaveBanks(error)){shutdown();return false;}
     if(!initialize(error,true,trust_validated_format)||!activateWriter(error)) {
         const auto writer_error=error;
         std::string restore_error;
-        if(!restoreSaveBanks(restore_error))
+        if(preserve_save_banks&&!restoreSaveBanks(restore_error))
             error=writer_error+"; could not restore cartridge save banks: "+
                   restore_error;
         else
@@ -1557,13 +1588,15 @@ bool CartridgeProgrammer::format(
     if(!image.read(metadata_offset,metadata.data(),metadata.size(),error))return false;
     if(!direct_boot)metadata.resize(metadataTransferSize(metadata));
 
-    if(!storage_.impl_->openForProgramming(error))return false;
+    if(!storage_.impl_->openForProgramming(error,false,false))return false;
     progress<<"Erasing the complete 32-MiB cartridge...\n";
     if(!storage_.impl_->eraseAll(progress,error)||
        !storage_.impl_->programImageRange(metadata_offset,metadata,
-                                          progress,error)) {
+                                          progress,error)||
+       !storage_.impl_->clearSaveBanks(error)) {
         std::string ignored;storage_.close(ignored);return false;
     }
+    progress<<"Cleared and verified all four cartridge save banks.\n";
     if(!storage_.close(error))return false;
 
     progress<<"Verifying EZFA3FS metadata...\n";
