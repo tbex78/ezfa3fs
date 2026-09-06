@@ -340,6 +340,17 @@ bool CartridgeStorage::Impl::restoreSaveBanks(std::string& error)
         save_backup.clear();
         error.clear();return true;
     }
+    std::vector<std::uint8_t> current_banks;
+    if(!readSaveBanks(current_banks,error))return false;
+    const bool current_banks_are_all_zero=std::all_of(
+        current_banks.begin(),current_banks.end(),
+        [](std::uint8_t byte){return byte==0x00;});
+    if(!current_banks_are_all_zero) {
+        std::cerr<<"Skipping save-bank restoration because the current banks are not entirely zero.\n";
+        save_dirty=false;
+        save_backup.clear();
+        error.clear();return true;
+    }
     for(std::size_t bank=0;bank<save_bank_count;++bank) {
         const auto selector=static_cast<std::uint16_t>(0x0900u+bank*0x10u);
         const auto first=save_backup.begin()+
