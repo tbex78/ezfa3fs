@@ -9,6 +9,7 @@
 #include "ez3fs/fuse_mount.hpp"
 #include "ez3fs/new_image_file.hpp"
 #include "ez3fs/live_filesystem.hpp"
+#include "ez3fs/live_mount_backend.hpp"
 #include "ez3fs/live_cartridge_session.hpp"
 #include "ez3fs/version.hpp"
 #include <chrono>
@@ -75,7 +76,7 @@ void usage() {
   ez3fs gc IMAGE.ezfa3fs
   ez3fs compact IMAGE.ezfa3fs
   ez3fs space IMAGE.ezfa3fs
-  ez3fs mount IMAGE.ezfa3fs MOUNTPOINT [--foreground]
+  ez3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
   ez3fs card-mount MOUNTPOINT [--foreground]
   ez3fs card-mount MOUNTPOINT --writable --foreground [--verify]
   ez3fs card-pull IMAGE.ezfa3fs
@@ -389,9 +390,20 @@ std::vector<ez3fs::InputFile> liveContents(const ez3fs::live::Filesystem& filesy
         contents.push_back(std::move(file));}
     return contents;
 }
-int liveMount(const fs::path& image,const fs::path& mountpoint,bool foreground) {
+int liveMount(const fs::path& image,const fs::path& mountpoint,bool writable,
+              bool foreground) {
     ez3fs::live::NorFlash flash;ez3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;
-    if(!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}auto contents=liveContents(filesystem,error);if(!error.empty()){std::cerr<<error<<'\n';return 1;}
+    if(!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}
+    if(writable) {
+        auto persist=[&flash,&image](std::string& save_error) {
+            return flash.save(image.string(),save_error);
+        };
+        auto backend=std::make_unique<ez3fs::LiveMountBackend>(
+            filesystem,ez3fs::live::Filesystem::MaintenanceObserver{},persist);
+        return ez3fs::mountBackend(std::move(backend),mountpoint.string(),
+                                   foreground,"ezfa3fs-image");
+    }
+    auto contents=liveContents(filesystem,error);if(!error.empty()){std::cerr<<error<<'\n';return 1;}
     return ez3fs::mountLiveContents(contents,mountpoint.string(),foreground);
 }
 int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
@@ -610,7 +622,14 @@ int main(int argc,char** argv) {
     if(argc==5&&std::string(argv[1])=="format"&&std::string(argv[2])=="--direct-boot")return liveFormatDirectBoot(argv[3],argv[4]);
     if(argc==3&&std::string(argv[1])=="list")return liveList(argv[2]);
     if(argc==3&&std::string(argv[1])=="verify")return liveVerify(argv[2]);
-    if(argc>=4&&std::string(argv[1])=="mount"){bool foreground=false;for(int i=4;i<argc;++i)if(std::string(argv[i])=="--foreground")foreground=true;return liveMount(argv[2],argv[3],foreground);}
+    if(argc>=4&&std::string(argv[1])=="mount"){
+        bool writable=false,foreground=false;
+        for(int i=4;i<argc;++i){const std::string option(argv[i]);
+            if(option=="--writable")writable=true;
+            else if(option=="--foreground")foreground=true;
+            else{std::cerr<<"Unknown mount option: "<<option<<'\n';return 1;}}
+        return liveMount(argv[2],argv[3],writable,foreground);
+    }
     if(argc>=3&&std::string(argv[1])=="card-mount"){bool writable=false,foreground=false,verify_referenced_data=false;for(int i=3;i<argc;++i){const std::string option(argv[i]);if(option=="--writable")writable=true;else if(option=="--foreground")foreground=true;else if(option=="--verify")verify_referenced_data=true;else{std::cerr<<"Unknown card-mount option: "<<option<<'\n';return 1;}}return liveCardMount(argv[2],writable,foreground,verify_referenced_data);}
     if(argc==4&&std::string(argv[1])=="mkdir")return liveMkdir(argv[2],argv[3]);
     if((argc==4||argc==5)&&std::string(argv[1])=="put")return livePut(argv[2],argv[3],argc==5?argv[4]:argv[3]);

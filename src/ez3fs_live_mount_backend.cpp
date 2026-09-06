@@ -100,19 +100,24 @@ bool LiveMountBackend::commitFile(const std::string& path,std::string& error) {
         return true;
     }
     if(!persistFile(current->first,current->second,error))return false;
+    if(persistence_observer_&&!persistence_observer_(error))return false;
     pending_files_.erase(current);
     error.clear();
     return true;
 }
 
 bool LiveMountBackend::commit(std::string& error) {
-    for(auto current=pending_files_.begin();current!=pending_files_.end();) {
+    std::vector<std::string> persisted;
+    for(auto current=pending_files_.begin();current!=pending_files_.end();
+        ++current) {
         if(!commitReady(current->second)) {
-            ++current;continue;
+            continue;
         }
         if(!persistFile(current->first,current->second,error))return false;
-        current=pending_files_.erase(current);
+        persisted.push_back(current->first);
     }
+    if(persistence_observer_&&!persistence_observer_(error))return false;
+    for(const auto& name:persisted)pending_files_.erase(name);
     error.clear();return true;
 }
 

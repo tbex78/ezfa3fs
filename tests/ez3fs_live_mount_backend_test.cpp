@@ -50,6 +50,24 @@ int main() {
     require(backend.removeFile("/docs/renamed.txt",error));
     require(backend.removeDirectory("/docs",error));
 
+    ez3fs::live::NorFlash persisted_flash;
+    require(ez3fs::live::Filesystem::format(persisted_flash,error));
+    ez3fs::live::Filesystem persisted_filesystem(persisted_flash);
+    require(ez3fs::live::Filesystem::open(
+        persisted_flash,persisted_filesystem,error));
+    unsigned persistence_count=0;
+    ez3fs::LiveMountBackend persisted_backend(
+        persisted_filesystem,{},[&persistence_count](std::string& observer_error) {
+            ++persistence_count;observer_error.clear();return true;
+        });
+    require(persisted_backend.createDirectory("/saved",error));
+    require(persisted_backend.commit(error));
+    require(persistence_count==1);
+    require(persisted_backend.createFile("/saved/file.txt",error));
+    require(persisted_backend.write("/saved/file.txt",0,data,sizeof(data),error));
+    require(persisted_backend.commitFile("/saved/file.txt",error));
+    require(persistence_count==2);
+
     ez3fs::live::NorFlash direct_flash;
     require(ez3fs::live::Filesystem::formatDirectBootEmpty(direct_flash,error));
     ez3fs::live::Filesystem direct_filesystem(direct_flash);
