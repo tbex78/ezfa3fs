@@ -1592,27 +1592,28 @@ bool CartridgeProgrammer::format(
     progress<<"Erasing the complete 32-MiB cartridge...\n";
     if(!storage_.impl_->eraseAll(progress,error)||
        !storage_.impl_->programImageRange(metadata_offset,metadata,
-                                          progress,error)||
-       !storage_.impl_->clearSaveBanks(error)) {
+                                          progress,error)) {
         std::string ignored;storage_.close(ignored);return false;
     }
-    progress<<"Cleared and verified all four cartridge save banks.\n";
-    if(!storage_.close(error))return false;
 
     progress<<"Verifying EZFA3FS metadata...\n";
-    if(!storage_.open(error))return false;
     std::vector<std::uint8_t> readback(metadata.size());
-    const bool read=storage_.read(metadata_offset,readback.data(),readback.size(),error);
-    std::string close_error;const bool closed=storage_.close(close_error);
-    if(!read||!closed){if(error.empty())error=close_error;return false;}
+    if(!storage_.read(metadata_offset,readback.data(),readback.size(),error)) {
+        std::string ignored;storage_.close(ignored);return false;
+    }
     const auto mismatch=std::mismatch(readback.begin(),readback.end(),metadata.begin());
     if(mismatch.first!=readback.end()) {
         error="format metadata read-back mismatch at cartridge byte "+
               std::to_string(metadata_offset+
                   static_cast<std::size_t>(mismatch.first-readback.begin()));
+        std::string ignored;storage_.close(ignored);
         return false;
     }
-    error.clear();return true;
+    if(!storage_.impl_->clearSaveBanks(error)) {
+        std::string ignored;storage_.close(ignored);return false;
+    }
+    progress<<"Cleared and verified all four cartridge save banks.\n";
+    return storage_.close(error);
 }
 
 bool CartridgeProgrammer::eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error)
