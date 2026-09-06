@@ -5,11 +5,11 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.50.4**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable. Legacy EZFA3FS remains format **1.2**.
+Application version: **0.50.5**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable. Legacy EZFA3FS remains format **1.2**.
 
 The macOS/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
-Cartridge reads use save-safe two-byte control transfers. Before a writable cartridge session initializes the flash writer, EZFA3FS snapshots all four 32-KiB save banks. A clean unmount restores and verifies that snapshot, including after a filesystem mutation error. Always unmount before disconnecting the linker so this restoration can finish.
+Cartridge reads use save-safe two-byte control transfers. Before a writable cartridge session initializes the flash writer, EZFA3FS snapshots all four 32-KiB save banks. A clean unmount restores and verifies that snapshot, including after a filesystem mutation error. An entirely zero-filled snapshot is treated as an invalid transient read and is never written back to the save banks. Always unmount before disconnecting the linker so restoration can finish.
 
 ## Build
 

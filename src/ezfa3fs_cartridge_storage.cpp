@@ -331,6 +331,15 @@ bool CartridgeStorage::Impl::restoreSaveBanks(std::string& error)
         error="cartridge save banks were modified without a valid backup";
         return false;
     }
+    const bool snapshot_is_all_zero=std::all_of(
+        save_backup.begin(),save_backup.end(),
+        [](std::uint8_t byte){return byte==0x00;});
+    if(snapshot_is_all_zero) {
+        std::cerr<<"Skipping save-bank restoration because the captured snapshot is entirely zero.\n";
+        save_dirty=false;
+        save_backup.clear();
+        error.clear();return true;
+    }
     for(std::size_t bank=0;bank<save_bank_count;++bank) {
         const auto selector=static_cast<std::uint16_t>(0x0900u+bank*0x10u);
         const auto first=save_backup.begin()+

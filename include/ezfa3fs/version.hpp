@@ -1,3 +1,3 @@
 #pragma once
 #include <string_view>
-namespace ezfa3fs { inline constexpr std::string_view project_version = "0.50.4"; }
+namespace ezfa3fs { inline constexpr std::string_view project_version = "0.50.5"; }
