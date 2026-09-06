@@ -1581,12 +1581,12 @@ bool CartridgeProgrammer::format(
 
     live::Filesystem filesystem(image);
     if(!live::Filesystem::open(image,filesystem,error))return false;
-    const auto metadata_block=direct_boot?live::NorFlash::block_count-1:
-                                          std::size_t{1};
+    const auto metadata_block=filesystem.activeSuperblock();
     const auto metadata_offset=metadata_block*live::NorFlash::block_size;
     std::vector<std::uint8_t> metadata(live::NorFlash::block_size);
     if(!image.read(metadata_offset,metadata.data(),metadata.size(),error))return false;
-    if(!direct_boot)metadata.resize(metadataTransferSize(metadata));
+    if(metadata_block!=live::NorFlash::block_count-1)
+        metadata.resize(metadataTransferSize(metadata));
 
     if(!storage_.impl_->openForProgramming(error,false,false))return false;
     progress<<"Erasing the complete 32-MiB cartridge...\n";

@@ -160,6 +160,8 @@ void verifyEmptyDirectBootLayout() {
     require(ezfa3fs::live::Filesystem::formatDirectBootEmpty(flash,error));
     ezfa3fs::live::Filesystem filesystem(flash);
     require(ezfa3fs::live::Filesystem::open(flash,filesystem,error));
+    require(filesystem.activeSuperblock()==
+            ezfa3fs::live::NorFlash::block_count-2);
     require(filesystem.isDirectBoot()&&filesystem.entries().empty());
     require(!filesystem.canCreateFile(".DS_Store",error));
     require(error.find("root-level .gba")!=std::string::npos);

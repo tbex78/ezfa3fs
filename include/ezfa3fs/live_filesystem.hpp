@@ -145,6 +145,7 @@ public:
                  ScanProgress progress = {});
     const std::vector<Entry>& entries() const noexcept { return entries_; }
     std::uint64_t generation() const noexcept { return generation_; }
+    std::size_t activeSuperblock() const noexcept { return active_superblock_; }
     std::size_t freeBlocks() const noexcept;
     Layout layout() const noexcept { return layout_; }
     bool isDirectBoot() const noexcept { return layout_==Layout::direct_boot; }
