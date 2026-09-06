@@ -17,7 +17,7 @@ The original cartridge-access code in this repository supplied the starting know
 - Selecting the cartridge's four 8 MiB access windows.
 - Resetting the writer between read and write operations.
 
-The earlier packed EZ3FS experiment also demonstrated that an independent indexed image could store ordinary files without the original EZ3 menu.
+The earlier packed EZFA3FS experiment also demonstrated that an independent indexed image could store ordinary files without the original EZ3 menu.
 
 ### USB packet captures
 

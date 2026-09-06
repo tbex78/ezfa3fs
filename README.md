@@ -1,17 +1,15 @@
-# EZ3FS
+# EZFA3FS
 
-EZ3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartridge. It does not use the original EZ3 menu, loader, ROM patching, FAT32, or a partition table.
+EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartridge. It does not use the original EZ3 menu, loader, ROM patching, FAT32, or a partition table.
 
-The project provides two programs:
+The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
+format.
 
-- `ezfa3fs` manages the current transactional **EZFA3FS** format.
-- `ezfs-legacy` preserves the earlier packed **EZ3FS** image and staging workflow.
-
-Application version: **0.47.0**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable. Legacy EZ3FS remains format **1.2**.
+Application version: **0.48.0**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable. Legacy EZFA3FS remains format **1.2**.
 
 The macOS/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
-Cartridge reads use save-safe two-byte control transfers. Before a writable cartridge session initializes the flash writer, EZ3FS snapshots all four 32-KiB save banks. A clean unmount restores and verifies that snapshot, including after a filesystem mutation error. Always unmount before disconnecting the linker so this restoration can finish.
+Cartridge reads use save-safe two-byte control transfers. Before a writable cartridge session initializes the flash writer, EZFA3FS snapshots all four 32-KiB save banks. A clean unmount restores and verifies that snapshot, including after a filesystem mutation error. Always unmount before disconnecting the linker so this restoration can finish.
 
 ## Build
 
@@ -23,7 +21,7 @@ cmake --build build/cmake
 ctest --test-dir build/cmake --output-on-failure
 ```
 
-The binaries are `build/cmake/ezfa3fs` and `build/cmake/ezfs-legacy`.
+The binary is `build/cmake/ezfa3fs`.
 
 ## Standard image workflow
 
@@ -160,39 +158,11 @@ It reports active, erased, and unreferenced blocks; potentially available capaci
 
 Garbage collection erases unreferenced blocks. Compaction relocates active files to form a larger contiguous erased extent. Allocation may invoke maintenance automatically when no suitable extent remains, so keeping erased space available avoids a long pause during a copy.
 
-## Legacy EZ3FS
-
-Use `ezfs-legacy` for packed `.ez3fs` images:
-
-```text
-ezfs-legacy create OUTPUT.ez3fs FILE...
-ezfs-legacy list IMAGE.ez3fs
-ezfs-legacy verify IMAGE.ez3fs
-ezfs-legacy extract IMAGE.ez3fs OUTPUT_DIRECTORY
-ezfs-legacy mkdir IMAGE.ez3fs DIRECTORY
-ezfs-legacy add IMAGE.ez3fs SOURCE_FILE DESTINATION
-ezfs-legacy rm IMAGE.ez3fs FILE
-ezfs-legacy card-info
-ezfs-legacy card-list
-ezfs-legacy card-verify
-ezfs-legacy card-extract OUTPUT_DIRECTORY
-ezfs-legacy card-pull OUTPUT.ez3fs
-ezfs-legacy card-write IMAGE.ez3fs
-ezfs-legacy card-status STAGING.ez3fs
-ezfs-legacy card-commit STAGING.ez3fs
-ezfs-legacy card-recover STAGING.ez3fs
-ezfs-legacy card-mount MOUNTPOINT [--foreground]
-ezfs-legacy card-mount MOUNTPOINT --writable STAGING.ez3fs [--foreground]
-```
-
-Legacy writable mounts modify a staging image and require an explicit full-cartridge commit; they are not live block updates.
-
 ## Format references
 
 - [EZFA3FS format](EZFA3FS_FORMAT.md)
 - [EZFA3FS design origins](EZFA3FS_DESIGN_ORIGINS.md)
 - [Incremental background garbage collection plan](BACKGROUND_GC_PLAN.md)
-- [Legacy EZ3FS format](EZ3FS_FORMAT.md)
 
 ## Current limits
 

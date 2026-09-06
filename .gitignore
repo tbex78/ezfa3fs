@@ -11,10 +11,10 @@ pcap/
 
 *.bin
 /ezfa3fs
-*.ez3fs
-*.ez3fs.tmp
-*.ez3fs.bak
-*.ez3fs.fuse.tmp
+*.ezfa3fs
+*.ezfa3fs.tmp
+*.ezfa3fs.bak
+*.ezfa3fs.fuse.tmp
 *.ez3live*
 *.ezfa3fs
 .DS_Store
