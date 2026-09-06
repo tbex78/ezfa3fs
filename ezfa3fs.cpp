@@ -53,7 +53,7 @@ void usage() {
   ezfa3fs card-mount MOUNTPOINT [--foreground]
   ezfa3fs card-mount MOUNTPOINT --writable --foreground [--verify]
   ezfa3fs card-pull IMAGE.ezfa3fs
-  ezfa3fs card-write IMAGE.ezfa3fs
+  ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
   ezfa3fs card-gc
   ezfa3fs card-compact
   ezfa3fs card-space
@@ -302,7 +302,7 @@ int liveCardProgramBlock(const std::string& block_text,const fs::path& input) {
     if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
     ezfa3fs::CartridgeProgrammer programmer;std::string error;if(!programmer.programLiveBlock(block,bytes,std::cout,error)){std::cerr<<error<<'\n';return 1;}return 0;
 }
-int liveCardWrite(const fs::path& image) {
+int liveCardWrite(const fs::path& image,bool verify_after_write) {
     std::vector<std::uint8_t> bytes;
     if(!readFile(image,bytes)){std::cerr<<"Could not read image: "<<image<<'\n';return 1;}
     ezfa3fs::live::NorFlash flash;std::string error;
@@ -314,8 +314,12 @@ int liveCardWrite(const fs::path& image) {
              <<"Confirm cartridge replacement"<<'\n';
     if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
     ezfa3fs::CartridgeProgrammer programmer;
-    if(!programmer.programAndVerify(bytes,std::cout,error)){std::cerr<<"Cartridge programming failed: "<<error<<'\n';return 1;}
-    std::cout<<"Programmed and verified the EZFA3FS image successfully.\n";return 0;
+    const ezfa3fs::CartridgeProgrammer::ProgramOptions options{verify_after_write};
+    if(!programmer.program(bytes,options,std::cout,error)){std::cerr<<"Cartridge programming failed: "<<error<<'\n';return 1;}
+    std::cout<<(verify_after_write?
+        "Programmed and verified the EZFA3FS image successfully.\n":
+        "Programmed the EZFA3FS image without read-back verification.\n");
+    return 0;
 }
 
 }
@@ -352,7 +356,12 @@ int main(int argc,char** argv) {
     if(argc==3&&std::string(argv[1])=="card-erase-plan")return liveCardErasePlan(argv[2]);
     if(argc==3&&std::string(argv[1])=="card-erase-block")return liveCardEraseBlock(argv[2]);
     if(argc==4&&std::string(argv[1])=="card-program-block")return liveCardProgramBlock(argv[2],argv[3]);
-    if(argc==3&&std::string(argv[1])=="card-write")return liveCardWrite(argv[2]);
+    if((argc==3||argc==4)&&std::string(argv[1])=="card-write") {
+        if(argc==4&&std::string(argv[3])!="--skip-verification") {
+            std::cerr<<"Unknown card-write option: "<<argv[3]<<'\n';return 1;
+        }
+        return liveCardWrite(argv[2],argc==3);
+    }
     if(argc==2&&std::string(argv[1])=="card-gc")return liveCardGarbageCollect();
     if(argc==2&&std::string(argv[1])=="card-compact")return liveCardCompact();
     if(argc==2&&std::string(argv[1])=="card-space")return liveCardSpace();

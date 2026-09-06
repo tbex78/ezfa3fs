@@ -1461,9 +1461,9 @@ bool CartridgeStorage::read(std::uint64_t offset,std::uint8_t* destination,
                             std::size_t size,std::string& error)
 { return impl_->read(offset,destination,size,error); }
 
-bool CartridgeProgrammer::programAndVerify(
-    const std::vector<std::uint8_t>& image,std::ostream& progress,
-    std::string& error)
+bool CartridgeProgrammer::program(
+    const std::vector<std::uint8_t>& image,const ProgramOptions& options,
+    std::ostream& progress,std::string& error)
 {
     live::NorFlash live_flash;live::Filesystem live_filesystem(live_flash);
     if(!live_flash.load(image,error)||
@@ -1492,6 +1492,11 @@ bool CartridgeProgrammer::programAndVerify(
         std::string ignored;storage_.close(ignored);return false;
     }
     if(!storage_.close(error)) return false;
+
+    if(!options.verify_after_write) {
+        progress << "Skipped cartridge read-back verification.\n";
+        return true;
+    }
 
     progress << "Reopening cartridge for byte-for-byte verification...\n";
     if(!storage_.open(error)) return false;
