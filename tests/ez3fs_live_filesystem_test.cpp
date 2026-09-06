@@ -93,7 +93,19 @@ void verifyFormatIdentityAndLegacyCompatibility() {
     std::vector<std::uint8_t> block(ez3fs::live::NorFlash::block_size);
     require(formatted.read(ez3fs::live::NorFlash::block_size,block.data(),block.size(),error));
     require(std::equal(current_magic.begin(),current_magic.end(),block.begin()));
-    require(block[8]==2&&block[9]==0&&block[10]==0&&block[11]==0);
+    require(block[8]==0&&block[9]==0&&block[10]==1&&block[11]==0);
+
+    // Images written with the former stable-looking 2.0 identifier remain
+    // readable and migrate to the experimental identifier on the next commit.
+    ez3fs::live::NorFlash former;
+    putLittle(block,8,2,2);putLittle(block,10,0,2);
+    require(former.program(0,block.data(),block.size(),error));
+    ez3fs::live::Filesystem former_filesystem(former);
+    require(ez3fs::live::Filesystem::open(former,former_filesystem,error));
+    require(former_filesystem.createDirectory("migrated-from-2.0",error));
+    require(former.read(ez3fs::live::NorFlash::block_size,block.data(),
+                        block.size(),error));
+    require(block[8]==0&&block[9]==0&&block[10]==1&&block[11]==0);
 
     ez3fs::live::NorFlash legacy;
     std::fill(block.begin(),block.end(),0xFF);
@@ -109,7 +121,7 @@ void verifyFormatIdentityAndLegacyCompatibility() {
     require(filesystem.createDirectory("migrated",error));
     require(legacy.read(ez3fs::live::NorFlash::block_size,block.data(),block.size(),error));
     require(std::equal(current_magic.begin(),current_magic.end(),block.begin()));
-    require(block[8]==2&&block[9]==0&&block[10]==0&&block[11]==0);
+    require(block[8]==0&&block[9]==0&&block[10]==1&&block[11]==0);
 }
 
 void verifyPhysicalEraseGeometry() {
@@ -140,6 +152,8 @@ void verifyDirectBootLayout() {
                        superblock.data(),superblock.size(),error));
     require(std::equal(ez3fs::live::direct_boot_format_magic.begin(),
                        ez3fs::live::direct_boot_format_magic.end(),superblock.begin()));
+    require(superblock[8]==0&&superblock[9]==0&&
+            superblock[10]==2&&superblock[11]==0);
     ez3fs::live::Filesystem filesystem(flash);
     require(ez3fs::live::Filesystem::open(flash,filesystem,error));
     require(filesystem.isDirectBoot()&&filesystem.entries().size()==1&&

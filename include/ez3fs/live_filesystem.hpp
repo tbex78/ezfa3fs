@@ -16,7 +16,8 @@
 
 namespace ez3fs::live {
 
-inline constexpr std::string_view format_version = "2.0.0";
+inline constexpr std::string_view format_version = "0.1.0";
+inline constexpr std::string_view direct_boot_format_version = "0.2.0";
 inline constexpr std::array<std::uint8_t,8> format_magic{
     {'E','Z','F','A','3','F','S',0}};
 inline constexpr std::array<std::uint8_t,8> legacy_format_magic{

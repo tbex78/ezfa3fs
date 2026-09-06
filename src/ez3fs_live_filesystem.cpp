@@ -12,10 +12,32 @@
 
 namespace ez3fs::live {
 namespace {
-constexpr std::uint16_t major=2, minor=0, direct_boot_minor=1;
+constexpr std::uint16_t major=0, minor=1, direct_boot_minor=2;
+constexpr std::uint16_t former_major=2, former_minor=0;
+constexpr std::uint16_t former_direct_boot_minor=1;
 constexpr std::uint16_t legacy_major=1, legacy_minor=0;
 constexpr std::uint32_t commit_marker=0xC0FF17EDu;
 constexpr std::size_t superblock_header=32;
+
+bool isStandardRevision(std::uint16_t candidate_major,
+                        std::uint16_t candidate_minor) noexcept {
+    return (candidate_major==major&&candidate_minor==minor)||
+           (candidate_major==former_major&&candidate_minor==former_minor);
+}
+
+enum class DirectBootRevision { invalid,unslotted,slotted };
+
+DirectBootRevision directBootRevision(std::uint16_t candidate_major,
+                                      std::uint16_t candidate_minor) noexcept {
+    if(candidate_major==major&&candidate_minor==direct_boot_minor)
+        return DirectBootRevision::slotted;
+    if(candidate_major==former_major&&
+       candidate_minor==former_direct_boot_minor)
+        return DirectBootRevision::slotted;
+    if(candidate_major==former_major&&candidate_minor==former_minor)
+        return DirectBootRevision::unslotted;
+    return DirectBootRevision::invalid;
+}
 
 template<typename T> void put(std::uint8_t* bytes,std::size_t offset,T value) {
     for(std::size_t i=0;i<sizeof(T);++i)bytes[offset+i]=static_cast<std::uint8_t>(value>>(i*8));
@@ -185,19 +207,22 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
     for(const auto& candidate:candidates) {const auto block=candidate.first;const auto layout=candidate.second;
         std::vector<std::uint8_t> bytes(NorFlash::block_size);
         if(!flash.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error))return false;
+        const auto candidate_major=get<std::uint16_t>(bytes.data(),8);
+        const auto candidate_minor=get<std::uint16_t>(bytes.data(),10);
         const bool current_format=std::equal(format_magic.begin(),format_magic.end(),bytes.begin())&&
-            get<std::uint16_t>(bytes.data(),8)==major&&get<std::uint16_t>(bytes.data(),10)==minor;
+            isStandardRevision(candidate_major,candidate_minor);
         const bool legacy_format=std::equal(legacy_format_magic.begin(),legacy_format_magic.end(),bytes.begin())&&
-            get<std::uint16_t>(bytes.data(),8)==legacy_major&&get<std::uint16_t>(bytes.data(),10)==legacy_minor;
-        const auto direct_minor=get<std::uint16_t>(bytes.data(),10);
+            candidate_major==legacy_major&&candidate_minor==legacy_minor;
+        const auto direct_revision=directBootRevision(candidate_major,candidate_minor);
         const bool direct_format=std::equal(direct_boot_format_magic.begin(),direct_boot_format_magic.end(),bytes.begin())&&
-            get<std::uint16_t>(bytes.data(),8)==major&&(direct_minor==minor||direct_minor==direct_boot_minor);
+            direct_revision!=DirectBootRevision::invalid;
         if((layout==Layout::transactional?(!current_format&&!legacy_format):!direct_format)||get<std::uint32_t>(bytes.data(),28)!=commit_marker)continue;
         const auto length=get<std::uint32_t>(bytes.data(),20);
         if(length>NorFlash::block_size-superblock_header||
            Crc32::calculate(bytes.data()+superblock_header,length)!=get<std::uint32_t>(bytes.data(),24))continue;
         std::vector<Entry> parsed;std::set<std::string> names;
-        const bool slotted_direct=layout==Layout::direct_boot&&direct_minor==direct_boot_minor;
+        const bool slotted_direct=layout==Layout::direct_boot&&
+            direct_revision==DirectBootRevision::slotted;
         const auto slot_blocks=slotted_direct?get<std::uint32_t>(bytes.data()+superblock_header,0):0;
         std::size_t direct_boot_blocks=slotted_direct?slot_blocks:0;
         const auto count=get<std::uint32_t>(bytes.data()+superblock_header,slotted_direct?4:0);std::size_t offset=slotted_direct?8:4;bool valid= !slotted_direct||(slot_blocks>0&&slot_blocks<=NorFlash::block_count-2);

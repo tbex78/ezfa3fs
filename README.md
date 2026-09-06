@@ -7,7 +7,7 @@ The project provides two programs:
 - `ez3fs` manages the current transactional **EZFA3FS** format.
 - `ezfs-legacy` preserves the earlier packed **EZ3FS** image and staging workflow.
 
-Application version: **0.45.27**. EZFA3FS is format **2.0.0** in its standard layout and **2.1.0** in its slotted direct-boot layout. Legacy EZ3FS remains format **1.2**.
+Application version: **0.46.0**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable. Legacy EZ3FS remains format **1.2**.
 
 The macOS/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 

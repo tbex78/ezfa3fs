@@ -1,6 +1,6 @@
 # EZFA3FS transactional format
 
-This document describes the 32 MiB EZFA3FS format implemented by application version **0.45.25**. The standard layout is format **2.0.0**; the slotted direct-boot layout is **2.1.0**.
+This document describes the 32 MiB EZFA3FS format implemented by application version **0.46.0**. The standard layout is experimental format **0.1.0**; the slotted direct-boot layout is experimental format **0.2.0**. The reader accepts the former 2.0.0 and 2.1.0 identifiers, and a subsequent metadata commit migrates them to the corresponding experimental identifier.
 
 EZFA3FS is an independent indexed filesystem for EZ-Flash Advance III NOR flash. It is not FAT, has no partition table, and does not use the original EZ3 menu or ROM patching. All multibyte integers are little-endian.
 
@@ -25,7 +25,7 @@ Standard layout:
 | 0 and 1 | Alternating metadata superblocks |
 | 2 through 511 | File data and erased free space |
 
-Its magic is `EZ3LIVE1`, major `2`, minor `0`.
+Its magic is `EZ3LIVE1`, major `0`, minor `1`.
 
 Direct-boot layout:
 
@@ -35,7 +35,7 @@ Direct-boot layout:
 | `boot_slot_blocks` through 509 | Other file data and free space |
 | 510 and 511 | Alternating metadata superblocks |
 
-Its magic is `EZFA3FS1`, major `2`, minor `1`. An empty direct-boot format initially reserves 256 blocks (16 MiB). A format supplied with a ROM reserves at least its required size. The slot can expand toward block 509 while the required blocks are available.
+Its magic is `EZFA3FS1`, major `0`, minor `2`. An empty direct-boot format initially reserves 256 blocks (16 MiB). A format supplied with a ROM reserves at least its required size. The slot can expand toward block 509 while the required blocks are available.
 
 ## Superblock
 

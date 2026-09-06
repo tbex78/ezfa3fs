@@ -354,7 +354,8 @@ bool loadLive(const fs::path& path,ez3fs::live::NorFlash& flash,ez3fs::live::Fil
 }
 int liveFormat(const fs::path& path) { ez3fs::live::NorFlash flash;std::string error;
     if(!ez3fs::live::Filesystem::format(flash,error)||!flash.save(path.string(),error)){std::cerr<<error<<'\n';return 1;}
-    std::cout<<"Formatted EZFA3FS 2.0.0 image "<<path<<".\n";return 0;
+    std::cout<<"Formatted EZFA3FS "<<ez3fs::live::format_version
+             <<" image "<<path<<".\n";return 0;
 }
 int liveFormatDirectBoot(const fs::path& path,const fs::path& rom_path) {
     if(!fs::is_regular_file(rom_path)){std::cerr<<"Input is not a regular file: "<<rom_path<<'\n';return 1;}
@@ -362,14 +363,18 @@ int liveFormatDirectBoot(const fs::path& path,const fs::path& rom_path) {
     ez3fs::live::NorFlash flash;std::string error;
     if(!ez3fs::live::Filesystem::formatDirectBoot(flash,rom_path.filename().string(),rom,fileModifiedTime(rom_path),error)||
        !flash.save(path.string(),error)){std::cerr<<error<<'\n';return 1;}
-    std::cout<<"Formatted direct-boot EZFA3FS image "<<path<<" with "<<rom_path.filename()<<" at cartridge offset 0.\n";return 0;
+    std::cout<<"Formatted direct-boot EZFA3FS "
+             <<ez3fs::live::direct_boot_format_version<<" image "<<path
+             <<" with "<<rom_path.filename()<<" at cartridge offset 0.\n";return 0;
 }
 int liveFormatDirectBootEmpty(const fs::path& path) {
     ez3fs::live::NorFlash flash;std::string error;
     if(!ez3fs::live::Filesystem::formatDirectBootEmpty(flash,error)||!flash.save(path.string(),error)){
         std::cerr<<error<<'\n';return 1;
     }
-    std::cout<<"Formatted empty direct-boot EZFA3FS image "<<path<<". Add exactly one root-level .gba ROM with put or a writable cartridge mount.\n";return 0;
+    std::cout<<"Formatted empty direct-boot EZFA3FS "
+             <<ez3fs::live::direct_boot_format_version<<" image "<<path
+             <<". Add exactly one root-level .gba ROM with put or a writable cartridge mount.\n";return 0;
 }
 void printLiveEntries(const ez3fs::live::Filesystem& filesystem) { std::cout<<"EZFA3FS generation "<<filesystem.generation()<<"\n";
     for(const auto& entry:filesystem.entries())std::cout<<(entry.directory?"directory ":"file      ")<<std::setw(10)<<entry.size<<"  "<<entry.name<<'\n';
