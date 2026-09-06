@@ -9,6 +9,11 @@
 
 namespace ezfa3fs {
 
+enum class CartridgeFormatLayout {
+    standard,
+    direct_boot
+};
+
 class CartridgeProgrammer final {
 public:
     struct ProgramOptions final {
@@ -18,6 +23,8 @@ public:
     bool program(const std::vector<std::uint8_t>& image,
                  const ProgramOptions& options,
                  std::ostream& progress, std::string& error);
+    bool format(CartridgeFormatLayout layout,
+                std::ostream& progress, std::string& error);
     bool eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error);
     bool programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,
                           std::ostream& progress,std::string& error);

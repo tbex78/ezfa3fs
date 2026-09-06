@@ -53,6 +53,7 @@ void usage() {
   ezfa3fs card-mount MOUNTPOINT [--foreground]
   ezfa3fs card-mount MOUNTPOINT --writable --foreground [--verify]
   ezfa3fs card-pull IMAGE.ezfa3fs
+  ezfa3fs card-format [--direct-boot]
   ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
   ezfa3fs card-gc
   ezfa3fs card-compact
@@ -321,6 +322,20 @@ int liveCardWrite(const fs::path& image,bool verify_after_write) {
         "Programmed the EZFA3FS image without read-back verification.\n");
     return 0;
 }
+int liveCardFormat(bool direct_boot) {
+    std::cout<<"WARNING: this will erase the complete 32-MiB cartridge and create an empty "
+             <<(direct_boot?"direct-boot ":"")<<"EZFA3FS filesystem.\n"
+             <<"Confirm cartridge format\n";
+    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    ezfa3fs::CartridgeProgrammer programmer;std::string error;
+    const auto layout=direct_boot?ezfa3fs::CartridgeFormatLayout::direct_boot:
+                                  ezfa3fs::CartridgeFormatLayout::standard;
+    if(!programmer.format(layout,std::cout,error)) {
+        std::cerr<<"Cartridge formatting failed: "<<error<<'\n';return 1;
+    }
+    std::cout<<"Formatted and verified the "<<(direct_boot?"direct-boot ":"")
+             <<"EZFA3FS cartridge.\n";return 0;
+}
 
 }
 int main(int argc,char** argv) {
@@ -356,6 +371,8 @@ int main(int argc,char** argv) {
     if(argc==3&&std::string(argv[1])=="card-erase-plan")return liveCardErasePlan(argv[2]);
     if(argc==3&&std::string(argv[1])=="card-erase-block")return liveCardEraseBlock(argv[2]);
     if(argc==4&&std::string(argv[1])=="card-program-block")return liveCardProgramBlock(argv[2],argv[3]);
+    if(argc==2&&std::string(argv[1])=="card-format")return liveCardFormat(false);
+    if(argc==3&&std::string(argv[1])=="card-format"&&std::string(argv[2])=="--direct-boot")return liveCardFormat(true);
     if((argc==3||argc==4)&&std::string(argv[1])=="card-write") {
         if(argc==4&&std::string(argv[3])!="--skip-verification") {
             std::cerr<<"Unknown card-write option: "<<argv[3]<<'\n';return 1;

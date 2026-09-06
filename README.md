@@ -5,7 +5,7 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.49.0**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable. Legacy EZFA3FS remains format **1.2**.
+Application version: **0.50.0**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable. Legacy EZFA3FS remains format **1.2**.
 
 The macOS/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
@@ -38,6 +38,13 @@ The binary is `build/cmake/ezfa3fs`.
 
 ```sh
 ./build/cmake/ezfa3fs card-write cartridge.ezfa3fs --skip-verification
+```
+
+Format the cartridge directly without first creating and writing a complete image. The command erases the cartridge, writes only the required filesystem metadata, and verifies that metadata:
+
+```sh
+./build/cmake/ezfa3fs card-format
+./build/cmake/ezfa3fs card-format --direct-boot
 ```
 
 Mount the cartridge read-only:
@@ -103,6 +110,7 @@ Cartridge commands:
 ezfa3fs card-mount MOUNTPOINT [--foreground]
 ezfa3fs card-mount MOUNTPOINT --writable --foreground [--verify]
 ezfa3fs card-pull IMAGE.ezfa3fs
+ezfa3fs card-format [--direct-boot]
 ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
 ezfa3fs card-gc
 ezfa3fs card-compact

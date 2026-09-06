@@ -123,6 +123,9 @@ private:
     bool eraseAll(std::ostream& progress, std::string& error);
     bool programImage(const std::vector<std::uint8_t>& image,
                       std::ostream& progress, std::string& error);
+    bool programImageRange(std::size_t offset,
+                           const std::vector<std::uint8_t>& bytes,
+                           std::ostream& progress,std::string& error);
 };
 
 namespace {
@@ -741,6 +744,25 @@ bool CartridgeStorage::Impl::programImage(
         progress << "\rProgramming " << offset+size << '/' << image.size() << std::flush;
     }
     progress << '\n';
+    return finishWriteOperation(error);
+}
+
+bool CartridgeStorage::Impl::programImageRange(
+    std::size_t offset,const std::vector<std::uint8_t>& bytes,
+    std::ostream& progress,std::string& error)
+{
+    constexpr std::size_t window_size=0x800000;
+    if(bytes.empty()||offset>live::NorFlash::capacity||
+       bytes.size()>live::NorFlash::capacity-offset||
+       offset/window_size!=(offset+bytes.size()-1)/window_size) {
+        error="invalid cartridge image programming range";return false;
+    }
+    const auto window=static_cast<unsigned>(offset/window_size);
+    if(!selectWriteWindow(window,error))return false;
+    const auto local=static_cast<std::uint32_t>(offset%window_size);
+    if(!programTransaction(local/2,bytes,"cartridge format metadata",error))
+        return false;
+    progress<<"Programmed EZFA3FS metadata ("<<bytes.size()/1024<<" KiB).\n";
     return finishWriteOperation(error);
 }
 bool CartridgeStorage::Impl::eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error,bool allow_metadata)
@@ -1516,6 +1538,48 @@ bool CartridgeProgrammer::program(
     }
     progress << '\n';
     return storage_.close(error);
+}
+
+bool CartridgeProgrammer::format(
+    CartridgeFormatLayout layout,std::ostream& progress,std::string& error)
+{
+    live::NorFlash image;
+    const bool direct_boot=layout==CartridgeFormatLayout::direct_boot;
+    if(!(direct_boot?live::Filesystem::formatDirectBootEmpty(image,error):
+                     live::Filesystem::format(image,error)))return false;
+
+    live::Filesystem filesystem(image);
+    if(!live::Filesystem::open(image,filesystem,error))return false;
+    const auto metadata_block=direct_boot?live::NorFlash::block_count-1:
+                                          std::size_t{1};
+    const auto metadata_offset=metadata_block*live::NorFlash::block_size;
+    std::vector<std::uint8_t> metadata(live::NorFlash::block_size);
+    if(!image.read(metadata_offset,metadata.data(),metadata.size(),error))return false;
+    if(!direct_boot)metadata.resize(metadataTransferSize(metadata));
+
+    if(!storage_.impl_->openForProgramming(error))return false;
+    progress<<"Erasing the complete 32-MiB cartridge...\n";
+    if(!storage_.impl_->eraseAll(progress,error)||
+       !storage_.impl_->programImageRange(metadata_offset,metadata,
+                                          progress,error)) {
+        std::string ignored;storage_.close(ignored);return false;
+    }
+    if(!storage_.close(error))return false;
+
+    progress<<"Verifying EZFA3FS metadata...\n";
+    if(!storage_.open(error))return false;
+    std::vector<std::uint8_t> readback(metadata.size());
+    const bool read=storage_.read(metadata_offset,readback.data(),readback.size(),error);
+    std::string close_error;const bool closed=storage_.close(close_error);
+    if(!read||!closed){if(error.empty())error=close_error;return false;}
+    const auto mismatch=std::mismatch(readback.begin(),readback.end(),metadata.begin());
+    if(mismatch.first!=readback.end()) {
+        error="format metadata read-back mismatch at cartridge byte "+
+              std::to_string(metadata_offset+
+                  static_cast<std::size_t>(mismatch.first-readback.begin()));
+        return false;
+    }
+    error.clear();return true;
 }
 
 bool CartridgeProgrammer::eraseLiveBlock(std::size_t block,std::ostream& progress,std::string& error)
