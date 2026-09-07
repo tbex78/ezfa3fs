@@ -30,10 +30,7 @@ public:
     ~Impl() {
 #if defined(EZFA3FS_HAS_LIBUSB)
         std::string ignored;
-        if(handle) {
-            restoreSaveBanks(ignored);
-            restoreNormalCartridgeAccess(ignored);
-        }
+        if(handle)finalizeSavePreservation(ignored);
 #endif
         shutdown();
     }
@@ -95,9 +92,10 @@ private:
                        const std::vector<std::uint8_t>& bytes,
                        std::string& error);
     bool readSaveBanks(std::vector<std::uint8_t>& bytes,std::string& error);
+    bool startupBridge(std::string& error);
     bool captureSaveBanks(std::string& error);
     bool restoreSaveBanks(std::string& error);
-    bool restoreNormalCartridgeAccess(std::string& error);
+    bool finalizeSavePreservation(std::string& error);
     bool waitReady(unsigned attempts, std::string& error);
     bool activateWriter(std::string& error);
     bool initialize(std::string& error,bool allow_erased,
@@ -318,74 +316,153 @@ bool CartridgeStorage::Impl::readSaveBanks(std::vector<std::uint8_t>& bytes,
     return true;
 }
 
+bool CartridgeStorage::Impl::startupBridge(std::string& error)
+{
+    // This is only the capture-derived bridge startup prefix.  In particular,
+    // it contains no 0x92 transfer, no flash probe, no 0x95 read prime, and no
+    // one-byte writer control that can touch save memory.
+    const std::vector<std::uint8_t> c97=
+        {0x5A,0xA5,0x97,0,0,0,0,0,0,0,0,0,0};
+    const std::vector<std::uint8_t> c99=
+        {0x5A,0xA5,0x99,0,1,0,0,0,0,0,0,0,0};
+    std::vector<std::uint8_t> response;
+    if(!out(c97,error)||!in(response,1,error)||response[0]!=0) {
+        if(error.empty())error="unexpected cartridge startup response";
+        return false;
+    }
+    if(!waitReady(5,error)||!out(c99,error)||
+       !in(response,c99.size(),error)||response!=c99) {
+        if(error.empty())error="cartridge startup echo mismatch";
+        return false;
+    }
+    error.clear();return true;
+}
+
 bool CartridgeStorage::Impl::captureSaveBanks(std::string& error)
 {
     if(!save_backup.empty())return true;
-    if(!readSaveBanks(save_backup,error)) {
+
+    // A single capture can be a coherent but wrong view if the previous
+    // process left the bridge mapped elsewhere.  Re-enter startup-only state
+    // before each complete capture and trust the snapshot only if both reads
+    // match byte-for-byte.
+    std::vector<std::uint8_t> first,second;
+    if(!startupBridge(error)||!readSaveBanks(first,error)||
+       !startupBridge(error)||!readSaveBanks(second,error)) {
         save_backup.clear();
         if(error.empty())error="could not preserve cartridge save banks";
         return false;
     }
-    return true;
+    if(first!=second) {
+        save_backup.clear();
+        error="save-bank snapshot was not stable across startup-only recapture";
+        return false;
+    }
+    save_backup=first;
+    error.clear();return true;
 }
 
 bool CartridgeStorage::Impl::restoreSaveBanks(std::string& error)
 {
-    if(!save_dirty)return true;
+    if(!save_dirty) {
+        save_backup.clear();
+        error.clear();return true;
+    }
     if(save_backup.size()!=save_bank_count*save_bank_size) {
-        error="cartridge save banks were modified without a valid backup";
+        error="cartridge save banks were modified without a trusted backup";
         return false;
     }
+
     std::vector<std::uint8_t> current_banks;
     if(!readSaveBanks(current_banks,error))return false;
-    const auto decision=SaveBankRestorePolicy::evaluate(save_backup,current_banks);
-    if(decision==SaveBankRestorePolicy::Decision::skip) {
-        std::cerr<<"Skipping save-bank restoration because no recovery condition matched.\n";
+    if(SaveBankRestorePolicy::evaluate(save_backup,current_banks)==
+       SaveBankRestorePolicy::Decision::skip) {
         save_dirty=false;
         save_backup.clear();
         error.clear();return true;
     }
+
+    // Repair only banks that actually differ.  After every individual write,
+    // reread all four banks and require the complete 128-KiB image to equal
+    // the previous image with exactly that one bank replaced.  This detects
+    // symmetric selector aliasing instead of falsely verifying it by reading
+    // back only the bank that was just written.
     for(std::size_t bank=0;bank<save_bank_count;++bank) {
+        const auto offset=bank*save_bank_size;
+        const auto snapshot_first=save_backup.begin()+
+            static_cast<std::ptrdiff_t>(offset);
+        const auto current_first=current_banks.begin()+
+            static_cast<std::ptrdiff_t>(offset);
+        if(std::equal(snapshot_first,snapshot_first+save_bank_size,
+                      current_first))continue;
+
         const auto selector=static_cast<std::uint16_t>(0x0900u+bank*0x10u);
-        const auto first=save_backup.begin()+
-            static_cast<std::ptrdiff_t>(bank*save_bank_size);
-        const std::vector<std::uint8_t> contents(first,first+save_bank_size);
-        bool restored=false;
-        std::string last_error;
-        for(unsigned attempt=1;attempt<=3&&!restored;++attempt) {
-            std::vector<std::uint8_t> readback;
-            restored=writeSaveBank(selector,contents,last_error)&&
-                     readSaveBank(selector,readback,last_error)&&
-                     readback==contents;
-            if(!restored&&readback.size()==contents.size()) {
-                const auto mismatch=std::mismatch(readback.begin(),
-                                                  readback.end(),
-                                                  contents.begin());
-                if(mismatch.first!=readback.end()) {
-                    std::ostringstream detail;
-                    detail<<"save-bank readback differs at byte 0x"<<std::hex
-                          <<static_cast<std::size_t>(mismatch.first-
-                                                    readback.begin())
-                          <<" (read 0x"<<static_cast<unsigned>(*mismatch.first)
-                          <<", expected 0x"
-                          <<static_cast<unsigned>(*mismatch.second)<<')';
-                    last_error=detail.str();
-                }
-            }
-            if(!restored&&attempt<3)
-                std::cerr<<"Retrying save-bank restore for bank "<<(bank+1)
-                         <<" (attempt "<<(attempt+1)<<"/3): "
-                         <<last_error<<'\n';
-        }
-        if(!restored) {
-            error="could not restore save bank "+std::to_string(bank+1)+
-                  ": "+last_error;
+        const std::vector<std::uint8_t> contents(
+            snapshot_first,snapshot_first+save_bank_size);
+        std::vector<std::uint8_t> expected=current_banks;
+        std::copy(contents.begin(),contents.end(),
+                  expected.begin()+static_cast<std::ptrdiff_t>(offset));
+
+        if(!writeSaveBank(selector,contents,error)) {
+            if(error.empty())error="could not restore save bank "+
+                                   std::to_string(bank+1);
             return false;
         }
+
+        std::vector<std::uint8_t> observed;
+        if(!readSaveBanks(observed,error))return false;
+        if(observed!=expected) {
+            const auto mismatch=std::mismatch(observed.begin(),observed.end(),
+                                              expected.begin());
+            std::ostringstream detail;
+            detail<<"save-bank restore changed an unexpected byte at 0x"
+                  <<std::hex
+                  <<static_cast<std::size_t>(mismatch.first-observed.begin())
+                  <<" (read 0x"<<static_cast<unsigned>(*mismatch.first)
+                  <<", expected 0x"
+                  <<static_cast<unsigned>(*mismatch.second)<<')'<<std::dec;
+            error=detail.str();
+            return false;
+        }
+        current_banks.swap(observed);
+    }
+
+    if(current_banks!=save_backup) {
+        error="save-bank restoration did not reproduce the trusted snapshot";
+        return false;
     }
     save_dirty=false;
     save_backup.clear();
-    return true;
+    error.clear();return true;
+}
+
+bool CartridgeStorage::Impl::finalizeSavePreservation(std::string& error)
+{
+    // Never write a backup until the bridge has first left writer/read-mapped
+    // state using the startup-only transition.  If that transition fails,
+    // fail closed: do not attempt any save-bank repair.
+    if(!startupBridge(error)) {
+        if(error.empty())error="could not establish save-safe startup state";
+        return false;
+    }
+
+    std::string restore_error;
+    if(!restoreSaveBanks(restore_error)) {
+        std::string reset_error;
+        startupBridge(reset_error); // best-effort neutralization, no save write
+        error=restore_error;
+        if(!reset_error.empty())error+="; final startup also failed: "+reset_error;
+        return false;
+    }
+
+    // Raw save access leaves a bank selected.  End in startup-only state, not
+    // the 0x95-primed ROM-read mapping that caused the next raw save command
+    // to inherit incompatible state.
+    if(!startupBridge(error)) {
+        if(error.empty())error="could not leave cartridge in startup-only state";
+        return false;
+    }
+    error.clear();return true;
 }
 
 bool CartridgeStorage::Impl::clearSaveBanks(std::string& error)
@@ -403,27 +480,6 @@ bool CartridgeStorage::Impl::clearSaveBanks(std::string& error)
     }
     save_dirty=false;
     save_backup.clear();
-    error.clear();return true;
-}
-
-bool CartridgeStorage::Impl::restoreNormalCartridgeAccess(std::string& error)
-{
-    // Save reads and writes leave the bridge mapped to the selected 32-KiB
-    // bank. Re-enter the capture-proven, save-safe cartridge read mapping
-    // before releasing USB so the next program does not inherit raw SRAM
-    // access. This sequence deliberately uses only two-byte 0x92 transfers.
-    if(!probePrefix(0,0,0,0,0,0,true,error,false))return false;
-    const std::vector<std::uint8_t> read_prime=
-        {0x5A,0xA5,0x95,0,0x80,0,0,0,0,0,0,0,0};
-    std::vector<std::uint8_t> response;
-    if(!out(read_prime,error)||!in(response,read_prime.size(),error)||
-       response!=read_prime) {
-        if(error.empty())error="cartridge read-mode restore echo mismatch";
-        return false;
-    }
-    std::array<std::uint8_t,0xAC> prime{};
-    if(!rawRead(0,prime.data(),prime.size(),error))return false;
-    mapped_limit=0x00800000u;
     error.clear();return true;
 }
 
@@ -1064,25 +1120,21 @@ bool CartridgeStorage::Impl::openForProgramming(std::string& error,
     save_preservation_enabled=preserve_save_banks;
     if(preserve_save_banks&&!captureSaveBanks(error)) {
         const auto capture_error=error;
-        std::string mapping_error;
-        if(!restoreNormalCartridgeAccess(mapping_error))
-            error=capture_error+"; could not restore normal cartridge access: "+
-                  mapping_error;
-        else
-            error=capture_error;
+        std::string cleanup_error;
+        startupBridge(cleanup_error);
+        error=capture_error;
+        if(!cleanup_error.empty())
+            error+="; startup-only cleanup also failed: "+cleanup_error;
         shutdown();return false;
     }
     if(!initialize(error,true,trust_validated_format)||!activateWriter(error)) {
         const auto writer_error=error;
-        std::string restore_error;
-        if(preserve_save_banks&&!restoreSaveBanks(restore_error))
-            error=writer_error+"; could not restore cartridge save banks: "+
-                  restore_error;
-        else
-            error=writer_error;
-        std::string mapping_error;
-        if(!restoreNormalCartridgeAccess(mapping_error))
-            error+="; could not restore normal cartridge access: "+mapping_error;
+        std::string finalization_error;
+        const bool finalized=!preserve_save_banks||
+                             finalizeSavePreservation(finalization_error);
+        error=writer_error;
+        if(!finalized)error+="; could not finalize save preservation: "+
+                            finalization_error;
         shutdown();return false;
     }
     is_open=true;return true;
@@ -1096,29 +1148,15 @@ bool CartridgeStorage::Impl::close(std::string& error,bool settle_before_release
     if (is_open) {
         for (unsigned i=0; i<3 && finished; ++i) finished = waitReady(1,error);
     }
-    std::string restore_error;
-    const bool restored=!settle_before_release||!handle||
-                        restoreSaveBanks(restore_error);
-    std::string mapping_error;
-    const bool mapping_restored=!settle_before_release||!handle||
-                                restoreNormalCartridgeAccess(mapping_error);
-    bool final_transition=true;
-    if(settle_before_release&&handle&&mapping_restored) {
-        for(unsigned i=0;i<3&&final_transition;++i)
-            final_transition=waitReady(1,mapping_error);
-        if(final_transition)
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    }
+    std::string finalization_error;
+    const bool finalized=!settle_before_release||!handle||
+                         finalizeSavePreservation(finalization_error);
     shutdown();
-    if(!restored) {
+    if(!finalized) {
         if(!error.empty())error+="; ";
-        error+="could not restore cartridge save banks: "+restore_error;
+        error+="could not finalize save preservation: "+finalization_error;
     }
-    if(!mapping_restored||!final_transition) {
-        if(!error.empty())error+="; ";
-        error+="could not restore normal cartridge access: "+mapping_error;
-    }
-    return finished&&restored&&mapping_restored&&final_transition;
+    return finished&&finalized;
 #else
     (void)settle_before_release;
     error.clear(); return true;

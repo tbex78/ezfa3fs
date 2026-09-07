@@ -14,13 +14,13 @@ int main()
 
     const std::vector<std::uint8_t> snapshot{0x12,0x34,0x56,0x78};
     require(Policy::evaluate(snapshot,{0x00,0x04,0x56,0x78})==
-            Decision::restore_writer_marker);
+            Decision::restore);
     require(Policy::evaluate({0x00,0x00,0x00,0x00},{0x00,0x04,0x00,0x00})==
-            Decision::restore_writer_marker);
+            Decision::restore);
     require(Policy::evaluate(snapshot,{0x00,0x00,0x00,0x00})==
-            Decision::restore_zeroed_cartridge);
+            Decision::restore);
     require(Policy::evaluate(snapshot,snapshot)==Decision::skip);
-    require(Policy::evaluate(snapshot,{0x01,0x00,0x00,0x00})==Decision::skip);
+    require(Policy::evaluate(snapshot,{0x01,0x00,0x00,0x00})==Decision::restore);
     require(Policy::evaluate({0x00,0x00,0x00,0x00},
                              {0x00,0x00,0x00,0x00})==Decision::skip);
 }

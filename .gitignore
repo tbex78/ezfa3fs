@@ -20,3 +20,4 @@ pcap/
 *.sav
 .DS_Store
 *.sav
+*.patch
