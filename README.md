@@ -9,7 +9,7 @@ Application version: **0.50.5**. EZFA3FS is experimental format **0.1.0** in its
 
 The macOS/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
-Cartridge reads use save-safe two-byte control transfers. Before a writable cartridge session initializes the flash writer, EZFA3FS snapshots all four 32-KiB save banks. A clean unmount restores and verifies that snapshot, including after a filesystem mutation error. An entirely zero-filled snapshot is treated as an invalid transient read and is never written back to the save banks. Always unmount before disconnecting the linker so restoration can finish.
+Cartridge reads use save-safe two-byte control transfers. Before a writable cartridge session initializes the flash writer, EZFA3FS snapshots all four 32-KiB save banks. A clean unmount restores and verifies that snapshot, then explicitly returns the bridge from raw save-bank access to the normal cartridge read view. Always unmount before disconnecting the linker so this finalization can finish.
 
 ## Build
 
