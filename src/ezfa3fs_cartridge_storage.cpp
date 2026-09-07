@@ -506,10 +506,13 @@ bool CartridgeStorage::Impl::finalizeSavePreservation(std::string& error)
         automatic_save_recovery=false;
         error.clear();return true;
     }
+
     if(!automatic_save_recovery) {
-        error="save-preserving writer is not wired to the automatic physical-reconnect recovery path";
-        return false;
+        const bool restored=restoreSaveBanks(error);
+        automatic_save_recovery=false;
+        return restored;
     }
+
     if(save_backup.size()!=save_bank_count*save_bank_size) {
         error="writer touched save memory without a complete in-memory save snapshot";
         return false;
@@ -517,9 +520,6 @@ bool CartridgeStorage::Impl::finalizeSavePreservation(std::string& error)
 
     const auto snapshot=save_backup;
 
-    // No cartridge command is allowed after final writer state. Release the
-    // handle first, then wait until a real USB disappearance/re-enumeration has
-    // been observed.
     shutdown();
     if(!waitForPhysicalReconnect("before automatic save restoration",error))
         return false;
@@ -1185,11 +1185,8 @@ bool CartridgeStorage::Impl::openForProgramming(
 
     const bool first_preserved_open=
         preserve_save_banks&&save_backup.empty();
-    if(first_preserved_open) {
-        if(!automatic_recovery) {
-            error="save-preserving writer is disabled until it is wired to the automatic physical-reconnect recovery path";
-            return false;
-        }
+
+    if(first_preserved_open&&automatic_recovery) {
         if(!waitForPhysicalReconnect("before the pre-writer save snapshot",
                                      error))
             return false;
@@ -1219,21 +1216,31 @@ bool CartridgeStorage::Impl::openForProgramming(
         if(!captureSaveBanks(error)) {
             shutdown();return false;
         }
-        std::cerr<<"Captured stable pre-writer 128-KiB save snapshot in memory.\n";
+        if(automatic_recovery)
+            std::cerr<<"Captured stable pre-writer 128-KiB save snapshot in memory.\n";
     }
 
     if(!initialize(error,true,trust_validated_format)||!activateWriter(error)) {
         const auto writer_error=error;
-        std::string finalization_error;
-        const bool finalized=!preserve_save_banks||
-                             finalizeSavePreservation(finalization_error);
+        std::string restore_error;
+        bool restored=true;
+
+        if(preserve_save_banks) {
+            if(automatic_recovery)
+                restored=finalizeSavePreservation(restore_error);
+            else
+                restored=restoreSaveBanks(restore_error);
+        }
+
         error=writer_error;
-        if(!finalized)
-            error+="; could not finalize save preservation: "+
-                   finalization_error;
+        if(!restored&&!restore_error.empty())
+            error+="; could not restore cartridge save banks: "+restore_error;
+
         shutdown();return false;
     }
-    is_open=true;return true;
+
+    is_open=true;
+    error.clear();return true;
 #endif
 }
 
