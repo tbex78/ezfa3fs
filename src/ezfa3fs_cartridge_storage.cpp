@@ -29,7 +29,10 @@ public:
     ~Impl() {
 #if defined(EZFA3FS_HAS_LIBUSB)
         std::string ignored;
-        if(handle)restoreSaveBanks(ignored);
+        if(handle) {
+            restoreSaveBanks(ignored);
+            restoreNormalCartridgeAccess(ignored);
+        }
 #endif
         shutdown();
     }
@@ -93,6 +96,7 @@ private:
     bool readSaveBanks(std::vector<std::uint8_t>& bytes,std::string& error);
     bool captureSaveBanks(std::string& error);
     bool restoreSaveBanks(std::string& error);
+    bool restoreNormalCartridgeAccess(std::string& error);
     bool waitReady(unsigned attempts, std::string& error);
     bool activateWriter(std::string& error);
     bool initialize(std::string& error,bool allow_erased,
@@ -389,6 +393,27 @@ bool CartridgeStorage::Impl::clearSaveBanks(std::string& error)
     }
     save_dirty=false;
     save_backup.clear();
+    error.clear();return true;
+}
+
+bool CartridgeStorage::Impl::restoreNormalCartridgeAccess(std::string& error)
+{
+    // Save reads and writes leave the bridge mapped to the selected 32-KiB
+    // bank. Re-enter the capture-proven, save-safe cartridge read mapping
+    // before releasing USB so the next program does not inherit raw SRAM
+    // access. This sequence deliberately uses only two-byte 0x92 transfers.
+    if(!probePrefix(0,0,0,0,0,0,true,error,false))return false;
+    const std::vector<std::uint8_t> read_prime=
+        {0x5A,0xA5,0x95,0,0x80,0,0,0,0,0,0,0,0};
+    std::vector<std::uint8_t> response;
+    if(!out(read_prime,error)||!in(response,read_prime.size(),error)||
+       response!=read_prime) {
+        if(error.empty())error="cartridge read-mode restore echo mismatch";
+        return false;
+    }
+    std::array<std::uint8_t,0xAC> prime{};
+    if(!rawRead(0,prime.data(),prime.size(),error))return false;
+    mapped_limit=0x00800000u;
     error.clear();return true;
 }
 
@@ -1027,7 +1052,16 @@ bool CartridgeStorage::Impl::openForProgramming(std::string& error,
     if(result!=0){error=usbError("could not claim USB interface 0",result);shutdown();return false;}
     claimed=true;
     save_preservation_enabled=preserve_save_banks;
-    if(preserve_save_banks&&!captureSaveBanks(error)){shutdown();return false;}
+    if(preserve_save_banks&&!captureSaveBanks(error)) {
+        const auto capture_error=error;
+        std::string mapping_error;
+        if(!restoreNormalCartridgeAccess(mapping_error))
+            error=capture_error+"; could not restore normal cartridge access: "+
+                  mapping_error;
+        else
+            error=capture_error;
+        shutdown();return false;
+    }
     if(!initialize(error,true,trust_validated_format)||!activateWriter(error)) {
         const auto writer_error=error;
         std::string restore_error;
@@ -1036,6 +1070,9 @@ bool CartridgeStorage::Impl::openForProgramming(std::string& error,
                   restore_error;
         else
             error=writer_error;
+        std::string mapping_error;
+        if(!restoreNormalCartridgeAccess(mapping_error))
+            error+="; could not restore normal cartridge access: "+mapping_error;
         shutdown();return false;
     }
     is_open=true;return true;
@@ -1048,18 +1085,30 @@ bool CartridgeStorage::Impl::close(std::string& error,bool settle_before_release
     bool finished = true;
     if (is_open) {
         for (unsigned i=0; i<3 && finished; ++i) finished = waitReady(1,error);
-        if (finished&&settle_before_release)
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     }
     std::string restore_error;
     const bool restored=!settle_before_release||!handle||
                         restoreSaveBanks(restore_error);
+    std::string mapping_error;
+    const bool mapping_restored=!settle_before_release||!handle||
+                                restoreNormalCartridgeAccess(mapping_error);
+    bool final_transition=true;
+    if(settle_before_release&&handle&&mapping_restored) {
+        for(unsigned i=0;i<3&&final_transition;++i)
+            final_transition=waitReady(1,mapping_error);
+        if(final_transition)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    }
     shutdown();
     if(!restored) {
         if(!error.empty())error+="; ";
         error+="could not restore cartridge save banks: "+restore_error;
     }
-    return finished&&restored;
+    if(!mapping_restored||!final_transition) {
+        if(!error.empty())error+="; ";
+        error+="could not restore normal cartridge access: "+mapping_error;
+    }
+    return finished&&restored&&mapping_restored&&final_transition;
 #else
     (void)settle_before_release;
     error.clear(); return true;
