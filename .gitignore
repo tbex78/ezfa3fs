@@ -18,3 +18,4 @@ pcap/
 *.ez3live*
 *.ezfa3fs
 .DS_Store
+*.sav
