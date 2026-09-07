@@ -2,6 +2,7 @@
 
 #include "ezfa3fs/cached_block_device.hpp"
 #include "ezfa3fs/cartridge_live_device.hpp"
+#include <string>
 
 namespace ezfa3fs {
 

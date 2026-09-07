@@ -136,22 +136,46 @@ int liveMount(const fs::path& image,const fs::path& mountpoint,bool writable,
 int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
                   bool verify_referenced_data) {
     if(writable){
-        if(!foreground){std::cerr<<"Writable cartridge mounting requires --foreground.\n";return 1;}
-        std::cout<<"WARNING: changes made through this mount are written directly to the EZFA3FS cartridge.\n";
-        if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
-        return ezfa3fs::mountLiveCartridge(mountpoint.string(),foreground,
-                                         verify_referenced_data);
+        if(!foreground){
+            std::cerr<<"Writable cartridge mounting requires --foreground.\n";
+            return 1;
+        }
+        std::cout
+            <<"WARNING: changes made through this mount are written directly "
+              "to the EZFA3FS cartridge.\n"
+            <<"EZFA3FS will wait for and detect the required physical USB "
+              "reconnect before the writer starts and again after unmount "
+              "before restoring save memory.\n";
+        if(!confirm("Proceed")){
+            std::cerr<<"Cancelled; cartridge was not modified.\n";
+            return 1;
+        }
+        return ezfa3fs::mountLiveCartridge(
+            mountpoint.string(),foreground,verify_referenced_data);
     }
-    if(verify_referenced_data){std::cerr<<"--verify is only available for writable live cartridge mounts.\n";return 1;}
-    ezfa3fs::CartridgeStorage storage;std::string error;if(!storage.open(error)){std::cerr<<error<<'\n';return 1;}
-    ezfa3fs::live::NorFlash flash;const bool loaded=flash.load(storage,error);std::string close_error;const bool closed=storage.close(close_error);
-    if(!loaded||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;}ezfa3fs::live::Filesystem filesystem(flash);
-    if(!ezfa3fs::live::Filesystem::open(flash,filesystem,error)||!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}
+    if(verify_referenced_data){
+        std::cerr<<"--verify is only available for writable live cartridge mounts.\n";
+        return 1;
+    }
+    ezfa3fs::CartridgeStorage storage;std::string error;
+    if(!storage.open(error)){std::cerr<<error<<'\n';return 1;}
+    ezfa3fs::live::NorFlash flash;
+    const bool loaded=flash.load(storage,error);
+    std::string close_error;const bool closed=storage.close(close_error);
+    if(!loaded||!closed){
+        if(error.empty())error=close_error;
+        std::cerr<<error<<'\n';return 1;
+    }
+    ezfa3fs::live::Filesystem filesystem(flash);
+    if(!ezfa3fs::live::Filesystem::open(flash,filesystem,error)||
+       !filesystem.verify(error)){
+        std::cerr<<error<<'\n';return 1;
+    }
     auto backend=std::make_unique<ezfa3fs::LiveMountBackend>(
         filesystem,ezfa3fs::live::Filesystem::MaintenanceObserver{},
         ezfa3fs::LiveMountBackend::PersistenceObserver{},false);
-    return ezfa3fs::mountBackend(std::move(backend),mountpoint.string(),foreground,
-                               "ezfa3fs-card");
+    return ezfa3fs::mountBackend(std::move(backend),mountpoint.string(),
+                                 foreground,"ezfa3fs-card");
 }
 int liveMkdir(const fs::path& image,const std::string& path) { ezfa3fs::live::NorFlash flash;ezfa3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;
     if(!filesystem.createDirectory(path,error)||!flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}return 0; }
@@ -258,6 +282,7 @@ int liveCardPull(const fs::path& image) { ezfa3fs::CartridgeStorage storage;std:
     if(!loaded||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;} ezfa3fs::live::Filesystem filesystem(flash);
     if(!ezfa3fs::live::Filesystem::open(flash,filesystem,error)||!filesystem.verify(error)||!flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}
     std::cout<<"Pulled and verified EZFA3FS generation "<<filesystem.generation()<<" to "<<image<<".\n";return 0; }
+
 int liveCardReadBlock(const std::string& block_text,const fs::path& output) {
     std::size_t block=0;try { std::size_t parsed=0;block=std::stoull(block_text,&parsed,0);if(parsed!=block_text.size())throw std::invalid_argument("block"); }
     catch(const std::exception&) { std::cerr<<"Invalid cartridge block: "<<block_text<<'\n';return 1; }

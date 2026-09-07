@@ -311,9 +311,13 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
 #endif
     MountSession mounted(std::move(backend));
     const int result=runMount(mounted,mountpoint,foreground,"ezfa3fs-card");
-    if(!cartridge.close(error)){std::cerr<<"Could not close live cartridge session: "<<error<<'\n';return 1;}
+    if(!cartridge.close(error)){
+        std::cerr<<"Could not close live cartridge session: "<<error<<'\n';
+        return 1;
+    }
     return result;
 }
+
 int mountBackend(std::unique_ptr<MountBackend> backend,
                  const std::string& mountpoint,bool foreground,
                  const std::string& filesystem_name) {

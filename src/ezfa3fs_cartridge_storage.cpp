@@ -37,7 +37,10 @@ public:
 
     bool open(std::string& error);
     bool openForProgramming(std::string& error,bool trust_validated_format=false,
-                            bool preserve_save_banks=true);
+                            bool preserve_save_banks=true,
+                            bool automatic_save_recovery=false);
+    bool recoverSaveBanksAfterPowerCycle(
+        const std::vector<std::uint8_t>& snapshot,std::string& error);
     bool close(std::string& error,bool settle_before_release=true);
     void shutdown() noexcept;
     bool read(std::uint64_t offset, std::uint8_t* destination,
@@ -76,6 +79,7 @@ private:
     std::vector<std::uint8_t> save_backup;
     bool save_dirty = false;
     bool save_preservation_enabled = true;
+    bool automatic_save_recovery = false;
 
     bool out(const std::vector<std::uint8_t>& bytes, std::string& error);
     bool in(std::vector<std::uint8_t>& bytes, std::size_t size,
@@ -92,7 +96,6 @@ private:
                        const std::vector<std::uint8_t>& bytes,
                        std::string& error);
     bool readSaveBanks(std::vector<std::uint8_t>& bytes,std::string& error);
-    bool startupBridge(std::string& error);
     bool captureSaveBanks(std::string& error);
     bool restoreSaveBanks(std::string& error);
     bool finalizeSavePreservation(std::string& error);
@@ -170,6 +173,81 @@ void putLe32(std::vector<std::uint8_t>& bytes, std::size_t offset,
 std::string usbError(const char* operation, int result)
 {
     return std::string(operation) + ": " + libusb_error_name(result);
+}
+
+
+bool ezFlashUsbPresent(libusb_context* context,bool& present,
+                       std::string& error)
+{
+    libusb_device** devices=nullptr;
+    const auto count=libusb_get_device_list(context,&devices);
+    if(count<0) {
+        error=usbError("could not enumerate USB devices",
+                       static_cast<int>(count));
+        return false;
+    }
+
+    present=false;
+    for(ssize_t i=0;i<count;++i) {
+        libusb_device_descriptor descriptor{};
+        const int result=libusb_get_device_descriptor(devices[i],&descriptor);
+        if(result!=0)continue;
+        if(descriptor.idVendor==0x0E6A&&descriptor.idProduct==0x5088) {
+            present=true;
+            break;
+        }
+    }
+    libusb_free_device_list(devices,1);
+    error.clear();return true;
+}
+
+bool waitForPhysicalReconnect(const char* purpose,std::string& error)
+{
+    libusb_context* watch_context=nullptr;
+    const int init_result=libusb_init(&watch_context);
+    if(init_result!=0) {
+        error=usbError("libusb reconnect monitor initialization failed",
+                       init_result);
+        return false;
+    }
+
+    const auto finish=[&] {
+        if(watch_context)libusb_exit(watch_context);
+        watch_context=nullptr;
+    };
+
+    bool present=false;
+    if(!ezFlashUsbPresent(watch_context,present,error)) {
+        finish();return false;
+    }
+
+    std::cerr<<"\nEZFA3FS save safety requires a physical USB reconnect "
+             <<purpose<<".\n";
+    if(present) {
+        std::cerr<<"Disconnect the EZ-Flash Advance III now..."<<std::flush;
+        while(present) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if(!ezFlashUsbPresent(watch_context,present,error)) {
+                finish();return false;
+            }
+        }
+        std::cerr<<" detected.\n";
+    } else {
+        std::cerr<<"EZ-Flash is disconnected.\n";
+    }
+
+    std::cerr<<"Reconnect the EZ-Flash Advance III now..."<<std::flush;
+    unsigned stable_present=0;
+    while(stable_present<3) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if(!ezFlashUsbPresent(watch_context,present,error)) {
+            finish();return false;
+        }
+        stable_present=present?stable_present+1:0;
+    }
+    std::cerr<<" detected.\n";
+    finish();
+    error.clear();return true;
 }
 
 std::string formatFlashId(const std::array<std::uint8_t,4>& id)
@@ -291,8 +369,9 @@ bool CartridgeStorage::Impl::writeSaveBank(
     }
     const std::vector<std::uint8_t> command=
         {0x5A,0xA5,0x92,0x01,0,0,0,0,0,0x80,0,0,0};
-    if(!selectSaveBank(selector,error)||!out(command,error)||
-       !out(bytes,error))return false;
+    if(!selectSaveBank(selector,error)||!out(command,error))return false;
+    preciseCommandDataDelay();
+    if(!out(bytes,error))return false;
     std::vector<std::uint8_t> echo;
     if(!in(echo,command.size(),error))return false;
     if(echo!=command) {
@@ -316,51 +395,32 @@ bool CartridgeStorage::Impl::readSaveBanks(std::vector<std::uint8_t>& bytes,
     return true;
 }
 
-bool CartridgeStorage::Impl::startupBridge(std::string& error)
-{
-    // This is only the capture-derived bridge startup prefix.  In particular,
-    // it contains no 0x92 transfer, no flash probe, no 0x95 read prime, and no
-    // one-byte writer control that can touch save memory.
-    const std::vector<std::uint8_t> c97=
-        {0x5A,0xA5,0x97,0,0,0,0,0,0,0,0,0,0};
-    const std::vector<std::uint8_t> c99=
-        {0x5A,0xA5,0x99,0,1,0,0,0,0,0,0,0,0};
-    std::vector<std::uint8_t> response;
-    if(!out(c97,error)||!in(response,1,error)||response[0]!=0) {
-        if(error.empty())error="unexpected cartridge startup response";
-        return false;
-    }
-    if(!waitReady(5,error)||!out(c99,error)||
-       !in(response,c99.size(),error)||response!=c99) {
-        if(error.empty())error="cartridge startup echo mismatch";
-        return false;
-    }
-    error.clear();return true;
-}
+
 
 bool CartridgeStorage::Impl::captureSaveBanks(std::string& error)
 {
     if(!save_backup.empty())return true;
 
-    // A single capture can be a coherent but wrong view if the previous
-    // process left the bridge mapped elsewhere.  Re-enter startup-only state
-    // before each complete capture and trust the snapshot only if both reads
-    // match byte-for-byte.
+    // Safety precondition is external and explicit: the writable-mount caller
+    // must require a physical USB unplug/replug before this function runs.
+    // After that proven electrical reset, direct 0x0900/0910/0920/0930 reads
+    // are the qualified raw-save path. Read twice and require stability before
+    // allowing any writer-control traffic.
     std::vector<std::uint8_t> first,second;
-    if(!startupBridge(error)||!readSaveBanks(first,error)||
-       !startupBridge(error)||!readSaveBanks(second,error)) {
+    if(!readSaveBanks(first,error)||!readSaveBanks(second,error)) {
         save_backup.clear();
-        if(error.empty())error="could not preserve cartridge save banks";
+        if(error.empty())error="could not capture cartridge save banks";
         return false;
     }
     if(first!=second) {
         save_backup.clear();
-        error="save-bank snapshot was not stable across startup-only recapture";
+        error="save-bank snapshot was not stable across repeated raw reads";
         return false;
     }
     save_backup=first;
     error.clear();return true;
 }
+
 
 bool CartridgeStorage::Impl::restoreSaveBanks(std::string& error)
 {
@@ -438,30 +498,42 @@ bool CartridgeStorage::Impl::restoreSaveBanks(std::string& error)
 
 bool CartridgeStorage::Impl::finalizeSavePreservation(std::string& error)
 {
-    // Never write a backup until the bridge has first left writer/read-mapped
-    // state using the startup-only transition.  If that transition fails,
-    // fail closed: do not attempt any save-bank repair.
-    if(!startupBridge(error)) {
-        if(error.empty())error="could not establish save-safe startup state";
+    if(!save_preservation_enabled) {
+        error.clear();return true;
+    }
+    if(!save_dirty) {
+        save_backup.clear();
+        automatic_save_recovery=false;
+        error.clear();return true;
+    }
+    if(!automatic_save_recovery) {
+        error="save-preserving writer is not wired to the automatic physical-reconnect recovery path";
+        return false;
+    }
+    if(save_backup.size()!=save_bank_count*save_bank_size) {
+        error="writer touched save memory without a complete in-memory save snapshot";
         return false;
     }
 
-    std::string restore_error;
-    if(!restoreSaveBanks(restore_error)) {
-        std::string reset_error;
-        startupBridge(reset_error); // best-effort neutralization, no save write
-        error=restore_error;
-        if(!reset_error.empty())error+="; final startup also failed: "+reset_error;
+    const auto snapshot=save_backup;
+
+    // No cartridge command is allowed after final writer state. Release the
+    // handle first, then wait until a real USB disappearance/re-enumeration has
+    // been observed.
+    shutdown();
+    if(!waitForPhysicalReconnect("before automatic save restoration",error))
+        return false;
+
+    std::cerr<<"Restoring the pre-writer 128-KiB save snapshot..."<<std::flush;
+    if(!recoverSaveBanksAfterPowerCycle(snapshot,error)) {
+        std::cerr<<" failed.\n";
         return false;
     }
 
-    // Raw save access leaves a bank selected.  End in startup-only state, not
-    // the 0x95-primed ROM-read mapping that caused the next raw save command
-    // to inherit incompatible state.
-    if(!startupBridge(error)) {
-        if(error.empty())error="could not leave cartridge in startup-only state";
-        return false;
-    }
+    save_dirty=false;
+    save_backup.clear();
+    automatic_save_recovery=false;
+    std::cerr<<" restored and verified.\n";
     error.clear();return true;
 }
 
@@ -1097,44 +1169,68 @@ bool CartridgeStorage::Impl::open(std::string& error)
 #endif
 }
 
-bool CartridgeStorage::Impl::openForProgramming(std::string& error,
-                                                bool trust_validated_format,
-                                                bool preserve_save_banks)
+bool CartridgeStorage::Impl::openForProgramming(
+    std::string& error,bool trust_validated_format,
+    bool preserve_save_banks,bool automatic_recovery)
 {
 #if !defined(EZFA3FS_HAS_LIBUSB)
     (void)trust_validated_format;
     (void)preserve_save_banks;
+    (void)automatic_recovery;
     error="EZFA3FS was built without libusb support";return false;
 #else
     error.clear();shutdown();
+    save_preservation_enabled=preserve_save_banks;
+    automatic_save_recovery=automatic_recovery;
+
+    const bool first_preserved_open=
+        preserve_save_banks&&save_backup.empty();
+    if(first_preserved_open) {
+        if(!automatic_recovery) {
+            error="save-preserving writer is disabled until it is wired to the automatic physical-reconnect recovery path";
+            return false;
+        }
+        if(!waitForPhysicalReconnect("before the pre-writer save snapshot",
+                                     error))
+            return false;
+    }
+
     int result=libusb_init(&context);
-    if(result!=0){error=usbError("libusb initialization failed",result);shutdown();return false;}
+    if(result!=0){
+        error=usbError("libusb initialization failed",result);
+        shutdown();return false;
+    }
     handle=libusb_open_device_with_vid_pid(context,0x0E6A,0x5088);
-    if(!handle){error="EZ-Flash Advance III USB device not found";shutdown();return false;}
+    if(!handle){
+        error="EZ-Flash Advance III USB device not found";
+        shutdown();return false;
+    }
 #if defined(__linux__)
     libusb_set_auto_detach_kernel_driver(handle,1);
 #endif
     result=libusb_claim_interface(handle,0);
-    if(result!=0){error=usbError("could not claim USB interface 0",result);shutdown();return false;}
-    claimed=true;
-    save_preservation_enabled=preserve_save_banks;
-    if(preserve_save_banks&&!captureSaveBanks(error)) {
-        const auto capture_error=error;
-        std::string cleanup_error;
-        startupBridge(cleanup_error);
-        error=capture_error;
-        if(!cleanup_error.empty())
-            error+="; startup-only cleanup also failed: "+cleanup_error;
+    if(result!=0){
+        error=usbError("could not claim USB interface 0",result);
         shutdown();return false;
     }
+    claimed=true;
+
+    if(first_preserved_open) {
+        if(!captureSaveBanks(error)) {
+            shutdown();return false;
+        }
+        std::cerr<<"Captured stable pre-writer 128-KiB save snapshot in memory.\n";
+    }
+
     if(!initialize(error,true,trust_validated_format)||!activateWriter(error)) {
         const auto writer_error=error;
         std::string finalization_error;
         const bool finalized=!preserve_save_banks||
                              finalizeSavePreservation(finalization_error);
         error=writer_error;
-        if(!finalized)error+="; could not finalize save preservation: "+
-                            finalization_error;
+        if(!finalized)
+            error+="; could not finalize save preservation: "+
+                   finalization_error;
         shutdown();return false;
     }
     is_open=true;return true;
@@ -1182,6 +1278,115 @@ void CartridgeStorage::Impl::shutdown() noexcept
 #endif
 }
 
+bool CartridgeStorage::Impl::recoverSaveBanksAfterPowerCycle(
+    const std::vector<std::uint8_t>& snapshot,std::string& error)
+{
+#if !defined(EZFA3FS_HAS_LIBUSB)
+    (void)snapshot;
+    error="EZFA3FS was built without libusb support";return false;
+#else
+    if(snapshot.size()!=save_bank_count*save_bank_size) {
+        error="save recovery snapshot must be exactly 128 KiB";
+        return false;
+    }
+
+    // No normal initialize(), no 0x95 prime, no startupBridge(), and no USB
+    // reset. waitForPhysicalReconnect() observed disappearance/re-enumeration;
+    // raw bank selection/read is the first cartridge protocol afterward.
+    error.clear();shutdown();
+    int result=libusb_init(&context);
+    if(result!=0){error=usbError("libusb initialization failed",result);shutdown();return false;}
+    handle=libusb_open_device_with_vid_pid(context,0x0E6A,0x5088);
+    if(!handle){error="EZ-Flash Advance III USB device not found";shutdown();return false;}
+#if defined(__linux__)
+    libusb_set_auto_detach_kernel_driver(handle,1);
+#endif
+    result=libusb_claim_interface(handle,0);
+    if(result!=0){error=usbError("could not claim USB interface 0",result);shutdown();return false;}
+    claimed=true;
+
+    std::vector<std::uint8_t> first,current;
+    if(!readSaveBanks(first,error)||!readSaveBanks(current,error)) {
+        shutdown();return false;
+    }
+    if(first!=current) {
+        error="raw save-bank view was not stable after physical reconnect";
+        shutdown();return false;
+    }
+    if(current==snapshot) {
+        shutdown();error.clear();return true;
+    }
+
+    // Known unsafe state: every selector exposes the same changed bank. Refuse
+    // before the first destructive write if aliasing is still observable.
+    bool all_identical=true;
+    for(std::size_t bank=1;bank<save_bank_count;++bank) {
+        const auto other=current.begin()+
+            static_cast<std::ptrdiff_t>(bank*save_bank_size);
+        if(!std::equal(current.begin(),current.begin()+save_bank_size,other)) {
+            all_identical=false;break;
+        }
+    }
+    if(all_identical) {
+        error="all four save selectors still return the same changed image; "
+              "refusing recovery write because independent bank access is not established";
+        shutdown();return false;
+    }
+
+    for(std::size_t bank=0;bank<save_bank_count;++bank) {
+        const auto offset=bank*save_bank_size;
+        const auto target_first=snapshot.begin()+
+            static_cast<std::ptrdiff_t>(offset);
+        const auto current_first=current.begin()+
+            static_cast<std::ptrdiff_t>(offset);
+        if(std::equal(target_first,target_first+save_bank_size,current_first))
+            continue;
+
+        const std::vector<std::uint8_t> contents(
+            target_first,target_first+save_bank_size);
+        std::vector<std::uint8_t> expected=current;
+        std::copy(contents.begin(),contents.end(),
+                  expected.begin()+static_cast<std::ptrdiff_t>(offset));
+
+        const auto selector=static_cast<std::uint16_t>(0x0900u+bank*0x10u);
+        if(!writeSaveBank(selector,contents,error)) {
+            std::ostringstream detail;
+            detail<<"save recovery write failed for selector 0x"<<std::hex
+                  <<selector<<": "<<error;
+            error=detail.str();
+            shutdown();return false;
+        }
+
+        std::vector<std::uint8_t> observed;
+        if(!readSaveBanks(observed,error)) {
+            shutdown();return false;
+        }
+        if(observed!=expected) {
+            const auto mismatch=std::mismatch(observed.begin(),observed.end(),
+                                              expected.begin());
+            std::ostringstream detail;
+            detail<<"save recovery changed an unexpected byte at 0x"<<std::hex
+                  <<static_cast<std::size_t>(mismatch.first-observed.begin())
+                  <<" (read 0x"<<static_cast<unsigned>(*mismatch.first)
+                  <<", expected 0x"<<static_cast<unsigned>(*mismatch.second)
+                  <<')'<<std::dec;
+            error=detail.str();
+            shutdown();return false;
+        }
+        current.swap(observed);
+    }
+
+    if(current!=snapshot) {
+        error="save recovery did not reproduce the complete 128-KiB snapshot";
+        shutdown();return false;
+    }
+
+    // Do not issue any post-recovery cartridge command. Release USB only.
+    shutdown();
+    error.clear();return true;
+#endif
+}
+
 bool CartridgeStorage::Impl::read(std::uint64_t offset,
                                   std::uint8_t* destination,
                                   std::size_t size, std::string& error)
@@ -1212,7 +1417,8 @@ bool CartridgeStorage::openLiveWriteSessionWithRetry(
     std::string& error,bool trust_validated_format) {
     constexpr unsigned attempts=3;
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
-        if(impl_->openForProgramming(error,trust_validated_format))return true;
+        if(impl_->openForProgramming(error,trust_validated_format,true,true))
+            return true;
         if(attempt<attempts) {
             std::cerr<<"Retrying cartridge writer initialization (attempt "
                      <<(attempt+1)<<'/'<<attempts<<"): "<<error<<'\n';
@@ -1255,7 +1461,9 @@ bool CartridgeStorage::readLiveBlockAfterWrite(std::size_t block,std::size_t siz
     if(!reopen_first&&read(block*live::NorFlash::block_size,bytes.data(),bytes.size(),error)) {
         error.clear();return true;
     }
-    const auto direct_error=error;std::string close_error;const bool closed=close(close_error);
+    const auto direct_error=error;
+    std::string close_error;
+    const bool closed=impl_->close(close_error,false);
     std::string reopen_error;
     if(!openLiveWriteSessionWithRetry(reopen_error,true)) {
         error="could not reopen cartridge after live write: "+reopen_error;
