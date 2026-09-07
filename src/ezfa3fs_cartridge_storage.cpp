@@ -2,6 +2,7 @@
 #include "ezfa3fs/cartridge_flash_geometry.hpp"
 #include "ezfa3fs/cartridge_programmer.hpp"
 #include "ezfa3fs/live_filesystem.hpp"
+#include "ezfa3fs/save_bank_restore_policy.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -331,22 +332,11 @@ bool CartridgeStorage::Impl::restoreSaveBanks(std::string& error)
         error="cartridge save banks were modified without a valid backup";
         return false;
     }
-    const bool snapshot_is_all_zero=std::all_of(
-        save_backup.begin(),save_backup.end(),
-        [](std::uint8_t byte){return byte==0x00;});
-    if(snapshot_is_all_zero) {
-        std::cerr<<"Skipping save-bank restoration because the captured snapshot is entirely zero.\n";
-        save_dirty=false;
-        save_backup.clear();
-        error.clear();return true;
-    }
     std::vector<std::uint8_t> current_banks;
     if(!readSaveBanks(current_banks,error))return false;
-    const bool current_banks_are_all_zero=std::all_of(
-        current_banks.begin(),current_banks.end(),
-        [](std::uint8_t byte){return byte==0x00;});
-    if(!current_banks_are_all_zero) {
-        std::cerr<<"Skipping save-bank restoration because the current banks are not entirely zero.\n";
+    const auto decision=SaveBankRestorePolicy::evaluate(save_backup,current_banks);
+    if(decision==SaveBankRestorePolicy::Decision::skip) {
+        std::cerr<<"Skipping save-bank restoration because no recovery condition matched.\n";
         save_dirty=false;
         save_backup.clear();
         error.clear();return true;
