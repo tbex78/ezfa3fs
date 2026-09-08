@@ -1,4 +1,5 @@
 #include "ezfa3fs/byte_storage.hpp"
+#include "ezfa3fs/cached_block_device.hpp"
 #include "ezfa3fs/cartridge_storage.hpp"
 #include "ezfa3fs/cartridge_live_device.hpp"
 #include "ezfa3fs/cartridge_programmer.hpp"
@@ -19,6 +20,32 @@
 #include <stdexcept>
 namespace fs=std::filesystem;
 namespace {
+class ReadOnlyCartridgeDevice final
+    : public ezfa3fs::live::BlockDevice {
+public:
+    explicit ReadOnlyCartridgeDevice(ezfa3fs::CartridgeStorage& storage)
+        : storage_(storage) {}
+
+    bool read(std::size_t offset,std::uint8_t* destination,
+              std::size_t size,std::string& error) const override {
+        return storage_.read(offset,destination,size,error);
+    }
+
+    bool program(std::size_t,const std::uint8_t*,std::size_t,
+                 std::string& error) override {
+        error="cartridge device is read-only";
+        return false;
+    }
+
+    bool eraseBlock(std::size_t,std::string& error) override {
+        error="cartridge device is read-only";
+        return false;
+    }
+
+private:
+    ezfa3fs::CartridgeStorage& storage_;
+};
+
 bool readFile(const fs::path& p,std::vector<std::uint8_t>& b) {
     std::ifstream in(p,std::ios::binary); if(!in)return false;
     b.assign(std::istreambuf_iterator<char>(in),{}); return in.good()||in.eof();
@@ -161,6 +188,7 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
         std::cerr<<"Cartridge mounting requires --foreground.\n";
         return 1;
     }
+
     if(writable){
         std::cout
             <<"WARNING: changes made through this mount are written directly "
@@ -172,33 +200,111 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
             std::cerr<<"Cancelled; cartridge was not modified.\n";
             return 1;
         }
+
         return ezfa3fs::mountLiveCartridge(
             mountpoint.string(),foreground,verify_referenced_data);
     }
-    ezfa3fs::CartridgeStorage storage;std::string error;
-    if(!storage.open(error)){std::cerr<<error<<'\n';return 1;}
-    ezfa3fs::live::NorFlash flash;
-    const bool loaded=flash.load(storage,error);
-    std::string close_error;const bool closed=storage.close(close_error);
-    if(!loaded||!closed){
-        if(error.empty())error=close_error;
-        std::cerr<<error<<'\n';return 1;
+
+    /*
+     * Read-only + --verify:
+     *
+     * Preserve the original behavior: read the complete 32-MiB cartridge
+     * into memory and then verify all referenced file checksums.
+     *
+     * NorFlash::load(storage, ...) is what prints:
+     *
+     *   Reading EZFA3FS cartridge: 0% ... 100%
+     */
+    if(verify_referenced_data){
+        ezfa3fs::CartridgeStorage storage;
+        std::string error;
+
+        if(!storage.open(error)){
+            std::cerr<<error<<'\n';
+            return 1;
+        }
+
+        ezfa3fs::live::NorFlash flash;
+        const bool loaded=flash.load(storage,error);
+
+        std::string close_error;
+        const bool closed=storage.close(close_error);
+
+        if(!loaded||!closed){
+            if(error.empty())error=close_error;
+            std::cerr<<error<<'\n';
+            return 1;
+        }
+
+        ezfa3fs::live::Filesystem filesystem(flash);
+
+        if(!ezfa3fs::live::Filesystem::open(
+                flash,filesystem,error) ||
+           !filesystem.verify(error)){
+            std::cerr<<error<<'\n';
+            return 1;
+        }
+
+        auto backend=std::make_unique<ezfa3fs::LiveMountBackend>(
+            filesystem,
+            ezfa3fs::live::Filesystem::MaintenanceObserver{},
+            ezfa3fs::LiveMountBackend::PersistenceObserver{},
+            false);
+
+        return ezfa3fs::mountBackend(
+            std::move(backend),
+            mountpoint.string(),
+            foreground,
+            "ezfa3fs-card");
     }
-    ezfa3fs::live::Filesystem filesystem(flash);
-    if(!ezfa3fs::live::Filesystem::open(flash,filesystem,error)){
-        std::cerr<<error<<'\n';return 1;
+
+    /*
+     * Read-only without --verify:
+     *
+     * Do NOT load the complete cartridge. Keep CartridgeStorage open and
+     * fetch individual 64-KiB blocks only when the filesystem needs them.
+     */
+    ezfa3fs::CartridgeStorage storage;
+    std::string error;
+
+    if(!storage.open(error)){
+        std::cerr<<error<<'\n';
+        return 1;
     }
-    // Full referenced-file checksum verification is opt-in. Normal card-mount
-    // startup must not call Filesystem::verify() unless --verify was supplied.
-    if(verify_referenced_data&&!filesystem.verify(error)){
-        std::cerr<<error<<'\n';return 1;
+
+    ReadOnlyCartridgeDevice device(storage);
+    ezfa3fs::live::CachedBlockDevice cached(device);
+    ezfa3fs::live::Filesystem filesystem(cached);
+
+    if(!ezfa3fs::live::Filesystem::open(cached,filesystem,error)){
+        std::string close_error;
+        storage.close(close_error);
+        std::cerr<<error<<'\n';
+        return 1;
     }
+
     auto backend=std::make_unique<ezfa3fs::LiveMountBackend>(
-        filesystem,ezfa3fs::live::Filesystem::MaintenanceObserver{},
-        ezfa3fs::LiveMountBackend::PersistenceObserver{},false);
-    return ezfa3fs::mountBackend(std::move(backend),mountpoint.string(),
-                                 foreground,"ezfa3fs-card");
+        filesystem,
+        ezfa3fs::live::Filesystem::MaintenanceObserver{},
+        ezfa3fs::LiveMountBackend::PersistenceObserver{},
+        false);
+
+    const int result=ezfa3fs::mountBackend(
+        std::move(backend),
+        mountpoint.string(),
+        foreground,
+        "ezfa3fs-card");
+
+    std::string close_error;
+    if(!storage.close(close_error)){
+        std::cerr<<"Could not close read-only cartridge session: "
+                 <<close_error<<'\n';
+        return 1;
+    }
+
+    return result;
 }
+
 int liveMkdir(const fs::path& image,const std::string& path) { ezfa3fs::live::NorFlash flash;ezfa3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;
     if(!filesystem.createDirectory(path,error)||!flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}return 0; }
 int livePut(const fs::path& image,const fs::path& source,const std::string& destination) { if(!fs::is_regular_file(source)){std::cerr<<"Input is not a regular file: "<<source<<'\n';return 1;}
