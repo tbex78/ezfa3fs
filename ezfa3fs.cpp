@@ -103,8 +103,7 @@ void usage() {
   ezfa3fs compact IMAGE.ezfa3fs
   ezfa3fs space IMAGE.ezfa3fs
   ezfa3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
-  ezfa3fs card-mount MOUNTPOINT --foreground [--verify]
-  ezfa3fs card-mount MOUNTPOINT --writable --foreground [--verify]
+  ezfa3fs card-mount MOUNTPOINT [--writable] --foreground [--verify]
   ezfa3fs card-pull IMAGE.ezfa3fs
   ezfa3fs card-format [--direct-boot]
   ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
