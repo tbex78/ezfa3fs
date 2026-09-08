@@ -74,6 +74,7 @@ int mutationFailure(MountSession& value,const std::string& error) {
     return -EINVAL;
 }
 int beginMutation(MountSession& value) {
+    if(!value.backend().writable())return -EROFS;
     std::string error;
     if(value.mutationAllowed(error))return 0;
     return mutationFailure(value,error);
@@ -245,7 +246,7 @@ int ezfa3fsRemovexattr(const char* path,const char*) {
     if(!session().backend().writable())return -EROFS;
     return beginMutation(session());
 }
-void ezfa3fsDestroy(void* private_data) {auto* mounted=static_cast<MountSession*>(private_data);std::lock_guard<std::mutex> lock(mounted->mutex());if(mounted->commitFailed())return;std::string error;if(!mounted->commit(error))std::cerr<<"EZFA3FS commit failed: "<<error<<'\n';}
+void ezfa3fsDestroy(void* private_data) {auto* mounted=static_cast<MountSession*>(private_data);std::lock_guard<std::mutex> lock(mounted->mutex());if(!mounted->backend().writable())return;if(mounted->commitFailed())return;std::string error;if(!mounted->commit(error))std::cerr<<"EZFA3FS commit failed: "<<error<<'\n';}
 int ezfa3fsStatfs(const char*,struct statvfs* status) {std::lock_guard<std::mutex> lock(session().mutex());
     std::memset(status,0,sizeof(*status));status->f_bsize=4096;status->f_frsize=4096;
     status->f_blocks=session().backend().capacityBytes()/4096;status->f_bfree=session().backend().freeBytes()/4096;
@@ -265,6 +266,10 @@ int runMount(MountSession& mounted,const std::string& mountpoint,
              bool foreground,const std::string& filesystem_name) {
     auto callbacks=operations();
     std::vector<std::string> arguments{"ezfa3fs","-o","fsname="+filesystem_name};
+    if(!mounted.backend().writable()) {
+        arguments.push_back("-o");
+        arguments.push_back("ro");
+    }
 #if defined(__APPLE__)
     if(filesystem_name=="ezfa3fs-card") {
         arguments.push_back("-o");arguments.push_back("volname=EZFA3FS Cartridge");
