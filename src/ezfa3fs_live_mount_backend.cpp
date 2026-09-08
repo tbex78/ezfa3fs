@@ -69,7 +69,36 @@ bool LiveMountBackend::removeDirectory(const std::string& path,std::string& erro
     }
     return filesystem_.removeDirectory(name,error);
 }
-bool LiveMountBackend::rename(const std::string& from,const std::string& to,std::string& error) { if(!commit(error))return false;return filesystem_.rename(normalize(from),normalize(to),error); }
+bool LiveMountBackend::rename(const std::string& from,const std::string& to,
+                              std::string& error) {
+    const auto source_name=normalize(from);
+    const auto destination_name=normalize(to);
+
+    if(source_name!=destination_name&&
+       pending_files_.find(destination_name)!=pending_files_.end()) {
+        error="invalid live rename";
+        return false;
+    }
+
+    MountNode source;
+    if(!lookup(from,source)) {
+        error="live path does not exist";
+        return false;
+    }
+
+    if(source.directory) {
+        // A directory rename also changes the paths of pending descendants,
+        // so retain the existing full-commit behaviour for directories.
+        if(!commit(error))return false;
+    } else {
+        // Finder may have several copy destinations pending simultaneously.
+        // Commit only the file being renamed; never flush unrelated
+        // placeholders.
+        if(!commitFile(from,error))return false;
+    }
+
+    return filesystem_.rename(source_name,destination_name,error);
+}
 
 bool LiveMountBackend::stageFile(const std::string& path,PendingFile*& pending,
                                  std::string& error) {
