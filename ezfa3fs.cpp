@@ -185,8 +185,12 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
         std::cerr<<error<<'\n';return 1;
     }
     ezfa3fs::live::Filesystem filesystem(flash);
-    if(!ezfa3fs::live::Filesystem::open(flash,filesystem,error)||
-       (verify_referenced_data&&!filesystem.verify(error))){
+    if(!ezfa3fs::live::Filesystem::open(flash,filesystem,error)){
+        std::cerr<<error<<'\n';return 1;
+    }
+    // Full referenced-file checksum verification is opt-in. Normal card-mount
+    // startup must not call Filesystem::verify() unless --verify was supplied.
+    if(verify_referenced_data&&!filesystem.verify(error)){
         std::cerr<<error<<'\n';return 1;
     }
     auto backend=std::make_unique<ezfa3fs::LiveMountBackend>(

@@ -18,9 +18,12 @@ bool LiveCartridgeSession::open(
     if(!live::Filesystem::open(device_,filesystem_,error)){
         std::string ignored;storage_.close(ignored);return false;
     }
-    if(verify_referenced_data&&
-       !filesystem_.verify(error,std::move(verification_progress))){
-        std::string ignored;storage_.close(ignored);return false;
+    // Keep full referenced-file checksum verification strictly opt-in.
+    // With verify_referenced_data == false, Filesystem::verify() is not called.
+    if(verify_referenced_data){
+        if(!filesystem_.verify(error,std::move(verification_progress))){
+            std::string ignored;storage_.close(ignored);return false;
+        }
     }
     open_=true;error.clear();return true;
 }

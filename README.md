@@ -60,7 +60,7 @@ Mount with direct transactional writes:
 ./build/cmake/ezfa3fs card-mount mountpoint --writable --foreground
 ```
 
-Add `--verify` to either mount mode to verify referenced file data before mounting. A writable mount without `--verify` reads only the metadata needed to start, which is much faster on cartridges containing large files. Unmount from another terminal with `umount mountpoint`.
+Add `--verify` to either mount mode to verify referenced file data before mounting. A writable mount without `--verify` reads only the metadata needed to start, which is much faster on cartridges containing large files. Without `--verify`, `card-mount` does not run the full referenced-file checksum verification. Unmount from another terminal with `umount mountpoint`.
 
 ## Direct boot
 
