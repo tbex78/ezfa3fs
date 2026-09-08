@@ -13,7 +13,7 @@ Cartridge reads use save-safe two-byte control transfers. Before a writable cart
 
 ## Build
 
-Requirements are CMake, a C++17 compiler, libusb-1.0, and macFUSE when mount support is wanted.
+Requirements are CMake, a C++17 compiler, libusb-1.0, and FUSE when mount support is wanted.
 
 ```sh
 cmake -S . -B build/cmake
@@ -128,7 +128,7 @@ ezfa3fs card-program-block BLOCK INPUT.bin
 
 Raw erase and program commands modify cartridge blocks after confirmation. Standard metadata occupies blocks 0 and 1; direct-boot metadata occupies blocks 510 and 511. Using raw commands on metadata or active data can destroy the filesystem.
 
-## macFUSE behavior
+## MacFUSE behavior
 
 Ordinary writes are staged in host memory. `flush` and `fsync` report mount health; a dirty file is committed when its final handle is released. This coalesces the many small writes issued by Finder and `cp` into one cartridge transaction.
 
@@ -174,7 +174,6 @@ Garbage collection erases unreferenced blocks. Compaction relocates active files
 
 - [EZFA3FS format](EZFA3FS_FORMAT.md)
 - [EZFA3FS design origins](EZFA3FS_DESIGN_ORIGINS.md)
-- [Incremental background garbage collection plan](BACKGROUND_GC_PLAN.md)
 
 ## Current limits
 

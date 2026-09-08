@@ -56,7 +56,7 @@ Many protocol details could only be established empirically. Hardware tests repo
 - Readback verification.
 - Retry ordering.
 - Metadata placement and prefix programming.
-- Finder and macFUSE compatibility.
+- Finder and FUSE/macFUSE compatibility.
 - Garbage collection and compaction behavior.
 - Direct-boot ROM deletion and replacement.
 
@@ -162,9 +162,9 @@ Direct-boot hardware does not understand the filesystem manifest. It executes da
 
 This design keeps boot-ROM deletion fast while respecting NOR-flash programming rules during replacement.
 
-## macFUSE integration
+## FUSE/macFUSE integration
 
-FUSE and Finder introduce behavior that is not present in the on-cartridge format. The mount implementation adapts those operations to EZFA3FS rather than storing unsupported metadata.
+FUSE/macFUSE and Finder introduce behavior that is not present in the on-cartridge format. The mount implementation adapts those operations to EZFA3FS rather than storing unsupported metadata.
 
 - Writes are staged in host memory and committed when the final file handle is released.
 - Directory and file modes are reported as fixed values.
@@ -185,7 +185,7 @@ The following are project-specific design decisions rather than recovered offici
 - CRC32-protected file entries and manifests.
 - Garbage collection and compaction policy.
 - The direct-boot reserved-slot model.
-- The live macFUSE mutation model.
+- The live FUSE mutation model.
 - Recovery and retry policies built around verified logical blocks.
 
 The USB command protocol and flash geometry are hardware-facing discoveries. The filesystem built on top of them is an independent design.
@@ -198,7 +198,7 @@ EZFA3FS currently provides:
 - Persistent modification times produced by filesystem writes.
 - Transactional live cartridge mutations.
 - Image creation and editing.
-- Read-only and writable macFUSE mounts.
+- Read-only and writable FUSE mounts.
 - Direct-boot and multi-file layouts.
 - Garbage collection, compaction, and space inspection.
 - Pullback and complete-image verification.

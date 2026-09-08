@@ -114,7 +114,7 @@ Standalone cartridge erases and all programmed data are verified by readback. Di
 
 `space` and `card-space` report active data, erased reusable blocks, unreferenced programmed blocks, potentially available space, largest current and post-GC extents, fragmentation, and whether collection is recommended. Cartridge GC and compaction require an unmounted filesystem and confirmation.
 
-## Cartridge mounts and macFUSE
+## Cartridge mounts and FUSE
 
 A read-only cartridge mount pulls and verifies a complete snapshot. A writable mount opens from metadata and performs direct block transactions; optional `--verify` performs a full allocation scan first.
 
