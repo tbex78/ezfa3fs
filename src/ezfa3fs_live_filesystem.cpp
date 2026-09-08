@@ -661,6 +661,94 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
     if(commit(error))return true;entries_=old;return false;
 }
 
+bool Filesystem::collectGarbageStep(
+    GarbageCollectionState& state,
+    bool resynchronize_metadata,
+    bool& complete,
+    std::string& error) {
+
+    const auto first_data_block=firstDataBlock();
+    const auto end_block=dataEndBlock();
+
+    if(!state.initialized) {
+        state.next_block=first_data_block;
+        state.reclaimed_blocks=0;
+        state.last_reclaimed_block=NorFlash::block_count;
+        state.metadata_synchronized=false;
+        state.initialized=true;
+    }
+
+    // A filesystem mutation may have occurred while idle GC was paused.
+    // Before the next destructive erase, publish the newest manifest again.
+    if(resynchronize_metadata)
+        state.metadata_synchronized=false;
+
+    if(state.next_block>=end_block) {
+        complete=true;
+        error.clear();
+        return true;
+    }
+
+    const auto block=state.next_block++;
+    complete=state.next_block>=end_block;
+
+    if(blockReferenced(block)) {
+        error.clear();
+        return true;
+    }
+
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);
+
+    if(!flash_.read(
+            block*NorFlash::block_size,
+            bytes.data(),bytes.size(),error)) {
+        error=
+            "could not inspect idle garbage block "+
+            std::to_string(block)+": "+error;
+        return false;
+    }
+
+    const bool blank=std::all_of(
+        bytes.begin(),bytes.end(),
+        [](std::uint8_t byte){return byte==0xFF;});
+
+    if(blank) {
+        unavailable_blocks_[block]=false;
+        error.clear();
+        return true;
+    }
+
+    // Synchronize the manifest once before this run starts erasing stale
+    // blocks. CoalescingMetadataBlockDevice's erase safety barrier will make
+    // this generation physically durable before the first erase proceeds.
+    if(!state.metadata_synchronized) {
+        if(!commit(error)) {
+            error=
+                "could not synchronize metadata before idle garbage "
+                "collection: "+error;
+            return false;
+        }
+        state.metadata_synchronized=true;
+    }
+
+    unavailable_blocks_[block]=true;
+
+    if(!flash_.prepareForErase(error)||
+       !flash_.eraseBlock(block,error)) {
+        error=
+            "could not reclaim idle garbage block "+
+            std::to_string(block)+": "+error;
+        return false;
+    }
+
+    unavailable_blocks_[block]=false;
+    ++state.reclaimed_blocks;
+    state.last_reclaimed_block=block;
+
+    error.clear();
+    return true;
+}
+
 bool Filesystem::collectGarbage(std::size_t& reclaimed_blocks,
                                 std::string& error,ScanProgress progress) {
     reclaimed_blocks=0;const auto first_data_block=firstDataBlock();
@@ -693,7 +781,9 @@ bool Filesystem::collectGarbage(std::size_t& reclaimed_blocks,
         }
         unavailable_blocks_[block]=false;++reclaimed_blocks;
     }
-    next_free_block_=allocationStartBlock();error.clear();return true;
+    // Preserve the hot allocation cursor. Reclaimed blocks below it remain
+    // available when findBlankExtent() naturally wraps around.
+    error.clear();return true;
 }
 
 bool Filesystem::compact(CompactionReport& report,std::string& error,

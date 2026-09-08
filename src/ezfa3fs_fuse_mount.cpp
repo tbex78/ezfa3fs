@@ -136,7 +136,7 @@ int ezfa3fsReaddir(const char* path,void* buffer,fuse_fill_dir_t filler,off_t,st
     for(const auto& child:children)if(filler(buffer,child.c_str(),nullptr,0,FUSE_FILL_DIR_DEFAULTS)!=0)break;return 0;
 }
 int ezfa3fsOpen(const char* path,struct fuse_file_info* info) {
-    std::lock_guard<std::mutex> lock(session().mutex());MountNode node;if(!session().backend().lookup(path,node)||node.directory)return -ENOENT;
+    std::lock_guard<std::mutex> lock(session().activityMutex(false));MountNode node;if(!session().backend().lookup(path,node)||node.directory)return -ENOENT;
     const bool writable=(info->flags&O_ACCMODE)!=O_RDONLY;
     if(writable) {
         if(!session().backend().writable())return -EROFS;
@@ -161,7 +161,7 @@ int ezfa3fsUtimens(const char* path,const struct timespec[2],struct fuse_file_in
 #if defined(__APPLE__)
 int ezfa3fsSetattr(const char* path,struct fuse_darwin_attr* attributes,
                  int to_set,struct fuse_file_info* info) {
-    std::lock_guard<std::mutex> lock(session().mutex());
+    std::lock_guard<std::mutex> lock(session().activityMutex());
     if((to_set&FUSE_SET_ATTR_SIZE)!=0) {
         if(!attributes)return -EINVAL;
         return resizeFile(path,attributes->size,info);
@@ -181,26 +181,26 @@ int ezfa3fsAccess(const char* path,int) {
     return session().backend().lookup(path,node)?0:-ENOENT;
 }
 int ezfa3fsRead(const char* path,char* buffer,size_t size,off_t offset,struct fuse_file_info*) {
-    if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().mutex());std::vector<std::uint8_t> bytes;
+    if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().activityMutex(false));std::vector<std::uint8_t> bytes;
     if(!session().backend().read(path,static_cast<std::size_t>(offset),size,bytes))return -ENOENT;
     std::memcpy(buffer,bytes.data(),bytes.size());return static_cast<int>(bytes.size());
 }
-int ezfa3fsMkdir(const char* path,mode_t) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+int ezfa3fsMkdir(const char* path,mode_t) {std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().createDirectory(path,error);return finishMutation(changed,error);}
-int ezfa3fsCreate(const char* path,mode_t,struct fuse_file_info* info) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+int ezfa3fsCreate(const char* path,mode_t,struct fuse_file_info* info) {std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().createFile(path,error);if(changed)installFileHandle(info,true,false);return changed?0:mutationFailure(session(),error);}
 int ezfa3fsWrite(const char* path,const char* buffer,size_t size,off_t offset,struct fuse_file_info* info) {
-    if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+    if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     if(!session().backend().write(path,static_cast<std::size_t>(offset),reinterpret_cast<const std::uint8_t*>(buffer),size,error))return mutationFailure(session(),error);
     markFileHandleDirty(info);return static_cast<int>(size);
 }
 int ezfa3fsTruncate(const char* path,off_t size,struct fuse_file_info* info) {
-    std::lock_guard<std::mutex> lock(session().mutex());
+    std::lock_guard<std::mutex> lock(session().activityMutex());
     return resizeFile(path,size,info);
 }
-int ezfa3fsUnlink(const char* path) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+int ezfa3fsUnlink(const char* path) {std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().removeFile(path,error);return finishMutation(changed,error);}
-int ezfa3fsRmdir(const char* path) {std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+int ezfa3fsRmdir(const char* path) {std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().removeDirectory(path,error);return finishMutation(changed,error);}
 int ezfa3fsRename(const char* from,const char* to,unsigned flags) {
 #if defined(RENAME_NOREPLACE)
@@ -208,18 +208,18 @@ int ezfa3fsRename(const char* from,const char* to,unsigned flags) {
 #else
     if(flags!=0)return -ENOTSUP;
 #endif
-    std::lock_guard<std::mutex> lock(session().mutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+    std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().rename(from,to,error);return finishMutation(changed,error);}
 int ezfa3fsFlush(const char*,struct fuse_file_info*) {
-    std::lock_guard<std::mutex> lock(session().mutex());
+    std::lock_guard<std::mutex> lock(session().activityMutex(false));
     // macFUSE may flush an open file repeatedly while a copy is still
     // growing. Committing here rewrites the complete copy-on-write extent and
     // both metadata generations for every partial size. Keep flush as a
     // health check; the final release remains the file durability boundary.
     return beginMutation(session());
 }
-int ezfa3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().mutex());return beginMutation(session());}
-int ezfa3fsRelease(const char* path,struct fuse_file_info* info) {std::lock_guard<std::mutex> lock(session().mutex());
+int ezfa3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().activityMutex(false));return beginMutation(session());}
+int ezfa3fsRelease(const char* path,struct fuse_file_info* info) {std::lock_guard<std::mutex> lock(session().activityMutex());
     const auto handle=takeFileHandle(info);
     if(handle&&!handle->dirty)return beginMutation(session());
     return commitSessionFile(session(),path);
@@ -318,7 +318,58 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
 #if defined(__APPLE__)
     backend=std::make_unique<FinderMetadataMountBackend>(std::move(backend));
 #endif
-    MountSession mounted(std::move(backend));
+    live::GarbageCollectionState idle_gc;
+
+    auto idle_maintenance=
+        [&cartridge,&idle_gc](
+            bool fresh_pass,
+            bool resynchronize,
+            bool& complete,
+            std::string& maintenance_error) {
+
+        if(fresh_pass) {
+            idle_gc={};
+
+            std::cerr
+                <<"Writable cartridge idle; starting background "
+                  "garbage collection.\n";
+        } else if(resynchronize) {
+            std::cerr
+                <<"Writable cartridge idle; resuming background "
+                  "garbage collection.\n";
+        }
+
+        const auto reclaimed_before=
+            idle_gc.reclaimed_blocks;
+
+        if(!cartridge.filesystem().collectGarbageStep(
+                idle_gc,
+                resynchronize,
+                complete,
+                maintenance_error)) {
+            return false;
+        }
+
+        if(idle_gc.reclaimed_blocks!=reclaimed_before) {
+            std::cerr
+                <<"Reclaimed cartridge block "
+                <<idle_gc.last_reclaimed_block
+                <<".\n";
+        }
+
+        if(complete) {
+            std::cerr
+                <<"Idle garbage collection complete: "
+                <<idle_gc.reclaimed_blocks
+                <<" block(s) reclaimed.\n";
+        }
+
+        return true;
+    };
+
+    MountSession mounted(
+        std::move(backend),
+        std::move(idle_maintenance));
     const int result=runMount(mounted,mountpoint,foreground,"ezfa3fs-card");
     if(!cartridge.close(error)){
         std::cerr<<"Could not close live cartridge session: "<<error<<'\n';

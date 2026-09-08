@@ -99,6 +99,14 @@ struct CompactionReport final {
     std::size_t blocks_relocated = 0;
 };
 
+struct GarbageCollectionState final {
+    std::size_t next_block = 0;
+    std::size_t reclaimed_blocks = 0;
+    std::size_t last_reclaimed_block = NorFlash::block_count;
+    bool metadata_synchronized = false;
+    bool initialized = false;
+};
+
 enum class MaintenanceAction {
     garbage_collection,
     compaction
@@ -139,6 +147,11 @@ public:
     bool verify(std::string& error,ScanProgress progress = {}) const;
     bool collectGarbage(std::size_t& reclaimed_blocks,std::string& error,
                         ScanProgress progress = {});
+
+    bool collectGarbageStep(GarbageCollectionState& state,
+                            bool resynchronize_metadata,
+                            bool& complete,
+                            std::string& error);
     bool inspectSpace(SpaceReport& report,std::string& error,
                       ScanProgress progress = {}) const;
     bool compact(CompactionReport& report,std::string& error,
