@@ -50,7 +50,7 @@ void usage() {
   ezfa3fs compact IMAGE.ezfa3fs
   ezfa3fs space IMAGE.ezfa3fs
   ezfa3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
-  ezfa3fs card-mount MOUNTPOINT [--foreground]
+  ezfa3fs card-mount MOUNTPOINT --foreground [--verify]
   ezfa3fs card-mount MOUNTPOINT --writable --foreground [--verify]
   ezfa3fs card-pull IMAGE.ezfa3fs
   ezfa3fs card-format [--direct-boot]
@@ -157,11 +157,11 @@ int liveMount(const fs::path& image,const fs::path& mountpoint,bool writable,
 }
 int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
                   bool verify_referenced_data) {
+    if(!foreground){
+        std::cerr<<"Cartridge mounting requires --foreground.\n";
+        return 1;
+    }
     if(writable){
-        if(!foreground){
-            std::cerr<<"Writable cartridge mounting requires --foreground.\n";
-            return 1;
-        }
         std::cout
             <<"WARNING: changes made through this mount are written directly "
               "to the EZFA3FS cartridge.\n"
@@ -175,10 +175,6 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
         return ezfa3fs::mountLiveCartridge(
             mountpoint.string(),foreground,verify_referenced_data);
     }
-    if(verify_referenced_data){
-        std::cerr<<"--verify is only available for writable live cartridge mounts.\n";
-        return 1;
-    }
     ezfa3fs::CartridgeStorage storage;std::string error;
     if(!storage.open(error)){std::cerr<<error<<'\n';return 1;}
     ezfa3fs::live::NorFlash flash;
@@ -190,7 +186,7 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
     }
     ezfa3fs::live::Filesystem filesystem(flash);
     if(!ezfa3fs::live::Filesystem::open(flash,filesystem,error)||
-       !filesystem.verify(error)){
+       (verify_referenced_data&&!filesystem.verify(error))){
         std::cerr<<error<<'\n';return 1;
     }
     auto backend=std::make_unique<ezfa3fs::LiveMountBackend>(

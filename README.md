@@ -60,7 +60,7 @@ Mount with direct transactional writes:
 ./build/cmake/ezfa3fs card-mount mountpoint --writable --foreground
 ```
 
-Add `--verify` for a full allocation scan before mounting. The default writable mount reads only the metadata needed to start, which is much faster on cartridges containing large files. Unmount from another terminal with `umount mountpoint`.
+Add `--verify` to either mount mode to verify referenced file data before mounting. A writable mount without `--verify` reads only the metadata needed to start, which is much faster on cartridges containing large files. Unmount from another terminal with `umount mountpoint`.
 
 ## Direct boot
 
@@ -107,7 +107,7 @@ When `DESTINATION` is omitted from `put`, the source path is also the destinatio
 Cartridge commands:
 
 ```text
-ezfa3fs card-mount MOUNTPOINT [--foreground]
+ezfa3fs card-mount MOUNTPOINT --foreground [--verify]
 ezfa3fs card-mount MOUNTPOINT --writable --foreground [--verify]
 ezfa3fs card-pull IMAGE.ezfa3fs
 ezfa3fs card-format [--direct-boot]
