@@ -20,6 +20,32 @@
 #include <stdexcept>
 namespace fs=std::filesystem;
 namespace {
+class ReadOnlyBlockDevice final
+    : public ezfa3fs::live::BlockDevice {
+public:
+    explicit ReadOnlyBlockDevice(ezfa3fs::live::BlockDevice& device)
+        : device_(device) {}
+
+    bool read(std::size_t offset,std::uint8_t* destination,
+              std::size_t size,std::string& error) const override {
+        return device_.read(offset,destination,size,error);
+    }
+
+    bool program(std::size_t,const std::uint8_t*,std::size_t,
+                 std::string& error) override {
+        error="cartridge device is read-only";
+        return false;
+    }
+
+    bool eraseBlock(std::size_t,std::string& error) override {
+        error="cartridge device is read-only";
+        return false;
+    }
+
+private:
+    ezfa3fs::live::BlockDevice& device_;
+};
+
 class ReadOnlyCartridgeDevice final
     : public ezfa3fs::live::BlockDevice {
 public:
@@ -236,10 +262,11 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
             return 1;
         }
 
-        ezfa3fs::live::Filesystem filesystem(flash);
+        ReadOnlyBlockDevice readonly_flash(flash);
+        ezfa3fs::live::Filesystem filesystem(readonly_flash);
 
         if(!ezfa3fs::live::Filesystem::open(
-                flash,filesystem,error) ||
+                readonly_flash,filesystem,error) ||
            !filesystem.verify(error)){
             std::cerr<<error<<'\n';
             return 1;
