@@ -35,7 +35,7 @@ The captures describe how to communicate with the hardware. They do not describe
 
 ### Companion direct-boot work
 
-The experimental direct-ROM programming work in the companion `ezfadvanceIII` project established that a GBA ROM can be executed when its header and entry point are present at cartridge byte offset zero.
+The experimental direct-ROM programming work in the companion [`ezfadvanceIII`](https://github.com/tbex78/ezfadvanceIII) project established that a GBA ROM can be executed when its header and entry point are present at cartridge byte offset zero.
 
 That requirement led to the EZFA3FS direct-boot layout:
 

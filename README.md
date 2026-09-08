@@ -64,7 +64,7 @@ Add `--verify` for a full allocation scan before mounting. The default writable 
 
 ## Direct boot
 
-The experimental direct-boot layout places one root-level GBA ROM at cartridge byte offset zero for compatible direct-boot logic in the companion `ezfadvanceIII` project.
+The experimental direct-boot layout places one root-level GBA ROM at cartridge byte offset zero for compatible direct-boot logic in the companion [`ezfadvanceIII`](https://github.com/tbex78/ezfadvanceIII) project.
 
 Create it with a ROM:
 
