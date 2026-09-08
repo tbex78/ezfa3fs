@@ -232,8 +232,7 @@ void CoalescingMetadataBlockDevice::idleLoop() {
             idle_flush_failed_=true;
             std::cerr
                 <<"EZFA3FS idle metadata commit failed: "
-                <<error<<'
-';
+                <<error<<'\n';
         }
     }
 }
