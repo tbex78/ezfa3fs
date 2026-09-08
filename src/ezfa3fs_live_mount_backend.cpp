@@ -2,6 +2,7 @@
 #include "ezfa3fs/timestamp.hpp"
 
 #include <algorithm>
+#include <iostream>
 #include <limits>
 
 namespace ezfa3fs {
@@ -44,6 +45,11 @@ bool LiveMountBackend::createFile(const std::string& path,std::string& error) {
     }
     if(!filesystem_.canCreateFile(name,error))return false;
     pending_files_.emplace(name,PendingFile{{},currentUnixTimestamp()});
+
+    std::cerr
+        <<"Staging file: "<<name
+        <<"\n";
+
     error.clear();return true;
 }
 bool LiveMountBackend::write(const std::string& path,std::size_t offset,const std::uint8_t* bytes,std::size_t size,std::string& error) {
@@ -128,6 +134,18 @@ bool LiveMountBackend::commitFile(const std::string& path,std::string& error) {
         error.clear();
         return true;
     }
+    std::cerr
+        <<"Finished staging file: "
+        <<current->first
+        <<" ("<<current->second.bytes.size()/1024
+        <<" KiB).\n";
+
+    std::cerr
+        <<"Committing file: "
+        <<current->first
+        <<" ("<<current->second.bytes.size()/1024
+        <<" KiB)...\n";
+
     if(!persistFile(current->first,current->second,error))return false;
     if(persistence_observer_&&!persistence_observer_(error))return false;
     pending_files_.erase(current);

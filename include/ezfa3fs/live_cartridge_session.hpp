@@ -59,10 +59,10 @@ public:
     bool flush(std::string& error);
 
 private:
-    inline static constexpr std::chrono::seconds idle_delay{5};
+    inline static constexpr std::chrono::seconds idle_delay{2};
 
     bool flushLocked(std::string& error);
-    void markActivityLocked();
+    void markActivityLocked() const;
     void idleLoop();
 
     live::BlockDevice& device_;
@@ -70,12 +70,12 @@ private:
     // The timer thread is independent of the FUSE request thread, so all
     // accesses to the underlying cartridge device are serialized here.
     mutable std::mutex mutex_;
-    std::condition_variable condition_;
+    mutable std::condition_variable condition_;
 
     bool stop_ = false;
-    bool idle_flush_failed_ = false;
-    std::uint64_t activity_generation_ = 0;
-    std::chrono::steady_clock::time_point last_activity_;
+    mutable bool idle_flush_failed_ = false;
+    mutable std::uint64_t activity_generation_ = 0;
+    mutable std::chrono::steady_clock::time_point last_activity_;
 
     std::optional<std::size_t> pending_metadata_block_;
     std::vector<std::uint8_t> pending_metadata_;

@@ -353,13 +353,41 @@ Filesystem::ExtentSearchResult Filesystem::findBlankExtent(
         std::size_t run=0,run_start=begin;
         for(std::size_t block=begin;block<end;++block) {
             if(blockReferenced(block)||unavailable_blocks_[block]){run=0;continue;}
+
+            std::cerr
+                <<"Inspecting live block "<<block
+                <<" for free space..."
+                <<std::flush;
+
             if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
                 error="could not inspect live allocation block "+std::to_string(block)+": "+error;return false;
             }
-            const bool blank=std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;});
+            const bool blank=std::all_of(
+                bytes.begin(),bytes.end(),
+                [](std::uint8_t byte){return byte==0xFF;});
+
+            std::cerr<<(blank?" erased.\n":" occupied.\n");
+
             if(!blank){unavailable_blocks_[block]=true;run=0;continue;}
             if(run==0)run_start=block;
-            if(++run==block_count){first_block=run_start;return true;}
+            if(++run==block_count) {
+                first_block=run_start;
+
+                std::cerr
+                    <<"Selected free live extent: block "
+                    <<first_block;
+
+                if(block_count>1)
+                    std::cerr
+                        <<'-'
+                        <<(first_block+block_count-1);
+
+                std::cerr
+                    <<" ("<<block_count
+                    <<" block(s)).\n";
+
+                return true;
+            }
         }
         return false;
     };
@@ -559,11 +587,63 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
             error="the direct-boot ROM at cartridge offset 0 is immutable";return false;
         }
     }
+    std::cerr
+        <<"Filesystem putFile: "
+        <<path
+        <<" ("<<bytes.size()/1024
+        <<" KiB).\n";
+
     if(!validPath(path)||!parentExists(path)){error="invalid live file path";return false;}
     if(const auto* existing=find(path);existing&&existing->directory){error="live path is a directory";return false;}
     const auto blocks=dataBlockCount(bytes.size());
+    const auto old=entries_;
+
+    // Empty files require only a metadata entry. Do not run them through
+    // allocation/programming: allocateExtent(0) returns next_free_block_,
+    // and the normal programming path would unnecessarily rewrite the
+    // allocation cursor. Finder commonly creates many zero-byte placeholders
+    // before filling them with their real contents.
+    if(blocks==0) {
+        const auto first_block=next_free_block_;
+
+        std::cerr
+            <<"Metadata-only empty file: "
+            <<path
+            <<"; allocation cursor remains at block "
+            <<next_free_block_
+            <<".\n";
+
+        auto* existing=find(path);
+        Entry replacement{
+            path,
+            bytes.size(),
+            modified_time,
+            Crc32::calculate(bytes.data(),bytes.size()),
+            static_cast<std::uint32_t>(first_block),
+            0,
+            false
+        };
+
+        if(existing)
+            *existing=replacement;
+        else
+            entries_.push_back(std::move(replacement));
+
+        if(commit(error))
+            return true;
+
+        entries_=old;
+        return false;
+    }
+
+    std::cerr
+        <<"Beginning allocation for "
+        <<path
+        <<": "<<blocks
+        <<" block(s).\n";
+
     constexpr unsigned extent_attempts=3;
-    const auto old=entries_;std::size_t first_block=0;std::string program_error;
+    std::size_t first_block=0;std::string program_error;
     bool programmed=false;
     for(unsigned attempt=1;attempt<=extent_attempts;++attempt) {
         if(!allocateExtent(blocks,first_block,error,maintenance)) {

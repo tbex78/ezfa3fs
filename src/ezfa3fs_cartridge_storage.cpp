@@ -1661,17 +1661,63 @@ bool CartridgeStorage::programLiveFilesystemExtent(
     std::size_t& completed_blocks,std::string& error) {
     constexpr std::size_t block_size=live::NorFlash::block_size;
     completed_blocks=0;
+
+    // Empty files have no NOR data extent. Finder may create and finalize
+    // temporary zero-length placeholders while copying; those require only
+    // filesystem metadata and must not enter the cartridge writer path.
+    if(bytes.empty()) {
+        error.clear();
+        return true;
+    }
     std::string operation_error;
+
+    const auto requested_blocks=bytes.size()/block_size;
+
+    std::cerr
+        <<"Preparing cartridge write for block "
+        <<first_block;
+
+    if(requested_blocks>1)
+        std::cerr
+            <<'-'
+            <<(first_block+requested_blocks-1);
+
+    std::cerr
+        <<" ("<<requested_blocks
+        <<" block(s), "
+        <<bytes.size()/1024
+        <<" KiB).\n";
     if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error,true)) {
         error="could not restore cartridge writer before extent programming: "+operation_error;
         return false;
     }
+    std::cerr
+        <<"Starting cartridge flash program for block "
+        <<first_block;
+
+    if(requested_blocks>1)
+        std::cerr
+            <<'-'
+            <<(first_block+requested_blocks-1);
+
+    std::cerr<<"..."<<std::endl;
+
     const bool transferred=impl_->programLiveExtent(first_block,bytes,
         completed_blocks,std::cerr,operation_error,true);
+
+    std::cerr
+        <<"Cartridge flash program transfer finished; "
+          "starting readback verification.\n";
     const auto block_count=bytes.size()/block_size;
     const auto verify_count=transferred?block_count:
         std::min(block_count,completed_blocks+1);
     for(std::size_t i=0;i<verify_count;++i) {
+        std::cerr
+            <<"Verifying cartridge block "
+            <<(first_block+i)
+            <<" readback..."
+            <<std::endl;
+
         std::vector<std::uint8_t> expected(
             bytes.begin()+static_cast<std::ptrdiff_t>(i*block_size),
             bytes.begin()+static_cast<std::ptrdiff_t>((i+1)*block_size));

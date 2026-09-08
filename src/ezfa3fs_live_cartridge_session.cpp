@@ -22,7 +22,7 @@ CoalescingMetadataBlockDevice::~CoalescingMetadataBlockDevice() {
         idle_thread_.join();
 }
 
-void CoalescingMetadataBlockDevice::markActivityLocked() {
+void CoalescingMetadataBlockDevice::markActivityLocked() const {
     last_activity_=std::chrono::steady_clock::now();
     ++activity_generation_;
 
@@ -35,10 +35,17 @@ void CoalescingMetadataBlockDevice::markActivityLocked() {
 bool CoalescingMetadataBlockDevice::read(
     std::size_t offset,std::uint8_t* destination,
     std::size_t size,std::string& error) const {
-    // Reads do not reset the idle timer, but they must not overlap a physical
-    // metadata flush on the USB cartridge.
+    // Reads are real cartridge activity. Keep the idle metadata timer from
+    // firing during lazy allocation scans, verification, or file reads.
+    //
+    // Refresh the timestamp after the read completes while still holding the
+    // device mutex, so the idle worker cannot slip a metadata transaction
+    // between this read and the activity update.
     std::lock_guard<std::mutex> lock(mutex_);
-    return device_.read(offset,destination,size,error);
+
+    const bool result=device_.read(offset,destination,size,error);
+    markActivityLocked();
+    return result;
 }
 
 bool CoalescingMetadataBlockDevice::program(
