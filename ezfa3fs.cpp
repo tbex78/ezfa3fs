@@ -120,12 +120,34 @@ int liveVerify(const fs::path& path) { ezfa3fs::live::NorFlash flash;ezfa3fs::li
     if(!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}std::cout<<"Verified EZFA3FS generation "<<filesystem.generation()<<" with "<<filesystem.entries().size()<<" entries.\n";return 0; }
 int liveMount(const fs::path& image,const fs::path& mountpoint,bool writable,
               bool foreground) {
-    ezfa3fs::live::NorFlash flash;ezfa3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;
+    std::error_code path_error;
+    const fs::path persistent_image=
+        fs::absolute(image,path_error).lexically_normal();
+    if(path_error) {
+        std::cerr<<"Could not resolve image path "<<image<<": "
+                 <<path_error.message()<<'\n';
+        return 1;
+    }
+
+    ezfa3fs::live::NorFlash flash;ezfa3fs::live::Filesystem filesystem(flash);
+    if(!loadLive(persistent_image,flash,filesystem))return 1;std::string error;
     if(!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}
+
+    if(writable) {
+        std::fstream probe(
+            persistent_image,
+            std::ios::binary|std::ios::in|std::ios::out);
+        if(!probe) {
+            std::cerr<<"EZFA3FS image is not writable: "
+                     <<persistent_image<<'\n';
+            return 1;
+        }
+    }
+
     ezfa3fs::LiveMountBackend::PersistenceObserver persist;
     if(writable) {
-        persist=[&flash,&image](std::string& save_error) {
-            return flash.save(image.string(),save_error);
+        persist=[&flash,persistent_image](std::string& save_error) {
+            return flash.save(persistent_image.string(),save_error);
         };
     }
     auto backend=std::make_unique<ezfa3fs::LiveMountBackend>(

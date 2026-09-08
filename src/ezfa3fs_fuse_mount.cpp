@@ -69,7 +69,8 @@ int mutationFailure(MountSession& value,const std::string& error) {
     if(error.find("does not exist")!=std::string::npos)return -ENOENT;
     if(error.find("existing")!=std::string::npos)return -EEXIST;
     if(error.find("USB ")!=std::string::npos||error.find("cartridge")!=std::string::npos||
-       error.find("readback")!=std::string::npos)return -EIO;
+       error.find("readback")!=std::string::npos||
+       error.find("live image")!=std::string::npos)return -EIO;
     return -EINVAL;
 }
 int beginMutation(MountSession& value) {
