@@ -3,10 +3,14 @@
 #include "ezfa3fs/cached_block_device.hpp"
 #include "ezfa3fs/cartridge_live_device.hpp"
 
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace ezfa3fs {
@@ -14,6 +18,12 @@ namespace ezfa3fs {
 class CoalescingMetadataBlockDevice final : public live::BlockDevice {
 public:
     explicit CoalescingMetadataBlockDevice(live::BlockDevice& device);
+    ~CoalescingMetadataBlockDevice();
+
+    CoalescingMetadataBlockDevice(
+        const CoalescingMetadataBlockDevice&) = delete;
+    CoalescingMetadataBlockDevice& operator=(
+        const CoalescingMetadataBlockDevice&) = delete;
 
     bool read(std::size_t offset,std::uint8_t* destination,
               std::size_t size,std::string& error) const override;
@@ -49,9 +59,30 @@ public:
     bool flush(std::string& error);
 
 private:
+    inline static constexpr std::chrono::seconds idle_delay{5};
+
+    bool flushLocked(std::string& error);
+    void markActivityLocked();
+    void idleLoop();
+
     live::BlockDevice& device_;
+
+    // The timer thread is independent of the FUSE request thread, so all
+    // accesses to the underlying cartridge device are serialized here.
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+
+    bool stop_ = false;
+    bool idle_flush_failed_ = false;
+    std::uint64_t activity_generation_ = 0;
+    std::chrono::steady_clock::time_point last_activity_;
+
     std::optional<std::size_t> pending_metadata_block_;
     std::vector<std::uint8_t> pending_metadata_;
+
+    // Keep this last so every state member above is initialized before the
+    // worker can begin using the object.
+    std::thread idle_thread_;
 };
 
 class LiveCartridgeSession final {
