@@ -5,9 +5,9 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.50.7**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable. Legacy EZFA3FS remains format **1.2**.
+Application version: **0.50.7**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
 
-The macOS/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
+The FUSE/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
 Cartridge reads use save-safe two-byte control transfers. Before a writable cartridge session initializes the flash writer, EZFA3FS snapshots all four 32-KiB save banks. On clean unmount it restores all four snapshots when the current contents differ and bank 1 starts with the writer marker `00 04`. Otherwise it restores a nonzero snapshot only when all four current banks are zero. If neither condition matches, it performs no save-bank writes. Always unmount before disconnecting the linker so restoration can finish.
 
@@ -183,3 +183,37 @@ Garbage collection erases unreferenced blocks. Compaction relocates active files
 - Symlinks, hard links, sparse files, persistent permissions, ownership, extended attributes, and Finder metadata are unsupported.
 - Hardware reliability and throughput depend on the EZ-Flash writer, USB connection, and NOR flash.
 - Direct boot is experimental and requires compatible external boot logic.
+
+## Disclaimer
+
+### Independent project / no affiliation or endorsement
+
+This is an **independent, unofficial, community-developed project**. It is **not affiliated with, associated with, authorized by, endorsed by, sponsored by, supported by, or otherwise connected with Nintendo Co., Ltd., any Nintendo affiliate, the EZ-Flash Team, or any related manufacturer, developer, distributor, or rights holder**.
+
+Nintendo, Game Boy Advance, EZ-Flash, EZF Advance III, and any other product names, trademarks, service marks, logos, or brands referenced by this project remain the property of their respective owners. Their use in this repository is solely for identification, compatibility, interoperability, technical documentation, and descriptive purposes and does not imply any affiliation, endorsement, sponsorship, approval, or support.
+
+**Neither Nintendo nor the EZ-Flash Team provides support for this project.** Questions, bug reports, compatibility issues, device problems, or damage arising from this software should not be directed to Nintendo, the EZ-Flash Team, or their respective affiliates, employees, distributors, or support channels.
+
+### Project origin and purpose
+
+This project was started because the original software and drivers for the **EZF Advance III** are available for and operational with **Windows XP**, an operating system that is now very old and no longer a practical or desirable platform for many users.
+
+The purpose of this project is therefore to research, document, and develop an independent alternative that can help preserve continued use of existing EZF Advance III hardware on modern Unix-like systems, without requiring the original Windows XP environment. The project is focused on compatibility and interoperability with hardware that users already own; it is not intended to represent, replace, or imply official software, drivers, support, or endorsement from Nintendo or the EZ-Flash Team.
+
+We hope that someone with the necessary technical knowledge and interest will **fork this repository and continue the project further**. This repository is shared as a working community-developed alternative and as a record of the work already done, in the hope that others may improve, correct, document, and extend it.
+
+This software and project are provided **“AS IS” and “AS AVAILABLE,” without warranty of any kind**, express or implied.
+
+This project remains under active development and may contain bugs, incomplete features, incorrect assumptions, or unexpected behavior, particularly on hardware and configurations that have not yet been tested. Use of this software may cause data loss, corruption, malfunction, permanent damage, or otherwise render an **EZF Advance III device partially or completely unusable (“bricked”)**.
+
+A substantial portion of this project was created through **“vibe coding,” reverse engineering, experimentation, and the use of AI-assisted development tools, including ChatGPT and Codex**. As a result, the code may contain errors, inaccurate implementations, undocumented behavior, or functionality that has not been thoroughly tested or independently verified.
+
+The owner of this Git repository **does not claim to possess the technical expertise, engineering qualifications, or detailed knowledge necessary to guarantee the correctness or safety of the software**. The repository owner may also be unable to provide technical support, debugging assistance, device recovery assistance, repair instructions, or further development support if the software causes problems or damages an EZF Advance III device.
+
+By downloading, installing, modifying, executing, flashing, or otherwise using this software, you acknowledge and accept that you do so **entirely at your own risk**.
+
+To the maximum extent permitted by applicable law, the author(s), contributor(s), and maintainer(s) of this project shall not be liable for any direct, indirect, incidental, special, consequential, or other damages arising from or related to the use or inability to use this software, including, without limitation, damage to hardware, loss or corruption of data, loss of functionality, device failure, or the permanent bricking of an EZF Advance III device.
+
+**You are solely responsible for understanding the risks, making appropriate backups where possible, verifying the software before use, and determining whether you are willing to accept the possibility of permanently damaging your EZF Advance III device.**
+
+Do not use this software on any device that you are not prepared to potentially damage or lose. Use this project only if you fully understand and accept these risks.
