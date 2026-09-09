@@ -254,9 +254,13 @@ LiveCartridgeSession::~LiveCartridgeSession() { std::string ignored;close(ignore
 
 bool LiveCartridgeSession::open(
     std::string& error,bool verify_referenced_data,
-    live::Filesystem::ScanProgress verification_progress) {
+    live::Filesystem::ScanProgress verification_progress,
+    bool preserve_save_snapshot) {
     if(open_){error.clear();return true;}
-    if(!storage_.openForLiveWrite(error))return false;
+    if(!storage_.openForLiveWrite(
+            error,
+            preserve_save_snapshot))
+        return false;
     if(!live::Filesystem::open(metadata_device_,filesystem_,error)){
         std::string ignored;storage_.close(ignored);return false;
     }

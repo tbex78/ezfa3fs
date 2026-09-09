@@ -476,7 +476,7 @@ void usage() {
   ezfa3fs compact IMAGE.ezfa3fs
   ezfa3fs space IMAGE.ezfa3fs
   ezfa3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
-  ezfa3fs card-mount MOUNTPOINT [--writable] --foreground [--verify] [--verbose] [--logfile=PATH]
+  ezfa3fs card-mount MOUNTPOINT [--writable] --foreground [--verify] [--verbose] [--logfile=PATH] [--skip-snapshot-restore]
   ezfa3fs card-pull IMAGE.ezfa3fs
   ezfa3fs card-format [--direct-boot]
   ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
@@ -581,7 +581,8 @@ int liveMount(const fs::path& image,const fs::path& mountpoint,bool writable,
                                "ezfa3fs-image");
 }
 int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
-                  bool verify_referenced_data) {
+                  bool verify_referenced_data,
+                  bool skip_snapshot_restore) {
     if(!foreground){
         std::cerr<<"Cartridge mounting requires --foreground.\n";
         return 1;
@@ -590,17 +591,31 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
     if(writable){
         std::cout
             <<"WARNING: changes made through this mount are written directly "
-              "to the EZFA3FS cartridge.\n"
-            <<"EZFA3FS will wait for and detect the required physical USB "
-              "reconnect before the writer starts and again after unmount "
-              "before restoring save memory.\n";
+              "to the EZFA3FS cartridge.\n";
+
+        if(skip_snapshot_restore) {
+            std::cout
+                <<"Save snapshot restoration is disabled for this mount. "
+                  "EZFA3FS will not request the save-safety USB reconnects "
+                  "and will not restore the pre-writer save memory after "
+                  "unmount.\n";
+        } else {
+            std::cout
+                <<"EZFA3FS will wait for and detect the required physical USB "
+                  "reconnect before the writer starts and again after unmount "
+                  "before restoring save memory.\n";
+        }
+
         if(!confirm("Proceed")){
             std::cout<<"Cancelled; cartridge was not modified.\n";
             return 1;
         }
 
         return ezfa3fs::mountLiveCartridge(
-            mountpoint.string(),foreground,verify_referenced_data);
+            mountpoint.string(),
+            foreground,
+            verify_referenced_data,
+            !skip_snapshot_restore);
     }
 
     /*
@@ -896,6 +911,7 @@ int main(int argc,char** argv) {
         bool foreground=false;
         bool verify_referenced_data=false;
         bool verbose=false;
+        bool skip_snapshot_restore=false;
         std::string log_directory;
 
         for(int i=3;i<argc;++i) {
@@ -909,6 +925,8 @@ int main(int argc,char** argv) {
                 verify_referenced_data=true;
             else if(option=="--verbose")
                 verbose=true;
+            else if(option=="--skip-snapshot-restore")
+                skip_snapshot_restore=true;
             else if(option.rfind("--logfile=",0)==0) {
                 constexpr const char* prefix="--logfile=";
 
@@ -956,7 +974,8 @@ int main(int argc,char** argv) {
             argv[2],
             writable,
             foreground,
-            verify_referenced_data);
+            verify_referenced_data,
+            skip_snapshot_restore);
     }
 
     TimestampedStderr timestamped_stderr;

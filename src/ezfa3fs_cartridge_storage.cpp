@@ -1417,14 +1417,32 @@ CartridgeStorage::CartridgeStorage() : impl_(new Impl) {}
 CartridgeStorage::~CartridgeStorage() = default;
 bool CartridgeStorage::open(std::string& error) { return impl_->open(error); }
 bool CartridgeStorage::close(std::string& error) { return impl_->close(error); }
-bool CartridgeStorage::openForLiveWrite(std::string& error) {
-    return openLiveWriteSessionWithRetry(error,false);
+bool CartridgeStorage::openForLiveWrite(
+    std::string& error,
+    bool preserve_save_snapshot) {
+
+    live_write_preserve_save_snapshot_=
+        preserve_save_snapshot;
+
+    return openLiveWriteSessionWithRetry(
+        error,
+        false,
+        preserve_save_snapshot);
 }
+
 bool CartridgeStorage::openLiveWriteSessionWithRetry(
-    std::string& error,bool trust_validated_format) {
+    std::string& error,
+    bool trust_validated_format,
+    bool preserve_save_snapshot) {
+
     constexpr unsigned attempts=3;
+
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
-        if(impl_->openForProgramming(error,trust_validated_format,true,true))
+        if(impl_->openForProgramming(
+                error,
+                trust_validated_format,
+                preserve_save_snapshot,
+                preserve_save_snapshot))
             return true;
         if(attempt<attempts) {
             std::cerr<<"Retrying cartridge writer initialization (attempt "
@@ -1435,9 +1453,18 @@ bool CartridgeStorage::openLiveWriteSessionWithRetry(
     return false;
 }
 bool CartridgeStorage::restartLiveWriteSession(std::string& error) {
-    std::string close_error;const bool closed=impl_->close(close_error,false);
-    if(openLiveWriteSessionWithRetry(error,true))return true;
-    if(!closed&&!close_error.empty())error+="; close also failed: "+close_error;
+    std::string close_error;
+    const bool closed=impl_->close(close_error,false);
+
+    if(openLiveWriteSessionWithRetry(
+            error,
+            true,
+            live_write_preserve_save_snapshot_))
+        return true;
+
+    if(!closed&&!close_error.empty())
+        error+="; close also failed: "+close_error;
+
     return false;
 }
 bool CartridgeStorage::readLiveFilesystem(
@@ -1472,7 +1499,10 @@ bool CartridgeStorage::readLiveBlockAfterWrite(std::size_t block,std::size_t siz
     std::string close_error;
     const bool closed=impl_->close(close_error,false);
     std::string reopen_error;
-    if(!openLiveWriteSessionWithRetry(reopen_error,true)) {
+    if(!openLiveWriteSessionWithRetry(
+            reopen_error,
+            true,
+            live_write_preserve_save_snapshot_)) {
         error="could not reopen cartridge after live write: "+reopen_error;
         if(!closed&&!close_error.empty())error+="; close also failed: "+close_error;
         return false;
@@ -1528,7 +1558,10 @@ bool CartridgeStorage::eraseLiveFilesystemBlock(std::size_t block,std::string& e
     const std::vector<std::uint8_t> erased(live::NorFlash::block_size,0xFF);
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
         std::string operation_error;
-        if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error,true)) {
+        if(!isOpen()&&!openLiveWriteSessionWithRetry(
+                operation_error,
+                true,
+                live_write_preserve_save_snapshot_)) {
             error="could not restore cartridge writer before erase retry: "+operation_error;
             return false;
         }
@@ -1546,7 +1579,10 @@ bool CartridgeStorage::eraseLiveFilesystemBlocks(
     const std::vector<std::size_t>& blocks,std::string& error) {
     if(blocks.empty()){error.clear();return true;}
     std::string operation_error;
-    if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error,true)) {
+    if(!isOpen()&&!openLiveWriteSessionWithRetry(
+                operation_error,
+                true,
+                live_write_preserve_save_snapshot_)) {
         error="could not restore cartridge writer before batch erase: "+
               operation_error;return false;
     }
@@ -1583,7 +1619,10 @@ bool CartridgeStorage::programLiveFilesystemBlock(std::size_t block,const std::v
     const bool metadata_block=block<2||block>=live::NorFlash::block_count-2;
     for(unsigned attempt=1;attempt<=attempts;++attempt) {
         std::string operation_error;
-        if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error,true)) {
+        if(!isOpen()&&!openLiveWriteSessionWithRetry(
+                operation_error,
+                true,
+                live_write_preserve_save_snapshot_)) {
             error="could not restore cartridge writer before program retry: "+operation_error;
             return false;
         }
@@ -1687,7 +1726,10 @@ bool CartridgeStorage::programLiveFilesystemExtent(
         <<" block(s), "
         <<bytes.size()/1024
         <<" KiB).\n";
-    if(!isOpen()&&!openLiveWriteSessionWithRetry(operation_error,true)) {
+    if(!isOpen()&&!openLiveWriteSessionWithRetry(
+                operation_error,
+                true,
+                live_write_preserve_save_snapshot_)) {
         error="could not restore cartridge writer before extent programming: "+operation_error;
         return false;
     }

@@ -511,7 +511,8 @@ int runMount(MountSession& mounted,const std::string& mountpoint,
 } // namespace
 
 int mountLiveCartridge(const std::string& mountpoint,bool foreground,
-                       bool verify_referenced_data) {
+                       bool verify_referenced_data,
+                       bool preserve_save_snapshot) {
     if(!foreground) {
         std::cerr<<"A writable live cartridge mount requires --foreground so the USB session is not inherited across FUSE daemonization.\n";
         return 1;
@@ -527,8 +528,13 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
                  <<percent<<'%'<<std::flush;
         if(completed==total)std::cerr<<'\n';
     };
-    if(!cartridge.open(error,verify_referenced_data,progress)){
-        std::cerr<<error<<'\n';return 1;
+    if(!cartridge.open(
+            error,
+            verify_referenced_data,
+            progress,
+            preserve_save_snapshot)) {
+        std::cerr<<error<<'\n';
+        return 1;
     }
     const auto maintenance=[](live::MaintenanceAction action) {
         std::cerr<<"EZFA3FS automatic "
@@ -611,7 +617,7 @@ int mountBackend(std::unique_ptr<MountBackend> backend,
     return runMount(mounted,mountpoint,foreground,filesystem_name);
 }
 #else
-int mountLiveCartridge(const std::string&,bool,bool) {
+int mountLiveCartridge(const std::string&,bool,bool,bool) {
     std::cerr<<"FUSE 3 support was not available when ezfa3fs was built.\n";return 1;
 }
 int mountBackend(std::unique_ptr<MountBackend>,const std::string&,bool,

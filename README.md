@@ -9,7 +9,7 @@ Application version: **0.50.7**. EZFA3FS is experimental format **0.1.0** in its
 
 The FUSE/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
-Cartridge reads use save-safe two-byte control transfers. Before a writable cartridge session initializes the flash writer, EZFA3FS snapshots all four 32-KiB save banks. On clean unmount it restores all four snapshots when the current contents differ and bank 1 starts with the writer marker `00 04`. Otherwise it restores a nonzero snapshot only when all four current banks are zero. If neither condition matches, it performs no save-bank writes. Always unmount before disconnecting the linker so restoration can finish.
+Cartridge reads use save-safe two-byte control transfers. By default, before a writable cartridge session initializes the flash writer, EZFA3FS snapshots all four 32-KiB save banks. On clean unmount it restores all four snapshots when the current contents differ and bank 1 starts with the writer marker `00 04`. Otherwise it restores a nonzero snapshot only when all four current banks are zero. If neither condition matches, it performs no save-bank writes. Pass `--skip-snapshot-restore` on `card-mount` to disable this save-preservation workflow for that mount: no save-safety USB reconnect is requested, no pre-writer save snapshot is captured, and no save snapshot is restored after unmount. Always unmount cleanly before disconnecting the linker.
 
 ## Build
 
@@ -60,7 +60,11 @@ Mount with direct transactional writes:
 ./build/cmake/ezfa3fs card-mount mountpoint --writable --foreground
 ```
 
-Add `--verify` to either mount mode to verify referenced file data before mounting. A writable mount without `--verify` reads only the metadata needed to start, which is much faster on cartridges containing large files. Without `--verify`, `card-mount` does not run the full referenced-file checksum verification. Unmount from another terminal with `umount mountpoint`.
+Add `--verify` to either mount mode to verify referenced file data before mounting. A writable mount without `--verify` reads only the metadata needed to start, which is much faster on cartridges containing large files. Without `--verify`, `card-mount` does not run the full referenced-file checksum verification.
+
+For writable mounts, `--skip-snapshot-restore` disables the normal save-preservation workflow for that mount. EZFA3FS does not request the pre-writer or post-unmount USB reconnect, does not capture the pre-writer save snapshot, and does not restore save memory after unmount. Without this option, the existing snapshot/reconnect/restore behavior is unchanged.
+
+Unmount from another terminal with `umount mountpoint`.
 
 ## Direct boot
 
@@ -107,8 +111,8 @@ When `DESTINATION` is omitted from `put`, the source path is also the destinatio
 Cartridge commands:
 
 ```text
-ezfa3fs card-mount MOUNTPOINT --foreground [--verify]
-ezfa3fs card-mount MOUNTPOINT --writable --foreground [--verify]
+ezfa3fs card-mount MOUNTPOINT --foreground [--verify] [--verbose] [--logfile=PATH]
+ezfa3fs card-mount MOUNTPOINT --writable --foreground [--verify] [--verbose] [--logfile=PATH] [--skip-snapshot-restore]
 ezfa3fs card-pull IMAGE.ezfa3fs
 ezfa3fs card-format [--direct-boot]
 ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]

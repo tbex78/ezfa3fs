@@ -93,7 +93,8 @@ public:
     LiveCartridgeSession& operator=(const LiveCartridgeSession&) = delete;
 
     bool open(std::string& error,bool verify_referenced_data = false,
-              live::Filesystem::ScanProgress verification_progress = {});
+              live::Filesystem::ScanProgress verification_progress = {},
+              bool preserve_save_snapshot = true);
     bool close(std::string& error);
     bool isOpen() const noexcept { return open_; }
     live::Filesystem& filesystem() noexcept { return filesystem_; }

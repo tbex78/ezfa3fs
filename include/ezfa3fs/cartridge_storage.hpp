@@ -29,7 +29,9 @@ public:
     std::uint64_t capacity() const noexcept override;
     bool read(std::uint64_t offset, std::uint8_t* destination,
               std::size_t size, std::string& error) override;
-    bool openForLiveWrite(std::string& error);
+    bool openForLiveWrite(
+        std::string& error,
+        bool preserve_save_snapshot = true);
     bool restartLiveWriteSession(std::string& error);
     bool readLiveFilesystem(std::uint64_t offset,std::uint8_t* destination,
                             std::size_t size,std::string& error);
@@ -54,8 +56,10 @@ public:
 private:
     friend class CartridgeProgrammer;
     friend class CartridgeLiveDevice;
-    bool openLiveWriteSessionWithRetry(std::string& error,
-                                       bool trust_validated_format);
+    bool openLiveWriteSessionWithRetry(
+        std::string& error,
+        bool trust_validated_format,
+        bool preserve_save_snapshot);
     bool readLiveBlockAfterWrite(std::size_t block,std::size_t size,
                                  std::vector<std::uint8_t>& bytes,
                                  std::string& error,bool reopen_first);
@@ -65,6 +69,11 @@ private:
                                    const std::string& operation_error,
                                    bool reopen_first,std::string& error);
     class Impl;
+
+    // Preserve the initial live-mount save-safety policy across transient
+    // writer-session restarts.
+    bool live_write_preserve_save_snapshot_ = true;
+
     std::unique_ptr<Impl> impl_;
 };
 

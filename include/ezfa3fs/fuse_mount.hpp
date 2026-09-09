@@ -4,7 +4,8 @@
 #include <string>
 namespace ezfa3fs {
 int mountLiveCartridge(const std::string& mountpoint,bool foreground,
-                       bool verify_referenced_data = false);
+                       bool verify_referenced_data = false,
+                       bool preserve_save_snapshot = true);
 int mountBackend(std::unique_ptr<MountBackend> backend,
                  const std::string& mountpoint,bool foreground,
                  const std::string& filesystem_name);
