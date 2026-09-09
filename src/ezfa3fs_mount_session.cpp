@@ -2,6 +2,7 @@
 
 #include "ezfa3fs/timestamp.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <limits>
 #include <thread>
@@ -38,13 +39,15 @@ void MountSession::noteActivity(bool maintenance_relevant) {
 
     std::lock_guard<std::mutex> lock(activity_mutex_);
 
+    const auto now=std::chrono::steady_clock::now();
+
+    last_foreground_activity_=now;
     ++activity_generation_;
 
     // Every foreground request can interrupt an active maintenance step, but
-    // only mutations should postpone/schedule maintenance. Finder metadata
-    // polling and directory listings must not starve background GC.
+    // only mutations restart the full maintenance-idle interval.
     if(maintenance_relevant) {
-        last_activity_=std::chrono::steady_clock::now();
+        last_activity_=now;
         ++maintenance_request_generation_;
     }
 
@@ -82,8 +85,17 @@ void MountSession::idleMaintenanceLoop() {
                 activity_generation=activity_generation_;
                 request_generation=maintenance_request_generation_;
 
-                const auto deadline=
+                auto deadline=
                     last_activity_+idle_maintenance_delay;
+
+                // Once a pass has already started, read-only foreground
+                // traffic should pause it long enough for a complete FUSE
+                // request burst to finish, but not for another ten seconds.
+                if(pass_in_progress)
+                    deadline=std::max(
+                        deadline,
+                        last_foreground_activity_+
+                            foreground_resume_delay);
 
                 const bool interrupted=
                     activity_condition_.wait_until(

@@ -48,6 +48,12 @@ private:
     inline static constexpr std::chrono::seconds
         idle_maintenance_delay{10};
 
+    // A paused GC pass needs only a short quiet gap after read-only FUSE
+    // traffic. This groups bursts such as ls/Finder getattr calls without
+    // making them restart the full maintenance-idle interval.
+    inline static constexpr std::chrono::milliseconds
+        foreground_resume_delay{250};
+
     bool finishCommit(bool committed,std::string& error);
     void idleMaintenanceLoop();
 
@@ -66,6 +72,8 @@ private:
     std::uint64_t activity_generation_ = 0;
     std::uint64_t maintenance_request_generation_ = 0;
     std::chrono::steady_clock::time_point last_activity_ =
+        std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point last_foreground_activity_ =
         std::chrono::steady_clock::now();
 
     // Keep the worker last so every state member it accesses exists before
