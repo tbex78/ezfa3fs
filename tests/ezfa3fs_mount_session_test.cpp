@@ -76,7 +76,7 @@ public:
 
     bool waitForBatches(std::size_t count) {
         std::unique_lock<std::mutex> lock(mutex_);
-        return condition_.wait_for(lock,std::chrono::seconds(2),[&] {
+        return condition_.wait_for(lock,std::chrono::seconds(3),[&] {
             return batches_.size()>=count;
         });
     }
@@ -138,8 +138,14 @@ int main() {
             require(batching.deferFileCommit("/first.gba",error));
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        batching.noteActivity(true);
+        // Wait past the former 250-ms deadline, then simulate a read/open
+        // operation that needs the main session lock. It must give Finder
+        // another complete quiet window even though it does not schedule GC.
+        std::this_thread::sleep_for(std::chrono::milliseconds(350));
+        {
+            std::lock_guard<std::mutex> lock(
+                batching.activityMutex(false));
+        }
 
         {
             std::lock_guard<std::mutex> lock(batching.mutex());

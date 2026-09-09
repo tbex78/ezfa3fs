@@ -187,7 +187,7 @@ public:
         }
 
         if(scope==ActivityLockScope::none) {
-            session().noteActivity(maintenance_relevant);
+            session().noteActivity(maintenance_relevant,false);
         } else {
             auto& mutex=
                 scope==ActivityLockScope::metadata

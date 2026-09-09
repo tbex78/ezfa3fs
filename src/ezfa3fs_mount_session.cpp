@@ -61,7 +61,10 @@ void MountSession::refreshStatfsSnapshot() {
         std::memory_order_relaxed);
 }
 
-void MountSession::noteActivity(bool maintenance_relevant) {
+void MountSession::noteActivity(
+    bool maintenance_relevant,
+    bool deferred_commit_relevant) {
+
     const auto now=std::chrono::steady_clock::now();
 
     if(idle_maintenance_) {
@@ -80,7 +83,7 @@ void MountSession::noteActivity(bool maintenance_relevant) {
         activity_condition_.notify_all();
     }
 
-    if(maintenance_relevant) {
+    if(deferred_commit_relevant) {
         std::lock_guard<std::mutex> lock(deferred_commit_mutex_);
 
         if(!deferred_commit_paths_.empty()) {

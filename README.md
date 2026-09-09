@@ -5,7 +5,7 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.51.1**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
+Application version: **0.51.2**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
 
 The FUSE/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
@@ -158,10 +158,13 @@ Raw erase and program commands modify cartridge blocks after confirmation. Stand
 ## MacFUSE behavior
 
 Ordinary writes are staged in host memory. A dirty file's final `release` queues
-it for 250 ms of mutation inactivity, allowing adjacent files from a Finder or
-`cp` copy to share one extent program, writer activation, verification pass,
-and metadata generation. Read-only metadata traffic does not postpone the
-batch. `flush` reports mount health without persisting a partially copied file;
+it for one second of relevant foreground inactivity, allowing adjacent files
+from a Finder or `cp` copy to share one extent program, writer activation,
+verification pass, and metadata generation. Operations requiring the main
+session lock, including file `open` and `read`, postpone the batch so Finder can
+advance to its next file. Metadata-only `getattr`, xattr, and `statfs` traffic
+does not postpone it indefinitely. `flush` reports mount health without
+persisting a partially copied file;
 `fsync` immediately drains the current file and every finalized file already
 queued. Clean unmount also drains all staged work. An asynchronous programming
 failure becomes sticky: later mutations fail until the cartridge is remounted,

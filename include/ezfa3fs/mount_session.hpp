@@ -39,7 +39,7 @@ public:
     }
 
     std::mutex& metadataActivityMutex() {
-        noteActivity(false);
+        noteActivity(false,false);
         return metadata_mutex_;
     }
 
@@ -47,11 +47,13 @@ public:
     // session mutex. This lets a queued FUSE request stop idle maintenance
     // after the current single-block step.
     std::mutex& activityMutex(bool maintenance_relevant = true) {
-        noteActivity(maintenance_relevant);
+        noteActivity(maintenance_relevant,true);
         return mutex_;
     }
 
-    void noteActivity(bool maintenance_relevant = true);
+    void noteActivity(
+        bool maintenance_relevant = true,
+        bool deferred_commit_relevant = true);
 
     struct StatfsSnapshot final {
         std::uint64_t capacity_bytes = 0;
@@ -98,7 +100,7 @@ private:
         foreground_resume_delay{250};
 
     inline static constexpr std::chrono::milliseconds
-        deferred_commit_delay{250};
+        deferred_commit_delay{1000};
 
     bool finishCommit(bool committed,std::string& error);
     std::vector<std::string> takeDeferredCommitPaths(
