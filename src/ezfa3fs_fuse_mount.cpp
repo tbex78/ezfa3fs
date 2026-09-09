@@ -141,7 +141,8 @@ class TracedActivityLock final {
 public:
     TracedActivityLock(const char* operation,
                        const char* path,
-                       bool maintenance_relevant)
+                       bool maintenance_relevant,
+                       bool metadata_only = false)
         : id_(++next_id_),
           operation_(operation),
           path_(path?path:"<null>"),
@@ -157,7 +158,11 @@ public:
             " command="+fuseCallerCommandLine(pid)+
             " waiting");
 
-        auto& mutex=session().activityMutex(maintenance_relevant);
+        auto& mutex=
+            metadata_only
+                ? session().metadataActivityMutex()
+                : session().activityMutex(maintenance_relevant);
+
         lock_=std::unique_lock<std::mutex>(mutex);
 
         acquired_=std::chrono::steady_clock::now();
@@ -267,7 +272,7 @@ int resizeFile(const char* path,off_t size,struct fuse_file_info* info) {
 }
 
 int ezfa3fsGetattr(const char* path,struct stat* status,struct fuse_file_info*) {
-    TracedActivityLock lock("getattr",path,false);MountNode info;if(!session().backend().lookup(path,info))return -ENOENT;
+    TracedActivityLock lock("getattr",path,false,true);MountNode info;if(!session().backend().lookup(path,info))return -ENOENT;
     std::memset(status,0,sizeof(*status));status->st_mode=(info.directory?S_IFDIR|0755:S_IFREG|0644);
     status->st_nlink=info.directory?2:1;status->st_size=static_cast<off_t>(info.size);status->st_uid=getuid();status->st_gid=getgid();
     const auto timestamp=static_cast<time_t>(info.modified_time?info.modified_time:session().mountedAt());
@@ -278,7 +283,7 @@ int ezfa3fsReaddir(const char* path,void* buffer,fuse_fill_dir_t filler,
                    enum fuse_readdir_flags) {
     if(offset<0)return -EINVAL;
 
-    TracedActivityLock lock("readdir",path,false);
+    TracedActivityLock lock("readdir",path,false,true);
     std::vector<std::string> children;
     if(!session().backend().list(path,children))return -ENOENT;
 
@@ -321,22 +326,30 @@ int ezfa3fsOpen(const char* path,struct fuse_file_info* info) {
     return 0;
 }
 int ezfa3fsChmod(const char* path,mode_t,struct fuse_file_info*) {
-    std::lock_guard<std::mutex> lock(session().mutex());
+    std::scoped_lock lock(
+        session().mutex(),
+        session().metadataMutex());
     // EZFA3FS formats do not store Unix permission bits. Accept chmod on a
     // writable mount so standard copy tools can finish, while getattr keeps
     // exposing the filesystem's fixed 0644/0755 policy.
     return metadataMutation(path);
 }
 int ezfa3fsChown(const char* path,uid_t,gid_t,struct fuse_file_info*) {
-    std::lock_guard<std::mutex> lock(session().mutex());return metadataMutation(path);
+    std::scoped_lock lock(
+        session().mutex(),
+        session().metadataMutex());return metadataMutation(path);
 }
 int ezfa3fsUtimens(const char* path,const struct timespec[2],struct fuse_file_info*) {
-    std::lock_guard<std::mutex> lock(session().mutex());return metadataMutation(path);
+    std::scoped_lock lock(
+        session().mutex(),
+        session().metadataMutex());return metadataMutation(path);
 }
 #if defined(__APPLE__)
 int ezfa3fsSetattr(const char* path,struct fuse_darwin_attr* attributes,
                  int to_set,struct fuse_file_info* info) {
-    std::lock_guard<std::mutex> lock(session().activityMutex());
+    std::scoped_lock lock(
+        session().activityMutex(),
+        session().metadataMutex());
     if((to_set&FUSE_SET_ATTR_SIZE)!=0) {
         if(!attributes)return -EINVAL;
         return resizeFile(path,attributes->size,info);
@@ -347,12 +360,14 @@ int ezfa3fsSetattr(const char* path,struct fuse_darwin_attr* attributes,
     return metadataMutation(path);
 }
 int ezfa3fsChflags(const char* path,struct fuse_file_info*,unsigned int) {
-    std::lock_guard<std::mutex> lock(session().mutex());
+    std::scoped_lock lock(
+        session().mutex(),
+        session().metadataMutex());
     return metadataMutation(path);
 }
 #endif
 int ezfa3fsAccess(const char* path,int) {
-    TracedActivityLock lock("listxattr",path,false);MountNode node;
+    TracedActivityLock lock("access",path,false,true);MountNode node;
     return session().backend().lookup(path,node)?0:-ENOENT;
 }
 int ezfa3fsRead(const char* path,char* buffer,size_t size,off_t offset,struct fuse_file_info*) {
@@ -360,22 +375,34 @@ int ezfa3fsRead(const char* path,char* buffer,size_t size,off_t offset,struct fu
     if(!session().backend().read(path,static_cast<std::size_t>(offset),size,bytes))return -ENOENT;
     std::memcpy(buffer,bytes.data(),bytes.size());return static_cast<int>(bytes.size());
 }
-int ezfa3fsMkdir(const char* path,mode_t) {std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+int ezfa3fsMkdir(const char* path,mode_t) {std::scoped_lock lock(
+        session().activityMutex(),
+        session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().createDirectory(path,error);return finishMutation(changed,error);}
-int ezfa3fsCreate(const char* path,mode_t,struct fuse_file_info* info) {std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+int ezfa3fsCreate(const char* path,mode_t,struct fuse_file_info* info) {std::scoped_lock lock(
+        session().activityMutex(),
+        session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().createFile(path,error);if(changed)installFileHandle(info,true,false);return changed?0:mutationFailure(session(),error);}
 int ezfa3fsWrite(const char* path,const char* buffer,size_t size,off_t offset,struct fuse_file_info* info) {
-    if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+    if(offset<0)return -EINVAL;std::scoped_lock lock(
+        session().activityMutex(),
+        session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     if(!session().backend().write(path,static_cast<std::size_t>(offset),reinterpret_cast<const std::uint8_t*>(buffer),size,error))return mutationFailure(session(),error);
     markFileHandleDirty(info);return static_cast<int>(size);
 }
 int ezfa3fsTruncate(const char* path,off_t size,struct fuse_file_info* info) {
-    std::lock_guard<std::mutex> lock(session().activityMutex());
+    std::scoped_lock lock(
+        session().activityMutex(),
+        session().metadataMutex());
     return resizeFile(path,size,info);
 }
-int ezfa3fsUnlink(const char* path) {std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+int ezfa3fsUnlink(const char* path) {std::scoped_lock lock(
+        session().activityMutex(),
+        session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().removeFile(path,error);return finishMutation(changed,error);}
-int ezfa3fsRmdir(const char* path) {std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+int ezfa3fsRmdir(const char* path) {std::scoped_lock lock(
+        session().activityMutex(),
+        session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().removeDirectory(path,error);return finishMutation(changed,error);}
 int ezfa3fsRename(const char* from,const char* to,unsigned flags) {
 #if defined(RENAME_NOREPLACE)
@@ -383,7 +410,9 @@ int ezfa3fsRename(const char* from,const char* to,unsigned flags) {
 #else
     if(flags!=0)return -ENOTSUP;
 #endif
-    std::lock_guard<std::mutex> lock(session().activityMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
+    std::scoped_lock lock(
+        session().activityMutex(),
+        session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().rename(from,to,error);return finishMutation(changed,error);}
 int ezfa3fsFlush(const char*,struct fuse_file_info*) {
     std::lock_guard<std::mutex> lock(session().activityMutex(false));
@@ -394,13 +423,17 @@ int ezfa3fsFlush(const char*,struct fuse_file_info*) {
     return beginMutation(session());
 }
 int ezfa3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().activityMutex(false));return beginMutation(session());}
-int ezfa3fsRelease(const char* path,struct fuse_file_info* info) {std::lock_guard<std::mutex> lock(session().activityMutex());
+int ezfa3fsRelease(const char* path,struct fuse_file_info* info) {std::scoped_lock lock(
+        session().activityMutex(),
+        session().metadataMutex());
     const auto handle=takeFileHandle(info);
     if(handle&&!handle->dirty)return beginMutation(session());
     return commitSessionFile(session(),path);
 }
 int ezfa3fsSetxattr(const char* path,const char*,const char*,size_t,int) {
-    std::lock_guard<std::mutex> lock(session().mutex());MountNode node;
+    std::scoped_lock lock(
+        session().mutex(),
+        session().metadataMutex());MountNode node;
     if(!session().backend().lookup(path,node))return -ENOENT;
     if(!session().backend().writable())return -EROFS;
     // EZFA3FS does not persist extended attributes. Accept and discard them so
@@ -408,20 +441,24 @@ int ezfa3fsSetxattr(const char* path,const char*,const char*,size_t,int) {
     return beginMutation(session());
 }
 int ezfa3fsGetxattr(const char* path,const char*,char*,size_t) {
-    TracedActivityLock lock("getxattr",path,false);MountNode node;
+    TracedActivityLock lock("getxattr",path,false,true);MountNode node;
     return session().backend().lookup(path,node)?-ENODATA:-ENOENT;
 }
 int ezfa3fsListxattr(const char* path,char*,size_t) {
-    TracedActivityLock lock("listxattr",path,false);MountNode node;
+    TracedActivityLock lock("listxattr",path,false,true);MountNode node;
     return session().backend().lookup(path,node)?0:-ENOENT;
 }
 int ezfa3fsRemovexattr(const char* path,const char*) {
-    std::lock_guard<std::mutex> lock(session().mutex());MountNode node;
+    std::scoped_lock lock(
+        session().mutex(),
+        session().metadataMutex());MountNode node;
     if(!session().backend().lookup(path,node))return -ENOENT;
     if(!session().backend().writable())return -EROFS;
     return beginMutation(session());
 }
-void ezfa3fsDestroy(void* private_data) {auto* mounted=static_cast<MountSession*>(private_data);std::lock_guard<std::mutex> lock(mounted->mutex());if(!mounted->backend().writable())return;if(mounted->commitFailed())return;std::string error;if(!mounted->commit(error))std::cerr<<"EZFA3FS commit failed: "<<error<<'\n';}
+void ezfa3fsDestroy(void* private_data) {auto* mounted=static_cast<MountSession*>(private_data);std::scoped_lock lock(
+        mounted->mutex(),
+        mounted->metadataMutex());if(!mounted->backend().writable())return;if(mounted->commitFailed())return;std::string error;if(!mounted->commit(error))std::cerr<<"EZFA3FS commit failed: "<<error<<'\n';}
 int ezfa3fsStatfs(const char* path,struct statvfs* status) {TracedActivityLock lock("statfs",path,false);
     std::memset(status,0,sizeof(*status));status->f_bsize=4096;status->f_frsize=4096;
     status->f_blocks=session().backend().capacityBytes()/4096;status->f_bfree=session().backend().freeBytes()/4096;

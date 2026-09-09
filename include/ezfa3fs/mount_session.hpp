@@ -26,6 +26,19 @@ public:
     MountBackend& backend() noexcept { return *backend_; }
     std::mutex& mutex() noexcept { return mutex_; }
 
+    // Protects in-memory mount state used by metadata-only FUSE operations.
+    // Idle cartridge maintenance deliberately does not take this mutex, so
+    // getattr/readdir/xattr requests can complete while flash erase or
+    // verification is in progress.
+    std::mutex& metadataMutex() noexcept {
+        return metadata_mutex_;
+    }
+
+    std::mutex& metadataActivityMutex() {
+        noteActivity(false);
+        return metadata_mutex_;
+    }
+
     // Signals meaningful filesystem activity before waiting for the main
     // session mutex. This lets a queued FUSE request stop idle maintenance
     // after the current single-block step.
@@ -58,7 +71,14 @@ private:
     void idleMaintenanceLoop();
 
     std::unique_ptr<MountBackend> backend_;
+
+    // Serializes cartridge operations and filesystem mutations.
     std::mutex mutex_;
+
+    // Serializes the RAM-visible directory/pending-file state independently
+    // from slow cartridge maintenance. Mutations take both mutexes.
+    std::mutex metadata_mutex_;
+
     std::uint64_t mounted_at_ = 0;
     bool commit_failed_ = false;
     bool commit_failure_reported_ = false;

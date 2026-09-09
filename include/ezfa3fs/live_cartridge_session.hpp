@@ -59,7 +59,7 @@ public:
     bool flush(std::string& error);
 
 private:
-    inline static constexpr std::chrono::seconds idle_delay{2};
+    inline static constexpr std::chrono::seconds idle_delay{5};
 
     bool flushLocked(std::string& error);
     void markActivityLocked() const;
