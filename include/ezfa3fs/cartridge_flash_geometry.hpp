@@ -28,7 +28,17 @@ public:
         const auto local=static_cast<std::uint32_t>(
             (block%blocks_per_window)*0x8000u);
         std::vector<CartridgeEraseSector> sectors;
-        const bool split_boot_block=block==0||block==511;
+        // EZFA III exposes 8-MiB flash windows.  Runtime erase verification
+        // proves that logical block 255, at the top of window 1, uses the
+        // device's 8-KiB boot-sector geometry as well: erasing it as one
+        // nominal 64-KiB sector left data starting exactly at byte 0x2000.
+        //
+        // Keep the already-qualified split blocks at the global cartridge
+        // boundaries and include the observed window-1 top boot block.
+        const bool split_boot_block=
+            block==0||
+            block==255||
+            block==511;
         const auto count=split_boot_block?
             static_cast<unsigned>((byte_count+boot_sector_size-1)/boot_sector_size):1u;
         sectors.reserve(count);
