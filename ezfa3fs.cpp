@@ -116,25 +116,6 @@ private:
     bool at_line_start_=true;
 };
 
-class TimestampedStderr final {
-public:
-    TimestampedStderr()
-        : original_(std::cerr.rdbuf()),
-          buffer_(original_) {
-
-        std::cerr.rdbuf(&buffer_);
-    }
-
-    ~TimestampedStderr() {
-        std::cerr.flush();
-        std::cerr.rdbuf(original_);
-    }
-
-private:
-    std::streambuf* original_;
-    TimestampedStreamBuffer buffer_;
-};
-
 class NullStreamBuffer final : public std::streambuf {
 protected:
     int_type overflow(int_type character) override {
@@ -1099,8 +1080,6 @@ int main(int argc,char** argv) {
             verbose||!log_directory.empty(),
             relaxed_sync);
     }
-
-    TimestampedStderr timestamped_stderr;
 
     if(argc==2&&std::string(argv[1])=="--version"){
         std::cout<<"ezfa3fs ";
