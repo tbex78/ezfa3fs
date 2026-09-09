@@ -379,17 +379,35 @@ bool LiveMountBackend::commitFile(const std::string& path,std::string& error) {
 }
 
 bool LiveMountBackend::commit(std::string& error) {
-    std::vector<std::string> persisted;
-    for(auto current=pending_files_.begin();current!=pending_files_.end();
-        ++current) {
-        if(!commitReady(current->second)) {
-            continue;
-        }
-        if(!persistFile(current->first,current->second,error))return false;
-        persisted.push_back(current->first);
+    std::vector<live::FileWrite> batch;
+    batch.reserve(pending_files_.size());
+    for(auto& current:pending_files_) {
+        if(commitReady(current.second))
+            batch.push_back({current.first,std::move(current.second.bytes),
+                             current.second.modified_time});
     }
-    if(persistence_observer_&&!persistence_observer_(error))return false;
-    for(const auto& name:persisted)pending_files_.erase(name);
+    const auto restore_staged_bytes=[&] {
+        for(auto& file:batch)
+            pending_files_.at(file.path).bytes=std::move(file.bytes);
+    };
+    if(filesystem_.awaitsDirectBootRom()) {
+        // The initial direct-boot ROM uses the capture-proven block-zero
+        // erase/program path and cannot share the normal extent allocator.
+        for(const auto& file:batch)
+            if(!filesystem_.putFile(file.path,file.bytes,file.modified_time,
+                                    error,maintenance_observer_)) {
+                restore_staged_bytes();
+                return false;
+            }
+    } else if(!filesystem_.putFiles(batch,error,maintenance_observer_)) {
+        restore_staged_bytes();
+        return false;
+    }
+    if(persistence_observer_&&!persistence_observer_(error)) {
+        restore_staged_bytes();
+        return false;
+    }
+    for(const auto& file:batch)pending_files_.erase(file.path);
     error.clear();return true;
 }
 

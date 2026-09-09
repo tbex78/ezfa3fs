@@ -454,6 +454,13 @@ bool Filesystem::programExtent(std::size_t first_block,
     const auto blocks=dataBlockCount(bytes.size());
     std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
     std::copy(bytes.begin(),bytes.end(),extent.begin());
+    return programPreparedExtent(first_block,extent,error);
+}
+
+bool Filesystem::programPreparedExtent(
+    std::size_t first_block,const std::vector<std::uint8_t>& extent,
+    std::string& error) {
+    const auto blocks=extent.size()/NorFlash::block_size;
     std::size_t completed=0;
     if(!flash_.prepareForProgram(error)||
        !flash_.programBlocks(first_block,extent.data(),blocks,completed,error)) {
@@ -587,78 +594,136 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
             error="the direct-boot ROM at cartridge offset 0 is immutable";return false;
         }
     }
-    std::cerr
-        <<"Filesystem putFile: "
-        <<path
-        <<" ("<<bytes.size()/1024
-        <<" KiB).\n";
+    return putFileViews({FileWriteView{&path,&bytes,modified_time}},
+                        error,maintenance);
+}
 
-    if(!validPath(path)||!parentExists(path)){error="invalid live file path";return false;}
-    if(const auto* existing=find(path);existing&&existing->directory){error="live path is a directory";return false;}
-    const auto blocks=dataBlockCount(bytes.size());
-    const auto old=entries_;
+bool Filesystem::putFiles(const std::vector<FileWrite>& files,
+                          std::string& error,
+                          MaintenanceObserver maintenance) {
+    std::vector<FileWriteView> views;
+    views.reserve(files.size());
+    for(const auto& file:files)
+        views.push_back({&file.path,&file.bytes,file.modified_time});
+    return putFileViews(views,error,maintenance);
+}
 
-    // Empty files require only a metadata entry. Do not run them through
-    // allocation/programming: allocateExtent(0) returns next_free_block_,
-    // and the normal programming path would unnecessarily rewrite the
-    // allocation cursor. Finder commonly creates many zero-byte placeholders
-    // before filling them with their real contents.
-    if(blocks==0) {
-        const auto first_block=next_free_block_;
-
-        std::cerr
-            <<"Metadata-only empty file: "
-            <<path
-            <<"; allocation cursor remains at block "
-            <<next_free_block_
-            <<".\n";
-
-        auto* existing=find(path);
-        Entry replacement{
-            path,
-            bytes.size(),
-            modified_time,
-            Crc32::calculate(bytes.data(),bytes.size()),
-            static_cast<std::uint32_t>(first_block),
-            0,
-            false
-        };
-
-        if(existing)
-            *existing=replacement;
-        else
-            entries_.push_back(std::move(replacement));
-
-        if(commit(error))
-            return true;
-
-        entries_=old;
+bool Filesystem::putFileViews(
+    const std::vector<FileWriteView>& files,std::string& error,
+    const MaintenanceObserver& maintenance) {
+    if(files.empty()) {
+        error.clear();
+        return true;
+    }
+    if(isDirectBoot()&&!directBootRom()) {
+        error="a batch cannot create the initial direct-boot ROM";
         return false;
     }
 
-    std::cerr
-        <<"Beginning allocation for "
-        <<path
-        <<": "<<blocks
-        <<" block(s).\n";
+    std::set<std::string> batch_names;
+    std::size_t total_blocks=0;
+    std::size_t manifest_size=isDirectBoot()?8:4;
+    const auto data_capacity=dataEndBlock()-firstDataBlock();
 
-    constexpr unsigned extent_attempts=3;
-    std::size_t first_block=0;std::string program_error;
-    bool programmed=false;
-    for(unsigned attempt=1;attempt<=extent_attempts;++attempt) {
-        if(!allocateExtent(blocks,first_block,error,maintenance)) {
-            if(!program_error.empty())error=program_error+"; alternate extent unavailable: "+error;
-            entries_=old;return false;
+    for(const auto& entry:entries_)
+        manifest_size+=32+entry.name.size();
+
+    for(const auto& file:files) {
+        if(!file.path||!file.bytes||
+           !validPath(*file.path)||!parentExists(*file.path)) {
+            error="invalid live file path in batch";
+            return false;
         }
-        next_free_block_=first_block;
-        if(programExtent(first_block,bytes,error)){programmed=true;break;}
-        program_error=error;
+        if(!batch_names.insert(*file.path).second) {
+            error="duplicate live file path in batch: "+*file.path;
+            return false;
+        }
+        const auto* existing=find(*file.path);
+        if(existing&&existing->directory) {
+            error="live path is a directory: "+*file.path;
+            return false;
+        }
+        if(existing&&isDirectBootRom(*existing)) {
+            error="the direct-boot ROM at cartridge offset 0 is immutable";
+            return false;
+        }
+        if(!existing)
+            manifest_size+=32+file.path->size();
+        if(file.path->size()>std::numeric_limits<std::uint16_t>::max()||
+           manifest_size>NorFlash::block_size-superblock_header) {
+            error="live manifest exceeds superblock capacity";
+            return false;
+        }
+        const auto blocks=dataBlockCount(file.bytes->size());
+        if(total_blocks>data_capacity||
+           blocks>data_capacity-total_blocks) {
+            error="live filesystem batch is out of free blocks";
+            return false;
+        }
+        total_blocks+=blocks;
     }
-    if(!programmed){entries_=old;error=program_error;return false;}
-    auto* existing=find(path);
-    Entry replacement{path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),static_cast<std::uint32_t>(first_block),static_cast<std::uint32_t>(blocks),false};
-    if(existing)*existing=replacement;else entries_.push_back(std::move(replacement));
-    if(commit(error))return true;entries_=old;return false;
+
+    std::cerr<<"Filesystem putFiles: "<<files.size()<<" file(s), "
+             <<total_blocks<<" block(s).\n";
+
+    std::size_t first_block=next_free_block_;
+    if(total_blocks) {
+        std::vector<std::uint8_t> extent(
+            total_blocks*NorFlash::block_size,0xFF);
+        std::size_t destination_block=0;
+        for(const auto& file:files) {
+            std::copy(file.bytes->begin(),file.bytes->end(),
+                      extent.begin()+static_cast<std::ptrdiff_t>(
+                          destination_block*NorFlash::block_size));
+            destination_block+=dataBlockCount(file.bytes->size());
+        }
+
+        constexpr unsigned extent_attempts=3;
+        std::string program_error;
+        bool programmed=false;
+        for(unsigned attempt=1;attempt<=extent_attempts;++attempt) {
+            if(!allocateExtent(total_blocks,first_block,error,maintenance)) {
+                if(!program_error.empty())
+                    error=program_error+"; alternate extent unavailable: "+error;
+                return false;
+            }
+            next_free_block_=first_block;
+            if(programPreparedExtent(first_block,extent,error)) {
+                programmed=true;
+                break;
+            }
+            program_error=error;
+        }
+        if(!programmed) {
+            error=program_error;
+            return false;
+        }
+    }
+
+    const auto old=entries_;
+    std::size_t block_offset=0;
+    for(const auto& file:files) {
+        const auto blocks=dataBlockCount(file.bytes->size());
+        Entry replacement{
+            *file.path,
+            file.bytes->size(),
+            file.modified_time,
+            Crc32::calculate(file.bytes->data(),file.bytes->size()),
+            static_cast<std::uint32_t>(first_block+block_offset),
+            static_cast<std::uint32_t>(blocks),
+            false
+        };
+        if(auto* existing=find(*file.path))
+            *existing=std::move(replacement);
+        else
+            entries_.push_back(std::move(replacement));
+        block_offset+=blocks;
+    }
+
+    if(commit(error))
+        return true;
+    entries_=old;
+    return false;
 }
 
 bool Filesystem::removeEmptyFiles(

@@ -5,7 +5,7 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.50.7**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
+Application version: **0.51.0**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
 
 The FUSE/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
@@ -29,10 +29,15 @@ The binary is `build/cmake/ezfa3fs`.
 ./build/cmake/ezfa3fs format cartridge.ezfa3fs
 ./build/cmake/ezfa3fs mkdir cartridge.ezfa3fs documents
 ./build/cmake/ezfa3fs put cartridge.ezfa3fs test.txt documents/test.txt
+./build/cmake/ezfa3fs put-many cartridge.ezfa3fs README.md LICENSE
 ./build/cmake/ezfa3fs list cartridge.ezfa3fs
 ./build/cmake/ezfa3fs verify cartridge.ezfa3fs
 ./build/cmake/ezfa3fs card-write cartridge.ezfa3fs
 ```
+
+`put-many` imports source files at the image root using their basenames. It
+allocates and programs one combined contiguous extent, publishes one metadata
+generation, and writes the 32-MiB host image once.
 
 `card-write` verifies the image, asks for `y/N` confirmation, then erases, programs, and verifies the complete 32 MiB cartridge. Pass `--skip-verification` to omit only the final cartridge read-back verification:
 
@@ -63,6 +68,20 @@ Mount with direct transactional writes:
 Add `--verify` to either mount mode to verify referenced file data before mounting. A writable mount without `--verify` reads only the metadata needed to start, which is much faster on cartridges containing large files. Without `--verify`, `card-mount` does not run the full referenced-file checksum verification.
 
 For writable mounts, `--skip-snapshot-restore` disables the normal save-preservation workflow for that mount. EZFA3FS does not request the pre-writer or post-unmount USB reconnect, does not capture the pre-writer save snapshot, and does not restore save memory after unmount. Without this option, the existing snapshot/reconnect/restore behavior is unchanged.
+
+For a faster unmounted import of several files, use one cartridge transaction:
+
+```sh
+./build/cmake/ezfa3fs card-put-many first.gba notes.txt artwork.bmp
+```
+
+The command uses each source basename as its root-level destination, allocates
+one combined extent, performs one data-writer preparation, verifies all blocks,
+and publishes one metadata generation. It retains the normal save snapshot and
+restoration workflow. Pass `--skip-snapshot-restore` only when intentionally
+accepting the same save-memory risk described for writable mounts. An empty
+direct-boot filesystem must receive its special block-zero ROM through `put` on
+an image or through a writable mount before it can accept a normal batch.
 
 Unmount from another terminal with `umount mountpoint`.
 
@@ -97,6 +116,7 @@ ezfa3fs list IMAGE.ezfa3fs
 ezfa3fs verify IMAGE.ezfa3fs
 ezfa3fs mkdir IMAGE.ezfa3fs DIRECTORY
 ezfa3fs put IMAGE.ezfa3fs SOURCE_FILE [DESTINATION]
+ezfa3fs put-many IMAGE.ezfa3fs SOURCE_FILE...
 ezfa3fs get IMAGE.ezfa3fs FILE OUTPUT_FILE
 ezfa3fs rm IMAGE.ezfa3fs FILE
 ezfa3fs rmdir IMAGE.ezfa3fs DIRECTORY
@@ -107,6 +127,8 @@ ezfa3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
 ```
 
 When `DESTINATION` is omitted from `put`, the source path is also the destination.
+`put-many` places every source at the image root using its basename and rejects
+duplicate destination basenames.
 
 Cartridge commands:
 
@@ -116,6 +138,7 @@ ezfa3fs card-mount MOUNTPOINT --writable --foreground [--verify] [--verbose] [--
 ezfa3fs card-pull IMAGE.ezfa3fs
 ezfa3fs card-format [--direct-boot]
 ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
+ezfa3fs card-put-many SOURCE_FILE... [--skip-snapshot-restore]
 ezfa3fs card-gc
 ezfa3fs card-compact
 ezfa3fs card-space
@@ -155,7 +178,13 @@ EZFA3FS stores CRC32 values for corruption detection. SHA-256 is calculated exte
 
 ## Performance and maintenance
 
-EZFA3FS caches cartridge reads lazily in host memory, up to 32 MiB when every block is touched. Repeated reads and directory access are therefore faster without a full scan during normal mount startup.
+EZFA3FS caches cartridge reads lazily in host memory, up to 32 MiB when every block is touched. Repeated reads and directory access are therefore faster without a full scan during normal mount startup. Disabled FUSE tracing also skips caller command-line lookup and trace formatting; verbose/logfile mounts cache those lookups by process.
+
+For several source files, prefer `put-many` or `card-put-many`. The files share
+one allocation/program transaction and one metadata generation, amortizing the
+cartridge writer transition that otherwise occurs for each separately committed
+file. The existing `commit()` mount boundary also batches all simultaneously
+staged non-empty files through this same filesystem transaction.
 
 NOR operations remain slow: changed blocks are programmed and read back, and metadata is written to the alternate superblock and verified. Hardware failures are retried up to three times. Large copies can take materially longer than ordinary host-filesystem copies.
 

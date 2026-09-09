@@ -60,7 +60,8 @@ public:
                                 std::ostream& progress,std::string& error,
                                 bool allow_metadata=false);
     bool programLiveExtent(std::size_t first_block,
-                           const std::vector<std::uint8_t>& bytes,
+                           const std::uint8_t* source,
+                           std::size_t byte_count,
                            std::size_t& completed_blocks,
                            std::ostream& progress,std::string& error,
                            bool allow_metadata=false);
@@ -81,7 +82,10 @@ private:
     bool save_preservation_enabled = true;
     bool automatic_save_recovery = false;
 
-    bool out(const std::vector<std::uint8_t>& bytes, std::string& error);
+    bool out(const std::uint8_t* bytes,std::size_t size,std::string& error);
+    bool out(const std::vector<std::uint8_t>& bytes,std::string& error) {
+        return out(bytes.data(),bytes.size(),error);
+    }
     bool in(std::vector<std::uint8_t>& bytes, std::size_t size,
             std::string& error);
     bool commandEcho(const std::vector<std::uint8_t>& command,
@@ -123,7 +127,7 @@ private:
                  std::string& error);
     bool selectWriteWindow(unsigned window, std::string& error);
     bool programTransaction(std::uint32_t word_address,
-                            const std::vector<std::uint8_t>& data,
+                            const std::uint8_t* data,std::size_t size,
                             const char* operation,std::string& error);
     bool finishWriteOperation(std::string& error);
     bool finishLiveWriteOperation(std::string& error);
@@ -149,6 +153,13 @@ std::size_t metadataTransferSize(const std::vector<std::uint8_t>& bytes)
     return std::min(bytes.size(),
         ((meaningful+transfer_granularity-1)/transfer_granularity)*
         transfer_granularity);
+}
+
+long long elapsedMilliseconds(
+    std::chrono::steady_clock::time_point begin,
+    std::chrono::steady_clock::time_point end) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        end-begin).count();
 }
 } // namespace
 
@@ -263,17 +274,17 @@ std::string formatFlashId(const std::array<std::uint8_t,4>& id)
 
 } // namespace
 
-bool CartridgeStorage::Impl::out(const std::vector<std::uint8_t>& bytes,
+bool CartridgeStorage::Impl::out(const std::uint8_t* bytes,std::size_t size,
                                  std::string& error)
 {
     if(!handle){error="USB OUT attempted without an open cartridge session";return false;}
     for (unsigned attempt = 0; attempt < 2; ++attempt) {
         int transferred = 0;
         const int result = libusb_bulk_transfer(handle, 0x02,
-            const_cast<unsigned char*>(bytes.data()), static_cast<int>(bytes.size()),
+            const_cast<unsigned char*>(bytes),static_cast<int>(size),
             &transferred, timeout_ms);
         if (result == 0) {
-            if (transferred != static_cast<int>(bytes.size())) {
+            if (transferred != static_cast<int>(size)) {
                 error = "USB OUT returned a short transfer"; return false;
             }
             return true;
@@ -821,15 +832,15 @@ bool CartridgeStorage::Impl::selectWriteWindow(unsigned window,
 }
 
 bool CartridgeStorage::Impl::programTransaction(
-    std::uint32_t word_address,const std::vector<std::uint8_t>& data,
+    std::uint32_t word_address,const std::uint8_t* data,std::size_t size,
     const char* operation,std::string& error) {
     std::vector<std::uint8_t> command=
         {0x5A,0xA5,0x92,0,0,0,0,0,0,0,0,0,0x41};
     putLe32(command,4,word_address);
-    putLe32(command,8,static_cast<std::uint32_t>(data.size()));
+    putLe32(command,8,static_cast<std::uint32_t>(size));
     if(!out(command,error))return false;
     preciseCommandDataDelay();
-    if(!out(data,error))return false;
+    if(!out(data,size,error))return false;
     std::vector<std::uint8_t> response;
     if(!in(response,command.size(),error))return false;
     command[12]=0;
@@ -924,7 +935,8 @@ bool CartridgeStorage::Impl::programImage(
         const auto local=static_cast<std::uint32_t>(offset%window_size);
         std::vector<std::uint8_t> data(image.begin()+static_cast<std::ptrdiff_t>(offset),
                                        image.begin()+static_cast<std::ptrdiff_t>(offset+size));
-        if(!programTransaction(local/2,data,"cartridge program",error))return false;
+        if(!programTransaction(local/2,data.data(),data.size(),
+                               "cartridge program",error))return false;
         progress << "\rProgramming " << offset+size << '/' << image.size() << std::flush;
     }
     progress << '\n';
@@ -944,7 +956,8 @@ bool CartridgeStorage::Impl::programImageRange(
     const auto window=static_cast<unsigned>(offset/window_size);
     if(!selectWriteWindow(window,error))return false;
     const auto local=static_cast<std::uint32_t>(offset%window_size);
-    if(!programTransaction(local/2,bytes,"cartridge format metadata",error))
+    if(!programTransaction(local/2,bytes.data(),bytes.size(),
+                           "cartridge format metadata",error))
         return false;
     progress<<"Programmed EZFA3FS metadata ("<<bytes.size()/1024<<" KiB).\n";
     return finishWriteOperation(error);
@@ -1046,7 +1059,8 @@ bool CartridgeStorage::Impl::eraseLiveBlockPrefix(
 bool CartridgeStorage::Impl::programLiveBlock(std::size_t block,const std::vector<std::uint8_t>& bytes,std::ostream& progress,std::string& error,bool allow_metadata)
 {
     std::size_t completed=0;
-    return programLiveExtent(block,bytes,completed,progress,error,allow_metadata);
+    return programLiveExtent(block,bytes.data(),bytes.size(),completed,
+                             progress,error,allow_metadata);
 }
 bool CartridgeStorage::Impl::programLiveBlockPrefix(
     std::size_t block,const std::vector<std::uint8_t>& bytes,
@@ -1062,21 +1076,22 @@ bool CartridgeStorage::Impl::programLiveBlockPrefix(
     const auto local=static_cast<std::uint32_t>(
         (block%blocks_per_window)*0x8000u);
     if(!selectWriteWindow(window,error)||
-       !programTransaction(local,bytes,"cartridge live metadata program",error)||
+       !programTransaction(local,bytes.data(),bytes.size(),
+                           "cartridge live metadata program",error)||
        !finishLiveWriteOperation(error))return false;
     progress<<"Programmed cartridge block "<<block<<" metadata prefix ("
             <<bytes.size()/1024<<" KiB).\n";
     error.clear();return true;
 }
 bool CartridgeStorage::Impl::programLiveExtent(
-    std::size_t first_block,const std::vector<std::uint8_t>& bytes,
+    std::size_t first_block,const std::uint8_t* source,std::size_t byte_count,
     std::size_t& completed_blocks,std::ostream& progress,std::string& error,
     bool allow_metadata) {
     constexpr std::size_t block_size=live::NorFlash::block_size;
     constexpr std::size_t blocks_per_window=0x80;
     completed_blocks=0;
-    const auto block_count=bytes.size()/block_size;
-    if(bytes.empty()||bytes.size()%block_size||first_block>=0x200||
+    const auto block_count=byte_count/block_size;
+    if(!source||byte_count==0||byte_count%block_size||first_block>=0x200||
        block_count>0x200-first_block||(!allow_metadata&&first_block<2)) {
         error="live extent programming is outside the permitted range";return false;
     }
@@ -1091,10 +1106,8 @@ bool CartridgeStorage::Impl::programLiveExtent(
         }
         const auto local=static_cast<std::uint32_t>(
             (block%blocks_per_window)*0x8000u);
-        std::vector<std::uint8_t> data(
-            bytes.begin()+static_cast<std::ptrdiff_t>(i*block_size),
-            bytes.begin()+static_cast<std::ptrdiff_t>((i+1)*block_size));
-        if(!programTransaction(local,data,"cartridge live block program",error)) {
+        if(!programTransaction(local,source+i*block_size,block_size,
+                               "cartridge live block program",error)) {
             if(block_count>1)progress<<'\n';
             return false;
         }
@@ -1140,7 +1153,7 @@ bool CartridgeStorage::Impl::programLiveBlockPrefix(std::size_t,
                                                     const std::vector<std::uint8_t>&,
                                                     std::ostream&,std::string& error,bool)
 { error="EZFA3FS was built without libusb support";return false; }
-bool CartridgeStorage::Impl::programLiveExtent(std::size_t,const std::vector<std::uint8_t>&,
+bool CartridgeStorage::Impl::programLiveExtent(std::size_t,const std::uint8_t*,std::size_t,
                                                std::size_t& completed,std::ostream&,
                                                std::string& error,bool)
 { completed=0;error="EZFA3FS was built without libusb support";return false; }
@@ -1453,13 +1466,21 @@ bool CartridgeStorage::openLiveWriteSessionWithRetry(
     return false;
 }
 bool CartridgeStorage::restartLiveWriteSession(std::string& error) {
+    const auto started=std::chrono::steady_clock::now();
     std::string close_error;
     const bool closed=impl_->close(close_error,false);
+    const auto closed_at=std::chrono::steady_clock::now();
 
-    if(openLiveWriteSessionWithRetry(
-            error,
-            true,
-            live_write_preserve_save_snapshot_))
+    const bool opened=openLiveWriteSessionWithRetry(
+        error,
+        true,
+        live_write_preserve_save_snapshot_);
+    const auto finished=std::chrono::steady_clock::now();
+    std::cerr<<"Cartridge writer restart timing: close "
+             <<elapsedMilliseconds(started,closed_at)<<" ms, reopen "
+             <<elapsedMilliseconds(closed_at,finished)<<" ms, total "
+             <<elapsedMilliseconds(started,finished)<<" ms.\n";
+    if(opened)
         return true;
 
     if(!closed&&!close_error.empty())
@@ -1698,19 +1719,38 @@ bool CartridgeStorage::replaceLiveFilesystemMetadata(
 bool CartridgeStorage::programLiveFilesystemExtent(
     std::size_t first_block,const std::vector<std::uint8_t>& bytes,
     std::size_t& completed_blocks,std::string& error) {
+    if(bytes.size()%live::NorFlash::block_size) {
+        completed_blocks=0;
+        error="live filesystem extent size is not block aligned";
+        return false;
+    }
+    return programLiveFilesystemExtent(
+        first_block,bytes.data(),bytes.size()/live::NorFlash::block_size,
+        completed_blocks,error);
+}
+
+bool CartridgeStorage::programLiveFilesystemExtent(
+    std::size_t first_block,const std::uint8_t* source,
+    std::size_t block_count,std::size_t& completed_blocks,
+    std::string& error) {
     constexpr std::size_t block_size=live::NorFlash::block_size;
     completed_blocks=0;
 
     // Empty files have no NOR data extent. Finder may create and finalize
     // temporary zero-length placeholders while copying; those require only
     // filesystem metadata and must not enter the cartridge writer path.
-    if(bytes.empty()) {
+    if(block_count==0) {
         error.clear();
         return true;
     }
+    if(!source||first_block>=live::NorFlash::block_count||
+       block_count>live::NorFlash::block_count-first_block) {
+        error="live filesystem extent is out of range";
+        return false;
+    }
     std::string operation_error;
 
-    const auto requested_blocks=bytes.size()/block_size;
+    const auto requested_blocks=block_count;
 
     std::cerr
         <<"Preparing cartridge write for block "
@@ -1724,7 +1764,7 @@ bool CartridgeStorage::programLiveFilesystemExtent(
     std::cerr
         <<" ("<<requested_blocks
         <<" block(s), "
-        <<bytes.size()/1024
+        <<block_count*block_size/1024
         <<" KiB).\n";
     if(!isOpen()&&!openLiveWriteSessionWithRetry(
                 operation_error,
@@ -1744,15 +1784,18 @@ bool CartridgeStorage::programLiveFilesystemExtent(
 
     std::cerr<<"..."<<std::endl;
 
-    const bool transferred=impl_->programLiveExtent(first_block,bytes,
+    const auto program_started=std::chrono::steady_clock::now();
+    const bool transferred=impl_->programLiveExtent(
+        first_block,source,block_count*block_size,
         completed_blocks,std::cerr,operation_error,true);
+    const auto program_finished=std::chrono::steady_clock::now();
 
     std::cerr
         <<"Cartridge flash program transfer finished; "
           "starting readback verification.\n";
-    const auto block_count=bytes.size()/block_size;
     const auto verify_count=transferred?block_count:
         std::min(block_count,completed_blocks+1);
+    const auto verification_started=std::chrono::steady_clock::now();
     for(std::size_t i=0;i<verify_count;++i) {
         std::cerr
             <<"Verifying cartridge block "
@@ -1761,8 +1804,7 @@ bool CartridgeStorage::programLiveFilesystemExtent(
             <<std::endl;
 
         std::vector<std::uint8_t> expected(
-            bytes.begin()+static_cast<std::ptrdiff_t>(i*block_size),
-            bytes.begin()+static_cast<std::ptrdiff_t>((i+1)*block_size));
+            source+i*block_size,source+(i+1)*block_size);
         const auto verification_error=(transferred||i<completed_blocks)?
             std::string{}:operation_error;
         if(!verifyLiveBlockAfterWrite(first_block+i,expected,"program",
@@ -1798,6 +1840,13 @@ bool CartridgeStorage::programLiveFilesystemExtent(
             }
         }
     }
+    const auto verification_finished=std::chrono::steady_clock::now();
+    std::cerr<<"Cartridge extent timing: program "
+             <<elapsedMilliseconds(program_started,program_finished)
+             <<" ms, verification "
+             <<elapsedMilliseconds(verification_started,
+                                    verification_finished)
+             <<" ms.\n";
     if(!transferred) {
         if(verify_count==block_count){completed_blocks=block_count;error.clear();return true;}
         error=operation_error;return false;
@@ -1861,13 +1910,11 @@ bool CartridgeStorage::replaceLiveFilesystemExtent(
             if(!erased) {
                 last_error=operation_error;
             } else {
-                const std::vector<std::uint8_t> remaining(
-                    bytes.begin()+static_cast<std::ptrdiff_t>(next*block_size),
-                    bytes.end());
                 std::size_t transferred_blocks=0;
                 const bool transferred=impl_->programLiveExtent(
-                    first_block+next,remaining,transferred_blocks,std::cerr,
-                    operation_error,true);
+                    first_block+next,bytes.data()+next*block_size,
+                    bytes.size()-next*block_size,transferred_blocks,
+                    std::cerr,operation_error,true);
                 const auto remaining_count=block_count-next;
                 const auto verify_count=transferred?remaining_count:
                     std::min(remaining_count,transferred_blocks+1);

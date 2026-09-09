@@ -52,4 +52,9 @@ int main() {
     require(mounted_backend->commit_count==1);
     require(session.shouldReportFailure(error));
     require(!session.shouldReportFailure(error));
+
+    auto traced_backend=std::make_unique<FailingBackend>();
+    ezfa3fs::MountSession traced(
+        std::move(traced_backend),{},true);
+    require(traced.fuseTraceEnabled());
 }

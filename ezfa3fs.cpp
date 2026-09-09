@@ -469,6 +469,7 @@ void usage() {
   ezfa3fs verify IMAGE.ezfa3fs
   ezfa3fs mkdir IMAGE.ezfa3fs DIRECTORY
   ezfa3fs put IMAGE.ezfa3fs SOURCE_FILE [DESTINATION]
+  ezfa3fs put-many IMAGE.ezfa3fs SOURCE_FILE...
   ezfa3fs get IMAGE.ezfa3fs FILE OUTPUT_FILE
   ezfa3fs rm IMAGE.ezfa3fs FILE
   ezfa3fs rmdir IMAGE.ezfa3fs DIRECTORY
@@ -480,6 +481,7 @@ void usage() {
   ezfa3fs card-pull IMAGE.ezfa3fs
   ezfa3fs card-format [--direct-boot]
   ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
+  ezfa3fs card-put-many SOURCE_FILE... [--skip-snapshot-restore]
   ezfa3fs card-gc
   ezfa3fs card-compact
   ezfa3fs card-space
@@ -578,11 +580,12 @@ int liveMount(const fs::path& image,const fs::path& mountpoint,bool writable,
     auto backend=std::make_unique<ezfa3fs::LiveMountBackend>(
         filesystem,ezfa3fs::live::Filesystem::MaintenanceObserver{},persist,writable);
     return ezfa3fs::mountBackend(std::move(backend),mountpoint.string(),foreground,
-                               "ezfa3fs-image");
+                               "ezfa3fs-image",false);
 }
 int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
                   bool verify_referenced_data,
-                  bool skip_snapshot_restore) {
+                  bool skip_snapshot_restore,
+                  bool trace_enabled) {
     if(!foreground){
         std::cerr<<"Cartridge mounting requires --foreground.\n";
         return 1;
@@ -615,7 +618,8 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
             mountpoint.string(),
             foreground,
             verify_referenced_data,
-            !skip_snapshot_restore);
+            !skip_snapshot_restore,
+            trace_enabled);
     }
 
     /*
@@ -669,7 +673,8 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
             std::move(backend),
             mountpoint.string(),
             foreground,
-            "ezfa3fs-card");
+            "ezfa3fs-card",
+            trace_enabled);
     }
 
     /*
@@ -707,7 +712,8 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
         std::move(backend),
         mountpoint.string(),
         foreground,
-        "ezfa3fs-card");
+        "ezfa3fs-card",
+        trace_enabled);
 
     std::string close_error;
     if(!storage.close(close_error)){
@@ -726,6 +732,96 @@ int livePut(const fs::path& image,const fs::path& source,const std::string& dest
     if(!filesystem.putFile(destination,bytes,fileModifiedTime(source),error,
                            reportAutomaticMaintenance)||
        !flash.save(image.string(),error)){std::cerr<<error<<'\n';return 1;}return 0; }
+
+bool collectFileWrites(const std::vector<fs::path>& sources,
+                       std::vector<ezfa3fs::live::FileWrite>& files,
+                       std::string& error) {
+    std::set<std::string> destinations;
+    files.clear();
+    files.reserve(sources.size());
+    for(const auto& source:sources) {
+        if(!fs::is_regular_file(source)) {
+            error="input is not a regular file: "+source.string();
+            return false;
+        }
+        const auto destination=source.filename().string();
+        if(destination.empty()||!destinations.insert(destination).second) {
+            error="duplicate or empty destination filename: "+destination;
+            return false;
+        }
+        std::vector<std::uint8_t> bytes;
+        if(!readFile(source,bytes)) {
+            error="could not read input: "+source.string();
+            return false;
+        }
+        files.push_back({destination,std::move(bytes),fileModifiedTime(source)});
+    }
+    error.clear();
+    return true;
+}
+
+int livePutMany(const fs::path& image,
+                const std::vector<fs::path>& sources) {
+    std::vector<ezfa3fs::live::FileWrite> files;
+    std::string error;
+    if(!collectFileWrites(sources,files,error)) {
+        std::cerr<<error<<'\n';
+        return 1;
+    }
+    ezfa3fs::live::NorFlash flash;
+    ezfa3fs::live::Filesystem filesystem(flash);
+    if(!loadLive(image,flash,filesystem))return 1;
+    if(!filesystem.putFiles(files,error,reportAutomaticMaintenance)||
+       !flash.save(image.string(),error)) {
+        std::cerr<<error<<'\n';
+        return 1;
+    }
+    std::cout<<"Imported "<<files.size()<<" files in one EZFA3FS transaction.\n";
+    return 0;
+}
+
+int liveCardPutMany(const std::vector<fs::path>& sources,
+                    bool skip_snapshot_restore) {
+    std::vector<ezfa3fs::live::FileWrite> files;
+    std::string error;
+    if(!collectFileWrites(sources,files,error)) {
+        std::cerr<<error<<'\n';
+        return 1;
+    }
+
+    std::cout
+        <<"WARNING: this will program "<<files.size()
+        <<" file(s) directly to the EZFA3FS cartridge in one transaction.\n";
+    if(skip_snapshot_restore)
+        std::cout<<"Save snapshot restoration is disabled for this import.\n";
+    else
+        std::cout<<"The pre-writer save snapshot will be restored after the import.\n";
+    if(!confirm("Proceed")) {
+        std::cout<<"Cancelled; cartridge was not modified.\n";
+        return 1;
+    }
+
+    ezfa3fs::LiveCartridgeSession session;
+    if(!session.open(error,false,{},!skip_snapshot_restore)) {
+        std::cerr<<error<<'\n';
+        return 1;
+    }
+    const bool imported=session.filesystem().putFiles(
+        files,error,reportAutomaticMaintenance);
+    std::string close_error;
+    const bool closed=session.close(close_error);
+    if(!imported||!closed) {
+        if(!imported&&!closed&&!close_error.empty())
+            error+="; session close failed: "+close_error;
+        else if(error.empty())
+            error=close_error;
+        std::cerr<<error<<'\n';
+        return 1;
+    }
+    std::cout<<"Imported and verified "<<files.size()
+             <<" files in one cartridge transaction.\n";
+    return 0;
+}
 int liveGet(const fs::path& image,const std::string& source,const fs::path& output) { ezfa3fs::live::NorFlash flash;ezfa3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;std::vector<std::uint8_t> bytes;
     if(!filesystem.readFile(source,bytes,error)||!writeFile(output,bytes.data(),bytes.size())){if(error.empty())error="could not write output file";std::cerr<<error<<'\n';return 1;}return 0; }
 int liveRemove(const fs::path& image,const std::string& path,bool directory) { ezfa3fs::live::NorFlash flash;ezfa3fs::live::Filesystem filesystem(flash);if(!loadLive(image,flash,filesystem))return 1;std::string error;
@@ -975,7 +1071,8 @@ int main(int argc,char** argv) {
             writable,
             foreground,
             verify_referenced_data,
-            skip_snapshot_restore);
+            skip_snapshot_restore,
+            verbose||!log_directory.empty());
     }
 
     TimestampedStderr timestamped_stderr;
@@ -1000,6 +1097,11 @@ int main(int argc,char** argv) {
     }
     if(argc==4&&std::string(argv[1])=="mkdir")return liveMkdir(argv[2],argv[3]);
     if((argc==4||argc==5)&&std::string(argv[1])=="put")return livePut(argv[2],argv[3],argc==5?argv[4]:argv[3]);
+    if(argc>=4&&std::string(argv[1])=="put-many") {
+        std::vector<fs::path> sources;
+        for(int i=3;i<argc;++i)sources.emplace_back(argv[i]);
+        return livePutMany(argv[2],sources);
+    }
     if(argc==5&&std::string(argv[1])=="get")return liveGet(argv[2],argv[3],argv[4]);
     if(argc==4&&std::string(argv[1])=="rm")return liveRemove(argv[2],argv[3],false);
     if(argc==4&&std::string(argv[1])=="rmdir")return liveRemove(argv[2],argv[3],true);
@@ -1018,6 +1120,26 @@ int main(int argc,char** argv) {
             std::cerr<<"Unknown card-write option: "<<argv[3]<<'\n';return 1;
         }
         return liveCardWrite(argv[2],argc==3);
+    }
+    if(argc>=3&&std::string(argv[1])=="card-put-many") {
+        bool skip_snapshot_restore=false;
+        std::vector<fs::path> sources;
+        for(int i=2;i<argc;++i) {
+            const std::string argument(argv[i]);
+            if(argument=="--skip-snapshot-restore")
+                skip_snapshot_restore=true;
+            else if(argument.rfind("--",0)==0) {
+                std::cerr<<"Unknown card-put-many option: "<<argument<<'\n';
+                return 1;
+            } else {
+                sources.emplace_back(argument);
+            }
+        }
+        if(sources.empty()) {
+            std::cerr<<"card-put-many requires at least one source file.\n";
+            return 1;
+        }
+        return liveCardPutMany(sources,skip_snapshot_restore);
     }
     if(argc==2&&std::string(argv[1])=="card-gc")return liveCardGarbageCollect();
     if(argc==2&&std::string(argv[1])=="card-compact")return liveCardCompact();

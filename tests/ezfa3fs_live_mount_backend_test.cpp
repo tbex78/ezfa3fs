@@ -68,6 +68,44 @@ int main() {
     require(persisted_backend.commitFile("/saved/file.txt",error));
     require(persistence_count==2);
 
+    const auto batch_generation=persisted_filesystem.generation();
+    require(persisted_backend.createFile("/saved/first.bin",error));
+    require(persisted_backend.write(
+        "/saved/first.bin",0,data,sizeof(data),error));
+    require(persisted_backend.createFile("/saved/second.bin",error));
+    require(persisted_backend.write(
+        "/saved/second.bin",0,data,sizeof(data),error));
+    require(persisted_backend.commit(error));
+    require(persisted_filesystem.generation()==batch_generation+1);
+    require(persistence_count==3);
+
+    ezfa3fs::live::NorFlash retry_flash;
+    require(ezfa3fs::live::Filesystem::format(retry_flash,error));
+    ezfa3fs::live::Filesystem retry_filesystem(retry_flash);
+    require(ezfa3fs::live::Filesystem::open(
+        retry_flash,retry_filesystem,error));
+    bool persistence_fails=true;
+    ezfa3fs::LiveMountBackend retry_backend(
+        retry_filesystem,{},[&](std::string& observer_error) {
+            if(persistence_fails) {
+                observer_error="simulated image save failure";
+                return false;
+            }
+            observer_error.clear();
+            return true;
+        });
+    require(retry_backend.createFile("/retry.bin",error));
+    require(retry_backend.write(
+        "/retry.bin",0,deferred_data,sizeof(deferred_data),error));
+    require(!retry_backend.commit(error));
+    require(retry_backend.read(
+        "/retry.bin",0,sizeof(deferred_data),output));
+    require(output==std::vector<std::uint8_t>({'n','e','x','t'}));
+    persistence_fails=false;
+    require(retry_backend.commit(error));
+    require(retry_filesystem.readFile("retry.bin",output,error));
+    require(output==std::vector<std::uint8_t>({'n','e','x','t'}));
+
     ezfa3fs::live::NorFlash direct_flash;
     require(ezfa3fs::live::Filesystem::formatDirectBootEmpty(direct_flash,error));
     ezfa3fs::live::Filesystem direct_filesystem(direct_flash);

@@ -12,9 +12,11 @@ namespace ezfa3fs {
 
 MountSession::MountSession(
     std::unique_ptr<MountBackend> backend,
-    IdleMaintenance idle_maintenance)
+    IdleMaintenance idle_maintenance,
+    bool fuse_trace_enabled)
     : backend_(std::move(backend)),
       mounted_at_(currentUnixTimestamp()),
+      fuse_trace_enabled_(fuse_trace_enabled),
       idle_maintenance_(std::move(idle_maintenance)) {
 
     statfs_capacity_bytes_=backend_->capacityBytes();

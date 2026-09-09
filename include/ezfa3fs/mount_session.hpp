@@ -21,7 +21,8 @@ public:
 
     explicit MountSession(
         std::unique_ptr<MountBackend> backend,
-        IdleMaintenance idle_maintenance = {});
+        IdleMaintenance idle_maintenance = {},
+        bool fuse_trace_enabled = false);
     ~MountSession();
 
     MountBackend& backend() noexcept { return *backend_; }
@@ -70,6 +71,7 @@ public:
     void refreshStatfsSnapshot();
 
     std::uint64_t mountedAt() const noexcept { return mounted_at_; }
+    bool fuseTraceEnabled() const noexcept { return fuse_trace_enabled_; }
 
     bool mutationAllowed(std::string& error) const;
     bool commitFile(const std::string& path,std::string& error);
@@ -107,6 +109,7 @@ private:
     std::atomic<std::size_t> statfs_entry_count_{0};
 
     std::uint64_t mounted_at_ = 0;
+    bool fuse_trace_enabled_ = false;
     bool commit_failed_ = false;
     bool commit_failure_reported_ = false;
     std::string commit_error_;

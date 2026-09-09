@@ -24,8 +24,7 @@ bool CartridgeLiveDevice::programBlocks(std::size_t first_block,
        block_count>live::NorFlash::block_count-first_block) {
         completed_blocks=0;error="cartridge live extent is out of range";return false;
     }
-    std::vector<std::uint8_t> bytes(source,source+block_count*block_size);
-    return storage_.programLiveFilesystemExtent(first_block,bytes,
+    return storage_.programLiveFilesystemExtent(first_block,source,block_count,
                                                 completed_blocks,error);
 }
 bool CartridgeLiveDevice::eraseBlock(std::size_t block,std::string& error) {

@@ -148,12 +148,22 @@ void verifyDirectBootLayout() {
         [](const ezfa3fs::live::Entry& entry){return entry.name=="extras/readme.txt";});
     require(extra!=filesystem.entries().end()&&extra->first_block==1);
     require(filesystem.readFile("direct.gba",bytes,error)&&bytes==rom);
+    const auto batch_generation=filesystem.generation();
+    require(filesystem.putFiles({
+        {"batch-a.txt",{'a'},1236},
+        {"batch-b.txt",{'b'},1237}
+    },error));
+    require(filesystem.generation()==batch_generation+1);
     ezfa3fs::live::Filesystem reopened(flash);
     require(ezfa3fs::live::Filesystem::open(flash,reopened,error));
     require(reopened.generation()==filesystem.generation());
-    require(reopened.entries().size()==3);
+    require(reopened.entries().size()==5);
     require(reopened.readFile("extras/readme.txt",bytes,error));
     require(bytes==std::vector<std::uint8_t>({'o','k'}));
+    require(reopened.readFile("batch-a.txt",bytes,error)&&
+            bytes==std::vector<std::uint8_t>({'a'}));
+    require(reopened.readFile("batch-b.txt",bytes,error)&&
+            bytes==std::vector<std::uint8_t>({'b'}));
     require(!filesystem.putFile("direct.gba",rom,1236,error));
     require(error.find("immutable")!=std::string::npos);
     require(filesystem.removeFile("extras/readme.txt",error));
@@ -294,6 +304,87 @@ void verifyAlternateExtentRetry() {
     require(filesystem.verify(error));
 }
 
+void verifyBatchProgramming() {
+    ezfa3fs::live::NorFlash flash;
+    std::string error;
+    require(ezfa3fs::live::Filesystem::format(flash,error));
+    CountingDevice device(flash);
+    ezfa3fs::live::Filesystem filesystem(device);
+    require(ezfa3fs::live::Filesystem::open(device,filesystem,error));
+
+    const auto generation=filesystem.generation();
+    const auto prepared=device.prepare_program_count;
+    const auto programs=device.extent_program_count;
+    const auto metadata=device.replace_count;
+    const auto large=blockData(2,0x5A);
+    const std::vector<ezfa3fs::live::FileWrite> files{
+        {"first.bin",{'a','b','c'},10},
+        {"empty.txt",{},11},
+        {"large.bin",large,12}
+    };
+
+    require(filesystem.putFiles(files,error));
+    require(filesystem.generation()==generation+1);
+    require(device.prepare_program_count==prepared+1);
+    require(device.extent_program_count==programs+1);
+    require(device.replace_count==metadata+1);
+
+    const auto find=[&](const std::string& name) {
+        return std::find_if(filesystem.entries().begin(),
+                            filesystem.entries().end(),
+            [&](const ezfa3fs::live::Entry& entry) {
+                return entry.name==name;
+            });
+    };
+    const auto first=find("first.bin");
+    const auto empty=find("empty.txt");
+    const auto large_entry=find("large.bin");
+    require(first!=filesystem.entries().end()&&first->first_block==2&&
+            first->block_count==1);
+    require(empty!=filesystem.entries().end()&&empty->first_block==3&&
+            empty->block_count==0);
+    require(large_entry!=filesystem.entries().end()&&
+            large_entry->first_block==3&&large_entry->block_count==2);
+
+    std::vector<std::uint8_t> bytes;
+    require(filesystem.readFile("first.bin",bytes,error)&&
+            bytes==std::vector<std::uint8_t>({'a','b','c'}));
+    require(filesystem.readFile("empty.txt",bytes,error)&&bytes.empty());
+    require(filesystem.readFile("large.bin",bytes,error)&&bytes==large);
+    require(filesystem.verify(error));
+
+    const auto unchanged_generation=filesystem.generation();
+    require(!filesystem.putFiles({
+        {"duplicate",{'a'},20},
+        {"duplicate",{'b'},21}
+    },error));
+    require(error.find("duplicate")!=std::string::npos);
+    require(filesystem.generation()==unchanged_generation);
+}
+
+void verifyFailedBatchIsNotPublished() {
+    ezfa3fs::live::NorFlash flash;
+    std::string error;
+    require(ezfa3fs::live::Filesystem::format(flash,error));
+    CountingDevice device(flash);
+    ezfa3fs::live::Filesystem filesystem(device);
+    require(ezfa3fs::live::Filesystem::open(device,filesystem,error));
+
+    const auto generation=filesystem.generation();
+    device.failProgramCalls(device.program_count+1,3);
+    require(!filesystem.putFiles({
+        {"first",{'a'},1},
+        {"second",{'b'},2}
+    },error));
+    require(filesystem.generation()==generation);
+    require(filesystem.entries().empty());
+
+    ezfa3fs::live::Filesystem reopened(device);
+    require(ezfa3fs::live::Filesystem::open(device,reopened,error));
+    require(reopened.generation()==generation);
+    require(reopened.entries().empty());
+}
+
 void verifyAutomaticGarbageCollection() {
     ezfa3fs::live::NorFlash flash;std::string error;
     require(ezfa3fs::live::Filesystem::format(flash,error));
@@ -359,6 +450,8 @@ int main()
     verifyInterruptedCompaction(2,4,0);
     verifyInterruptedCompaction(3,2,1);
     verifyAlternateExtentRetry();
+    verifyBatchProgramming();
+    verifyFailedBatchIsNotPublished();
     verifyAutomaticGarbageCollection();
     verifyAutomaticCompaction();
 

@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 #if defined(EZFA3FS_HAS_FUSE3)
@@ -81,6 +82,15 @@ std::string fuseCallerCommandLine(pid_t pid) {
     if(pid<=0)
         return "<unknown>";
 
+    static std::mutex cache_mutex;
+    static std::unordered_map<pid_t,std::string> cache;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        const auto found=cache.find(pid);
+        if(found!=cache.end())
+            return found->second;
+    }
+
     int argmax=0;
     std::size_t argmax_size=sizeof(argmax);
     int argmax_mib[2]={CTL_KERN,KERN_ARGMAX};
@@ -129,8 +139,18 @@ std::string fuseCallerCommandLine(pid_t pid) {
         ++current;
     }
 
-    const auto result=out.str();
-    return result.empty()?"<argv unavailable>":result;
+    auto result=out.str();
+    if(result.empty())
+        result="<argv unavailable>";
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        // Bound diagnostic state for long-running mounts. Re-resolution after
+        // a clear is harmless and avoids retaining every short-lived PID.
+        if(cache.size()>=256)
+            cache.clear();
+        cache[pid]=result;
+    }
+    return result;
 #else
     (void)pid;
     return "<argv unsupported>";
@@ -150,20 +170,21 @@ public:
         const char* path,
         bool maintenance_relevant,
         ActivityLockScope scope=ActivityLockScope::session)
-        : id_(++next_id_),
-          operation_(operation),
-          path_(path?path:"<null>"),
+        : enabled_(session().fuseTraceEnabled()),
+          id_(enabled_?++next_id_:0),
+          operation_(enabled_?operation:""),
+          path_(enabled_?(path?path:"<null>"):""),
           started_(std::chrono::steady_clock::now()) {
-
-        const auto* context=fuse_get_context();
-        const pid_t pid=context?context->pid:0;
-
-        fuseTraceLine(
-            "["+std::to_string(id_)+"] "+
-            operation_+" "+path_+
-            " pid="+std::to_string(pid)+
-            " command="+fuseCallerCommandLine(pid)+
-            " waiting");
+        if(enabled_) {
+            const auto* context=fuse_get_context();
+            const pid_t pid=context?context->pid:0;
+            fuseTraceLine(
+                "["+std::to_string(id_)+"] "+
+                operation_+" "+path_+
+                " pid="+std::to_string(pid)+
+                " command="+fuseCallerCommandLine(pid)+
+                " waiting");
+        }
 
         if(scope==ActivityLockScope::none) {
             session().noteActivity(maintenance_relevant);
@@ -179,30 +200,35 @@ public:
 
         acquired_=std::chrono::steady_clock::now();
 
-        fuseTraceLine(
-            "["+std::to_string(id_)+"] "+
-            operation_+" "+path_+
-            " acquired wait="+
-            std::to_string(ms(started_,acquired_))+" ms");
+        if(enabled_)
+            fuseTraceLine(
+                "["+std::to_string(id_)+"] "+
+                operation_+" "+path_+
+                " acquired wait="+
+                std::to_string(ms(started_,acquired_))+" ms");
     }
 
     ~TracedActivityLock() {
         const auto finished=std::chrono::steady_clock::now();
 
-        fuseTraceLine(
-            "["+std::to_string(id_)+"] "+
-            operation_+" "+path_+
-            " done held="+
-            std::to_string(ms(acquired_,finished))+
-            " ms total="+
-            std::to_string(ms(started_,finished))+" ms");
+        if(enabled_)
+            fuseTraceLine(
+                "["+std::to_string(id_)+"] "+
+                operation_+" "+path_+
+                " done held="+
+                std::to_string(ms(acquired_,finished))+
+                " ms total="+
+                std::to_string(ms(started_,finished))+" ms");
     }
 
     void note(const std::string& text) const {
-        fuseTraceLine(
-            "["+std::to_string(id_)+"] "+
-            operation_+" "+path_+" "+text);
+        if(enabled_)
+            fuseTraceLine(
+                "["+std::to_string(id_)+"] "+
+                operation_+" "+path_+" "+text);
     }
+
+    bool enabled() const noexcept { return enabled_; }
 
 private:
     static long long ms(
@@ -215,6 +241,7 @@ private:
 
     inline static std::atomic<std::uint64_t> next_id_{0};
 
+    bool enabled_;
     std::uint64_t id_;
     std::string operation_;
     std::string path_;
@@ -355,9 +382,10 @@ int ezfa3fsReaddir(const char* path,void* buffer,fuse_fill_dir_t filler,
     std::vector<std::string> children;
     if(!session().backend().list(path,children))return -ENOENT;
 
-    lock.note(
-        "offset="+std::to_string(static_cast<long long>(offset))+
-        " children="+std::to_string(children.size()));
+    if(lock.enabled())
+        lock.note(
+            "offset="+std::to_string(static_cast<long long>(offset))+
+            " children="+std::to_string(children.size()));
 
     const auto start=static_cast<std::size_t>(offset);
     const auto total=children.size()+2;
@@ -645,7 +673,8 @@ int runMount(MountSession& mounted,const std::string& mountpoint,
 
 int mountLiveCartridge(const std::string& mountpoint,bool foreground,
                        bool verify_referenced_data,
-                       bool preserve_save_snapshot) {
+                       bool preserve_save_snapshot,
+                       bool trace_enabled) {
     if(!foreground) {
         std::cerr<<"A writable live cartridge mount requires --foreground so the USB session is not inherited across FUSE daemonization.\n";
         return 1;
@@ -731,7 +760,8 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
         // reconnect/save-restoration sequence.
         MountSession mounted(
             std::move(backend),
-            std::move(idle_maintenance));
+            std::move(idle_maintenance),
+            trace_enabled);
         result=runMount(
             mounted,mountpoint,foreground,"ezfa3fs-card");
     }
@@ -745,16 +775,17 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
 
 int mountBackend(std::unique_ptr<MountBackend> backend,
                  const std::string& mountpoint,bool foreground,
-                 const std::string& filesystem_name) {
-    MountSession mounted(std::move(backend));
+                 const std::string& filesystem_name,
+                 bool trace_enabled) {
+    MountSession mounted(std::move(backend),{},trace_enabled);
     return runMount(mounted,mountpoint,foreground,filesystem_name);
 }
 #else
-int mountLiveCartridge(const std::string&,bool,bool,bool) {
+int mountLiveCartridge(const std::string&,bool,bool,bool,bool) {
     std::cerr<<"FUSE 3 support was not available when ezfa3fs was built.\n";return 1;
 }
 int mountBackend(std::unique_ptr<MountBackend>,const std::string&,bool,
-                 const std::string&) {
+                 const std::string&,bool) {
     std::cerr<<"FUSE 3 support was not available when ezfa3fs was built.\n";
     return 1;
 }

@@ -85,6 +85,14 @@ struct Entry final {
     bool directory = false;
 };
 
+struct FileWrite final {
+    // Batch destinations are filesystem paths. The filesystem owns no input
+    // references after putFiles() returns.
+    std::string path;
+    std::vector<std::uint8_t> bytes;
+    std::uint64_t modified_time = 0;
+};
+
 struct SpaceReport final {
     std::size_t active_blocks = 0;
     std::size_t erased_blocks = 0;
@@ -142,6 +150,8 @@ public:
     bool putFile(const std::string& path,const std::vector<std::uint8_t>& bytes,
                  std::uint64_t modified_time,std::string& error,
                  MaintenanceObserver maintenance = {});
+    bool putFiles(const std::vector<FileWrite>& files,std::string& error,
+                  MaintenanceObserver maintenance = {});
     bool removeFile(const std::string& path,std::string& error);
     bool removeDirectory(const std::string& path,std::string& error);
     bool rename(const std::string& from,const std::string& to,std::string& error);
@@ -175,6 +185,12 @@ public:
     bool awaitsDirectBootRom() const noexcept;
 
 private:
+    struct FileWriteView final {
+        const std::string* path = nullptr;
+        const std::vector<std::uint8_t>* bytes = nullptr;
+        std::uint64_t modified_time = 0;
+    };
+
     enum class ExtentSearchResult { found,no_extent,error };
     bool commit(std::string& error);
     ExtentSearchResult findBlankExtent(std::size_t block_count,
@@ -186,6 +202,12 @@ private:
                                std::size_t& first_block,std::string& error);
     bool programExtent(std::size_t first_block,
                        const std::vector<std::uint8_t>& bytes,std::string& error);
+    bool programPreparedExtent(std::size_t first_block,
+                               const std::vector<std::uint8_t>& extent,
+                               std::string& error);
+    bool putFileViews(const std::vector<FileWriteView>& files,
+                      std::string& error,
+                      const MaintenanceObserver& maintenance);
     bool ensureDirectBootSlotCapacity(std::size_t block_count,
                                       std::string& error);
     bool findStaleDirectBootRomBlocks(std::size_t block_count,
