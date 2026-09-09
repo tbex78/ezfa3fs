@@ -323,6 +323,7 @@ int finishMutation(bool changed,const std::string& error) {
     return commitSession(session());
 }
 int finishFileRemoval(
+    const char* path,
     bool requires_commit,
     bool changed,
     const std::string& error) {
@@ -330,10 +331,15 @@ int finishFileRemoval(
     if(!changed)
         return mutationFailure(session(),error);
 
+    session().refreshStatfsSnapshot();
+
     if(!requires_commit)
         return 0;
 
-    return commitSession(session());
+    // Finder replaces an existing destination by unlinking it immediately
+    // before creating the new file. Queue that durable namespace change with
+    // finalized file data instead of flushing the preceding copy here.
+    return deferSessionFile(session(),path);
 }
 int metadataMutation(const char* path) {
     MountNode node;
@@ -551,11 +557,12 @@ int ezfa3fsUnlink(const char* path) {
         session().backend().fileRemovalRequiresCommit(path);
     trace.note(
         requires_commit?
-            "durability=persistent":"durability=transient");
+            "durability=deferred":"durability=transient");
 
     std::string error;
     const bool changed=session().backend().removeFile(path,error);
     return finishFileRemoval(
+        path,
         requires_commit,
         changed,
         error);

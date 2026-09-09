@@ -61,6 +61,7 @@ private:
     bool commitReady(const PendingFile& pending) const noexcept;
     bool commitSelected(const std::vector<std::string>& paths,
                         std::string& error);
+    bool persistPendingChanges(std::string& error);
 
     void publishPendingFile(
         const std::string& name,
@@ -82,6 +83,10 @@ private:
     std::map<std::string,MountNode> visible_nodes_;
 
     std::map<std::string,PendingFile> pending_files_;
+
+    // Tracks durable Filesystem mutations that still need the injected
+    // storage boundary. RAM-only placeholders do not set this flag.
+    bool persistence_pending_ = false;
 };
 
 } // namespace ezfa3fs

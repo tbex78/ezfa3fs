@@ -160,6 +160,7 @@ bool LiveMountBackend::createDirectory(
     if(!filesystem_.createDirectory(name,error))
         return false;
 
+    persistence_pending_=true;
     publishFilesystemEntry(name);
     return true;
 }
@@ -213,6 +214,8 @@ bool LiveMountBackend::removeFile(
         if(!filesystem_.removeFile(name,error))
             return false;
 
+        persistence_pending_=true;
+
         if(pending!=pending_files_.end())
             pending_files_.erase(pending);
 
@@ -251,6 +254,7 @@ bool LiveMountBackend::removeDirectory(
     if(!filesystem_.removeDirectory(name,error))
         return false;
 
+    persistence_pending_=true;
     visible_nodes_.erase(name);
     return true;
 }
@@ -321,6 +325,7 @@ bool LiveMountBackend::rename(const std::string& from,const std::string& to,
             error))
         return false;
 
+    persistence_pending_=true;
     renameVisibleTree(
         source_name,
         destination_name);
@@ -358,6 +363,20 @@ bool LiveMountBackend::commitFiles(
     return commitSelected(paths,error);
 }
 
+bool LiveMountBackend::persistPendingChanges(std::string& error) {
+    if(!persistence_pending_) {
+        error.clear();
+        return true;
+    }
+
+    if(persistence_observer_&&!persistence_observer_(error))
+        return false;
+
+    persistence_pending_=false;
+    error.clear();
+    return true;
+}
+
 bool LiveMountBackend::commitSelected(
     const std::vector<std::string>& paths,
     std::string& error) {
@@ -385,10 +404,8 @@ bool LiveMountBackend::commitSelected(
                          current->second.modified_time});
     }
 
-    if(batch.empty()) {
-        error.clear();
-        return true;
-    }
+    if(batch.empty())
+        return persistPendingChanges(error);
 
     std::cerr
         <<"Committing "<<batch.size()
@@ -401,17 +418,21 @@ bool LiveMountBackend::commitSelected(
     if(filesystem_.awaitsDirectBootRom()) {
         // The initial direct-boot ROM uses the capture-proven block-zero
         // erase/program path and cannot share the normal extent allocator.
-        for(const auto& file:batch)
+        for(const auto& file:batch) {
             if(!filesystem_.putFile(file.path,file.bytes,file.modified_time,
                                     error,maintenance_observer_)) {
                 restore_staged_bytes();
                 return false;
             }
+            persistence_pending_=true;
+        }
     } else if(!filesystem_.putFiles(batch,error,maintenance_observer_)) {
         restore_staged_bytes();
         return false;
+    } else {
+        persistence_pending_=true;
     }
-    if(persistence_observer_&&!persistence_observer_(error)) {
+    if(!persistPendingChanges(error)) {
         restore_staged_bytes();
         return false;
     }
@@ -426,16 +447,6 @@ bool LiveMountBackend::commit(std::string& error) {
     for(const auto& current:pending_files_)
         if(commitReady(current.second))
             paths.push_back(current.first);
-
-    // Namespace-only mutations (for example mkdir or rename) have no staged
-    // payload, but still need the outer live-image/cartridge persistence
-    // boundary that commit() has always provided.
-    if(paths.empty()) {
-        if(persistence_observer_&&!persistence_observer_(error))
-            return false;
-        error.clear();
-        return true;
-    }
 
     return commitSelected(paths,error);
 }
