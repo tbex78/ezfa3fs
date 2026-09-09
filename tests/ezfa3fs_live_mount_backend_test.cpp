@@ -75,6 +75,17 @@ int main() {
     require(persisted_backend.removeFile("/saved/placeholder",error));
     require(persisted_backend.commitFiles({"/saved/placeholder"},error));
     require(persistence_count==3);
+    require(persisted_backend.createFile("/saved/rename-source",error));
+    require(persisted_backend.write(
+        "/saved/rename-source",0,data,sizeof(data),error));
+    require(persisted_backend.commitFile("/saved/rename-source",error));
+    require(persistence_count==4);
+    require(persisted_backend.rename(
+        "/saved/rename-source","/saved/rename-destination",error));
+    require(persistence_count==4);
+    require(persisted_backend.commitFiles(
+        {"/saved/rename-destination"},error));
+    require(persistence_count==5);
 
     const auto batch_generation=persisted_filesystem.generation();
     require(persisted_backend.createFile("/saved/first.bin",error));
@@ -89,13 +100,13 @@ int main() {
     require(persisted_backend.commitFiles(
         {"/saved/first.bin","/saved/second.bin"},error));
     require(persisted_filesystem.generation()==batch_generation+1);
-    require(persistence_count==4);
+    require(persistence_count==6);
     require(!persisted_filesystem.readFile("saved/still-open.bin",output,error));
     require(persisted_backend.read(
         "/saved/still-open.bin",0,sizeof(deferred_data),output));
     require(output==std::vector<std::uint8_t>({'n','e','x','t'}));
     require(persisted_backend.commitFile("/saved/still-open.bin",error));
-    require(persistence_count==5);
+    require(persistence_count==7);
 
     ezfa3fs::live::NorFlash retry_flash;
     require(ezfa3fs::live::Filesystem::format(retry_flash,error));

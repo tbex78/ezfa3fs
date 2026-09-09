@@ -35,6 +35,13 @@ public:
     }
     virtual bool removeFile(const std::string& path,std::string& error) = 0;
     virtual bool removeDirectory(const std::string& path,std::string& error) = 0;
+    virtual bool renameRequiresImmediateCommit(
+        const std::string& from,
+        const std::string& to) const noexcept {
+        (void)from;
+        (void)to;
+        return true;
+    }
     virtual bool rename(const std::string& from,const std::string& to,std::string& error) = 0;
     virtual bool commitFile(const std::string& path,std::string& error) {
         (void)path;

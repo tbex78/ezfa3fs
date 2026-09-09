@@ -24,6 +24,14 @@ bool FinderMetadataMountBackend::isFinderMetadata(
     return base.rfind(".DS_Store",0)==0||base.rfind("._",0)==0;
 }
 
+bool FinderMetadataMountBackend::isFuseHidden(
+    const std::string& path) noexcept {
+    const auto name=normalize(path);
+    const auto slash=name.rfind('/');
+    const auto base=slash==std::string::npos?name:name.substr(slash+1);
+    return base.rfind(".fuse_hidden",0)==0;
+}
+
 bool FinderMetadataMountBackend::lookup(const std::string& path,
                                         MountNode& node) const {
     const auto found=transient_files_.find(normalize(path));
@@ -179,6 +187,20 @@ bool FinderMetadataMountBackend::removeDirectory(
         return false;
     }
     return backend_->removeDirectory(path,error);
+}
+
+bool FinderMetadataMountBackend::renameRequiresImmediateCommit(
+    const std::string& from,
+    const std::string& to) const noexcept {
+
+    // macFUSE temporarily renames an open unlinked destination and removes
+    // that hidden name after the final handle closes. Both steps can share
+    // the same deferred transaction as Finder's replacement file.
+    if(isFuseHidden(to)||
+       (isFinderMetadata(from)&&isFinderMetadata(to)))
+        return false;
+
+    return backend_->renameRequiresImmediateCommit(from,to);
 }
 
 bool FinderMetadataMountBackend::rename(

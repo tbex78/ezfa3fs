@@ -130,6 +130,12 @@ int main() {
         auto* observed=recording.get();
         ezfa3fs::FinderMetadataMountBackend finder(std::move(recording));
         require(finder.fileRemovalRequiresCommit("/game.gba"));
+        require(finder.renameRequiresImmediateCommit(
+            "/game.gba","/renamed.gba"));
+        require(!finder.renameRequiresImmediateCommit(
+            "/game.gba","/.fuse_hidden0000000100000001"));
+        require(!finder.renameRequiresImmediateCommit(
+            "/._game.gba","/._renamed.gba"));
         require(finder.createFile("/._game.gba",error));
         require(!finder.fileRemovalRequiresCommit("/._game.gba"));
         require(finder.removeFile("/._game.gba",error));

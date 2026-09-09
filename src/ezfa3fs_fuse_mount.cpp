@@ -606,11 +606,15 @@ int ezfa3fsRename(
     if(!session().backend().lookup(from,source))
         return -ENOENT;
 
+    const bool immediate_commit=
+        source.directory||
+        session().backend().renameRequiresImmediateCommit(from,to);
+
     // A regular-file rename commonly follows the final Finder/cp write.
     // Persist any staged extent without holding metadata_mutex_, so Finder,
     // ls, statfs, and xattr traffic remain responsive during programming and
     // readback verification.
-    if(!source.directory) {
+    if(!source.directory&&immediate_commit) {
         locks.releaseMetadata();
 
         if(const int failure=
@@ -629,10 +633,16 @@ int ezfa3fsRename(
             error))
         return mutationFailure(session(),error);
 
+    trace.note(
+        immediate_commit?
+            "durability=strict":"durability=deferred");
+
     // The visible namespace has already been updated. Metadata-only readers
-    // may observe it while the final persistence step completes.
+    // may observe it while persistence completes or waits for its batch.
     locks.releaseMetadata();
-    return commitSession(session());
+    return immediate_commit?
+        commitSession(session()):
+        deferSessionFile(session(),to);
 }
 
 int ezfa3fsFlush(const char* path,struct fuse_file_info*) {

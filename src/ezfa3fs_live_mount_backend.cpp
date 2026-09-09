@@ -313,10 +313,12 @@ bool LiveMountBackend::rename(const std::string& from,const std::string& to,
             return true;
         }
 
-        // Finder may have several copy destinations pending simultaneously.
-        // Commit only the non-empty file being renamed; never flush unrelated
-        // placeholders.
-        if(!commitFile(from,error))return false;
+        // Persist staged contents before asking Filesystem to rename its
+        // durable entry. An already-persisted source needs no preparatory
+        // commit, which keeps unrelated deferred namespace work queued.
+        if(pending_source!=pending_files_.end()&&
+           !commitFile(from,error))
+            return false;
     }
 
     if(!filesystem_.rename(

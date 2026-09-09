@@ -28,6 +28,9 @@ public:
         const std::string& path) const noexcept override;
     bool removeFile(const std::string& path,std::string& error) override;
     bool removeDirectory(const std::string& path,std::string& error) override;
+    bool renameRequiresImmediateCommit(
+        const std::string& from,
+        const std::string& to) const noexcept override;
     bool rename(const std::string& from,const std::string& to,
                 std::string& error) override;
     bool commitFile(const std::string& path,std::string& error) override;
@@ -48,6 +51,7 @@ private:
     };
 
     static std::string normalize(const std::string& path);
+    static bool isFuseHidden(const std::string& path) noexcept;
     bool stage(const std::string& path,TransientFile*& file,std::string& error);
 
     std::unique_ptr<MountBackend> backend_;
