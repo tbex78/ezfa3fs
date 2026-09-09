@@ -102,6 +102,18 @@ void verifyPhysicalEraseGeometry() {
     const auto ordinary=ezfa3fs::CartridgeFlashGeometry::sectorsForLogicalBlock(2);
     require(ordinary.size()==1&&ordinary.front().window==0&&
             ordinary.front().word_address==0x10000);
+    const auto middle_top=
+        ezfa3fs::CartridgeFlashGeometry::sectorsForLogicalBlock(255);
+    require(middle_top.size()==8&&middle_top.front().window==1&&
+            middle_top.front().word_address==0x3F8000&&
+            middle_top.back().word_address==0x3FF000);
+
+    const auto middle_bottom=
+        ezfa3fs::CartridgeFlashGeometry::sectorsForLogicalBlock(256);
+    require(middle_bottom.size()==8&&middle_bottom.front().window==2&&
+            middle_bottom.front().word_address==0&&
+            middle_bottom.back().word_address==0x7000);
+
     const auto top=ezfa3fs::CartridgeFlashGeometry::sectorsForLogicalBlock(511);
     require(top.size()==8&&top.front().window==3&&
             top.front().word_address==0x3F8000&&top.back().word_address==0x3FF000);
@@ -403,10 +415,22 @@ int main()
     require(space.largest_post_gc_extent==502);
     require(inspected==510&&inspection_total==510);
     std::size_t reclaimed=0,progress_completed=0,progress_total=0;
+    const auto prepares_before_gc=reopened_device.prepare_erase_count;
+    const auto batches_before_gc=reopened_device.erase_batch_count;
+
     require(reopened.collectGarbage(reclaimed,error,
-        [&](std::size_t completed,std::size_t total){progress_completed=completed;progress_total=total;}));
+        [&](std::size_t completed,std::size_t total){
+            progress_completed=completed;
+            progress_total=total;
+        }));
+
     require(reclaimed==4);
-    require(reopened_device.prepare_erase_count==reclaimed);
+
+    // Garbage collection now amortizes the cartridge writer transition across
+    // the complete stale-block batch instead of restarting it once per block.
+    require(reopened_device.prepare_erase_count==prepares_before_gc+1);
+    require(reopened_device.erase_batch_count==batches_before_gc+1);
+
     require(progress_completed==510&&progress_total==510);
     std::vector<std::pair<std::size_t,std::size_t>> verification_progress;
     require(reopened.verify(error,[&](std::size_t completed,std::size_t total) {
@@ -420,6 +444,11 @@ int main()
         [](const ezfa3fs::live::Entry& entry){return entry.name=="docs/recycled.txt";});
     require(recycled!=reopened.entries().end()&&recycled->first_block==2);
     const auto generation_before_compaction=reopened.generation();
+    const auto prepares_before_compaction=
+        reopened_device.prepare_erase_count;
+    const auto batches_before_compaction=
+        reopened_device.erase_batch_count;
+
     ezfa3fs::live::CompactionReport compaction;
     require(reopened.compact(compaction,error));
     require(compaction.garbage_blocks_reclaimed==0);
@@ -428,8 +457,16 @@ int main()
     require(reopened.generation()==generation_before_compaction+2);
     const auto compacted_recovered=std::find_if(reopened.entries().begin(),reopened.entries().end(),
         [](const ezfa3fs::live::Entry& entry){return entry.name=="docs/recovered.txt";});
-    require(compacted_recovered!=reopened.entries().end()&&compacted_recovered->first_block==6);
-    require(reopened_device.prepare_erase_count==reclaimed+1);
+    require(compacted_recovered!=reopened.entries().end()&&
+            compacted_recovered->first_block==6);
+
+    // compact() finds no garbage here, then erases the relocated source
+    // extent as one batch.
+    require(reopened_device.prepare_erase_count==
+            prepares_before_compaction+1);
+    require(reopened_device.erase_batch_count==
+            batches_before_compaction+1);
+
     require(reopened.verify(error));
     ezfa3fs::live::SpaceReport compacted_space;
     require(reopened.inspectSpace(compacted_space,error));
