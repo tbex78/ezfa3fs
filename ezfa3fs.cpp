@@ -248,45 +248,56 @@ std::string cardMountLogTimestamp() {
     return out.str();
 }
 
-fs::path cardMountLogPath() {
-    const char* home=std::getenv("HOME");
+fs::path expandCardMountLogDirectory(
+    const std::string& directory_text) {
+
+    if(directory_text.empty())
+        throw std::runtime_error(
+            "--logfile requires a directory path");
+
+    // Expand "~" and "~/..." for convenience because shell expansion is
+    // not guaranteed inside an argument such as --logfile=~/Logs.
+    if(directory_text=="~" ||
+       directory_text.rfind("~/",0)==0) {
+
+        const char* home=std::getenv("HOME");
 
 #if defined(_WIN32)
-    if(!home||!*home)
-        home=std::getenv("USERPROFILE");
+        if(!home||!*home)
+            home=std::getenv("USERPROFILE");
 #endif
 
-    if(!home||!*home)
-        throw std::runtime_error(
-            "could not determine the current user's home directory");
+        if(!home||!*home)
+            throw std::runtime_error(
+                "could not determine the current user's home directory");
 
-    fs::path directory;
+        if(directory_text=="~")
+            return fs::path(home);
 
-#if defined(__APPLE__)
-    directory=
-        fs::path(home)/
-        "Library"/
-        "Logs"/
-        "ezfa3fs";
-#else
-    const char* state_home=std::getenv("XDG_STATE_HOME");
-
-    if(state_home&&*state_home)
-        directory=fs::path(state_home)/"ezfa3fs";
-    else
-        directory=
+        return
             fs::path(home)/
-            ".local"/
-            "state"/
-            "ezfa3fs";
-#endif
+            directory_text.substr(2);
+    }
+
+    return fs::path(directory_text);
+}
+
+fs::path cardMountLogPath(
+    const std::string& directory_text) {
+
+    const auto directory=
+        expandCardMountLogDirectory(
+            directory_text);
 
     std::error_code error;
-    fs::create_directories(directory,error);
+
+    fs::create_directories(
+        directory,
+        error);
 
     if(error) {
         throw std::runtime_error(
-            "could not create verbose log directory "+
+            "could not create log directory "+
             directory.string()+
             ": "+
             error.message());
@@ -301,43 +312,68 @@ fs::path cardMountLogPath() {
 
 class CardMountLogging final {
 public:
-    explicit CardMountLogging(bool verbose)
+    CardMountLogging(
+        bool verbose,
+        const std::string& log_directory)
         : original_(std::cerr.rdbuf()) {
 
-        if(!verbose) {
+        if(!log_directory.empty()) {
+            log_path_=
+                cardMountLogPath(
+                    log_directory);
+
+            file_.open(
+                log_path_,
+                std::ios::out|std::ios::trunc);
+
+            if(!file_) {
+                throw std::runtime_error(
+                    "could not create log file "+
+                    log_path_.string());
+            }
+        }
+
+        std::streambuf* destination=nullptr;
+
+        if(verbose&&file_.is_open()) {
+            // --verbose + --logfile:
+            // display diagnostics and write them to the file.
+            tee_=std::make_unique<TeeStreamBuffer>(
+                original_,
+                file_.rdbuf());
+
+            destination=tee_.get();
+        } else if(verbose) {
+            // --verbose only:
+            // display diagnostics, but create no file.
+            destination=original_;
+        } else if(file_.is_open()) {
+            // --logfile only:
+            // write diagnostics to the file without displaying them.
+            destination=file_.rdbuf();
+        } else {
+            // Neither option:
+            // preserve the current quiet card-mount behavior.
             std::cerr.rdbuf(&null_);
             return;
         }
 
-        log_path_=cardMountLogPath();
-
-        file_.open(
-            log_path_,
-            std::ios::out|std::ios::trunc);
-
-        if(!file_) {
-            throw std::runtime_error(
-                "could not create verbose log file "+
-                log_path_.string());
-        }
-
-        tee_=std::make_unique<TeeStreamBuffer>(
-            original_,
-            file_.rdbuf());
-
         timestamped_=
             std::make_unique<TimestampedStreamBuffer>(
-                tee_.get());
+                destination);
 
-        std::cerr.rdbuf(timestamped_.get());
+        std::cerr.rdbuf(
+            timestamped_.get());
 
-        std::cout
-            <<"Verbose log file: "
-            <<log_path_
-            <<'\n';
+        if(verbose)
+            std::cerr
+                <<"Verbose card-mount logging enabled.\n";
 
-        std::cerr
-            <<"Verbose card-mount logging enabled.\n";
+        if(file_.is_open())
+            std::cerr
+                <<"Card-mount log file: "
+                <<log_path_
+                <<'\n';
     }
 
     ~CardMountLogging() {
@@ -440,7 +476,7 @@ void usage() {
   ezfa3fs compact IMAGE.ezfa3fs
   ezfa3fs space IMAGE.ezfa3fs
   ezfa3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
-  ezfa3fs card-mount MOUNTPOINT [--writable] --foreground [--verify] [--verbose]
+  ezfa3fs card-mount MOUNTPOINT [--writable] --foreground [--verify] [--verbose] [--logfile=PATH]
   ezfa3fs card-pull IMAGE.ezfa3fs
   ezfa3fs card-format [--direct-boot]
   ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
@@ -860,6 +896,7 @@ int main(int argc,char** argv) {
         bool foreground=false;
         bool verify_referenced_data=false;
         bool verbose=false;
+        std::string log_directory;
 
         for(int i=3;i<argc;++i) {
             const std::string option(argv[i]);
@@ -872,7 +909,19 @@ int main(int argc,char** argv) {
                 verify_referenced_data=true;
             else if(option=="--verbose")
                 verbose=true;
-            else {
+            else if(option.rfind("--logfile=",0)==0) {
+                constexpr const char* prefix="--logfile=";
+
+                log_directory=
+                    option.substr(
+                        std::char_traits<char>::length(prefix));
+
+                if(log_directory.empty()) {
+                    std::cerr
+                        <<"--logfile requires a directory path.\n";
+                    return 1;
+                }
+            } else {
                 std::cerr
                     <<"Unknown card-mount option: "
                     <<option
@@ -893,7 +942,8 @@ int main(int argc,char** argv) {
         try {
             logging=
                 std::make_unique<CardMountLogging>(
-                    verbose);
+                    verbose,
+                    log_directory);
         } catch(const std::exception& exception) {
             std::cerr
                 <<"Could not enable card-mount logging: "
