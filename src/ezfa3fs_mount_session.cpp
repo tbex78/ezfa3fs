@@ -38,11 +38,15 @@ void MountSession::noteActivity(bool maintenance_relevant) {
 
     std::lock_guard<std::mutex> lock(activity_mutex_);
 
-    last_activity_=std::chrono::steady_clock::now();
     ++activity_generation_;
 
-    if(maintenance_relevant)
+    // Every foreground request can interrupt an active maintenance step, but
+    // only mutations should postpone/schedule maintenance. Finder metadata
+    // polling and directory listings must not starve background GC.
+    if(maintenance_relevant) {
+        last_activity_=std::chrono::steady_clock::now();
         ++maintenance_request_generation_;
+    }
 
     activity_condition_.notify_all();
 }
@@ -96,6 +100,11 @@ void MountSession::idleMaintenanceLoop() {
                     break;
             }
         }
+
+        if(pass_in_progress)
+            std::cerr
+                <<"Writable cartridge idle; resuming background "
+                  "garbage collection.\n";
 
         const bool fresh_pass=!pass_in_progress;
         bool first_step=fresh_pass;

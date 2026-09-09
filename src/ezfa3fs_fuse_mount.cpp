@@ -360,10 +360,6 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
             std::cerr
                 <<"Writable cartridge idle; starting background "
                   "garbage collection.\n";
-        } else if(resynchronize) {
-            std::cerr
-                <<"Writable cartridge idle; resuming background "
-                  "garbage collection.\n";
         }
 
         if(!cartridge.filesystem().collectGarbageStep(
