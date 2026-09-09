@@ -366,10 +366,18 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
         return true;
     };
 
-    MountSession mounted(
-        std::move(backend),
-        std::move(idle_maintenance));
-    const int result=runMount(mounted,mountpoint,foreground,"ezfa3fs-card");
+    int result=0;
+    {
+        // The MountSession owns the idle-maintenance thread. Destroy it and
+        // join that thread before cartridge.close() begins the physical USB
+        // reconnect/save-restoration sequence.
+        MountSession mounted(
+            std::move(backend),
+            std::move(idle_maintenance));
+        result=runMount(
+            mounted,mountpoint,foreground,"ezfa3fs-card");
+    }
+
     if(!cartridge.close(error)){
         std::cerr<<"Could not close live cartridge session: "<<error<<'\n';
         return 1;

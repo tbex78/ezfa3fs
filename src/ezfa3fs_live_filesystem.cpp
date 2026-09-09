@@ -743,10 +743,11 @@ bool Filesystem::collectGarbageStep(
     bool& complete,
     std::string& error) {
 
-    // Eight logical 64-KiB blocks keeps the expensive writer restart and
-    // post-erase verification amortized while still giving foreground FUSE
-    // activity frequent opportunities to interrupt background maintenance.
-    constexpr std::size_t erase_batch_size=8;
+    // Background FUSE maintenance must remain interruptible. A foreground
+    // request signals activity before waiting for the session mutex, so limit
+    // each destructive idle-GC step to one logical block. Synchronous garbage
+    // collection retains its larger batch erase path.
+    constexpr std::size_t erase_batch_size=1;
 
     const auto first_data_block=firstDataBlock();
     const auto end_block=dataEndBlock();
