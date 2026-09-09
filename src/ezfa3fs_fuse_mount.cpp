@@ -4,12 +4,15 @@
 #include "ezfa3fs/live_mount_backend.hpp"
 #include "ezfa3fs/mount_backend.hpp"
 #include "ezfa3fs/mount_session.hpp"
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <vector>
 
 #if defined(EZFA3FS_HAS_FUSE3)
@@ -24,6 +27,7 @@
 #include <fuse3/fuse.h>
 #if defined(__APPLE__)
 #include <fuse3/fuse_lowlevel.h>
+#include <sys/sysctl.h>
 #endif
 #if defined(__clang__)
 #pragma clang diagnostic pop
@@ -61,6 +65,146 @@ std::unique_ptr<FuseFileHandle> takeFileHandle(struct fuse_file_info* info) {
 }
 
 MountSession& session(){return *static_cast<MountSession*>(fuse_get_context()->private_data);}
+
+std::mutex& fuseTraceMutex() {
+    static std::mutex value;
+    return value;
+}
+
+void fuseTraceLine(const std::string& line) {
+    std::lock_guard<std::mutex> lock(fuseTraceMutex());
+    std::cerr<<"FUSE TRACE "<<line<<'\n';
+}
+
+std::string fuseCallerCommandLine(pid_t pid) {
+#if defined(__APPLE__)
+    if(pid<=0)
+        return "<unknown>";
+
+    int argmax=0;
+    std::size_t argmax_size=sizeof(argmax);
+    int argmax_mib[2]={CTL_KERN,KERN_ARGMAX};
+
+    if(sysctl(argmax_mib,2,&argmax,&argmax_size,nullptr,0)!=0 ||
+       argmax<=0)
+        return "<argv unavailable>";
+
+    std::vector<char> bytes(static_cast<std::size_t>(argmax));
+    int argv_mib[3]={CTL_KERN,KERN_PROCARGS2,pid};
+    std::size_t size=bytes.size();
+
+    if(sysctl(argv_mib,3,bytes.data(),&size,nullptr,0)!=0 ||
+       size<sizeof(int))
+        return "<argv unavailable>";
+
+    int argc=0;
+    std::memcpy(&argc,bytes.data(),sizeof(argc));
+
+    char* current=bytes.data()+sizeof(argc);
+    char* const end=bytes.data()+size;
+
+    // Skip executable path.
+    while(current<end&&*current!='\0')
+        ++current;
+    while(current<end&&*current=='\0')
+        ++current;
+
+    std::ostringstream out;
+
+    for(int i=0;i<argc&&current<end;++i) {
+        const char* begin=current;
+
+        while(current<end&&*current!='\0')
+            ++current;
+
+        if(current==end)
+            break;
+
+        if(i)
+            out<<' ';
+
+        out<<std::string(
+            begin,
+            static_cast<std::size_t>(current-begin));
+        ++current;
+    }
+
+    const auto result=out.str();
+    return result.empty()?"<argv unavailable>":result;
+#else
+    (void)pid;
+    return "<argv unsupported>";
+#endif
+}
+
+class TracedActivityLock final {
+public:
+    TracedActivityLock(const char* operation,
+                       const char* path,
+                       bool maintenance_relevant)
+        : id_(++next_id_),
+          operation_(operation),
+          path_(path?path:"<null>"),
+          started_(std::chrono::steady_clock::now()) {
+
+        const auto* context=fuse_get_context();
+        const pid_t pid=context?context->pid:0;
+
+        fuseTraceLine(
+            "["+std::to_string(id_)+"] "+
+            operation_+" "+path_+
+            " pid="+std::to_string(pid)+
+            " command="+fuseCallerCommandLine(pid)+
+            " waiting");
+
+        auto& mutex=session().activityMutex(maintenance_relevant);
+        lock_=std::unique_lock<std::mutex>(mutex);
+
+        acquired_=std::chrono::steady_clock::now();
+
+        fuseTraceLine(
+            "["+std::to_string(id_)+"] "+
+            operation_+" "+path_+
+            " acquired wait="+
+            std::to_string(ms(started_,acquired_))+" ms");
+    }
+
+    ~TracedActivityLock() {
+        const auto finished=std::chrono::steady_clock::now();
+
+        fuseTraceLine(
+            "["+std::to_string(id_)+"] "+
+            operation_+" "+path_+
+            " done held="+
+            std::to_string(ms(acquired_,finished))+
+            " ms total="+
+            std::to_string(ms(started_,finished))+" ms");
+    }
+
+    void note(const std::string& text) const {
+        fuseTraceLine(
+            "["+std::to_string(id_)+"] "+
+            operation_+" "+path_+" "+text);
+    }
+
+private:
+    static long long ms(
+        std::chrono::steady_clock::time_point a,
+        std::chrono::steady_clock::time_point b) {
+
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            b-a).count();
+    }
+
+    inline static std::atomic<std::uint64_t> next_id_{0};
+
+    std::uint64_t id_;
+    std::string operation_;
+    std::string path_;
+    std::chrono::steady_clock::time_point started_;
+    std::chrono::steady_clock::time_point acquired_;
+    std::unique_lock<std::mutex> lock_;
+};
 int mutationFailure(MountSession& value,const std::string& error) {
     if(value.shouldReportFailure(error))std::cerr<<"EZFA3FS mutation failed: "<<error<<'\n';
     if(!value.backend().writable())return -EROFS;
@@ -123,7 +267,7 @@ int resizeFile(const char* path,off_t size,struct fuse_file_info* info) {
 }
 
 int ezfa3fsGetattr(const char* path,struct stat* status,struct fuse_file_info*) {
-    std::lock_guard<std::mutex> lock(session().activityMutex(false));MountNode info;if(!session().backend().lookup(path,info))return -ENOENT;
+    TracedActivityLock lock("getattr",path,false);MountNode info;if(!session().backend().lookup(path,info))return -ENOENT;
     std::memset(status,0,sizeof(*status));status->st_mode=(info.directory?S_IFDIR|0755:S_IFREG|0644);
     status->st_nlink=info.directory?2:1;status->st_size=static_cast<off_t>(info.size);status->st_uid=getuid();status->st_gid=getgid();
     const auto timestamp=static_cast<time_t>(info.modified_time?info.modified_time:session().mountedAt());
@@ -134,9 +278,13 @@ int ezfa3fsReaddir(const char* path,void* buffer,fuse_fill_dir_t filler,
                    enum fuse_readdir_flags) {
     if(offset<0)return -EINVAL;
 
-    std::lock_guard<std::mutex> lock(session().activityMutex(false));
+    TracedActivityLock lock("readdir",path,false);
     std::vector<std::string> children;
     if(!session().backend().list(path,children))return -ENOENT;
+
+    lock.note(
+        "offset="+std::to_string(static_cast<long long>(offset))+
+        " children="+std::to_string(children.size()));
 
     const auto start=static_cast<std::size_t>(offset);
     const auto total=children.size()+2;
@@ -163,7 +311,7 @@ int ezfa3fsReaddir(const char* path,void* buffer,fuse_fill_dir_t filler,
     return 0;
 }
 int ezfa3fsOpen(const char* path,struct fuse_file_info* info) {
-    std::lock_guard<std::mutex> lock(session().activityMutex(false));MountNode node;if(!session().backend().lookup(path,node)||node.directory)return -ENOENT;
+    TracedActivityLock lock("open",path,false);MountNode node;if(!session().backend().lookup(path,node)||node.directory)return -ENOENT;
     const bool writable=(info->flags&O_ACCMODE)!=O_RDONLY;
     if(writable) {
         if(!session().backend().writable())return -EROFS;
@@ -204,11 +352,11 @@ int ezfa3fsChflags(const char* path,struct fuse_file_info*,unsigned int) {
 }
 #endif
 int ezfa3fsAccess(const char* path,int) {
-    std::lock_guard<std::mutex> lock(session().activityMutex(false));MountNode node;
+    TracedActivityLock lock("listxattr",path,false);MountNode node;
     return session().backend().lookup(path,node)?0:-ENOENT;
 }
 int ezfa3fsRead(const char* path,char* buffer,size_t size,off_t offset,struct fuse_file_info*) {
-    if(offset<0)return -EINVAL;std::lock_guard<std::mutex> lock(session().activityMutex(false));std::vector<std::uint8_t> bytes;
+    if(offset<0)return -EINVAL;TracedActivityLock lock("read",path,false);std::vector<std::uint8_t> bytes;
     if(!session().backend().read(path,static_cast<std::size_t>(offset),size,bytes))return -ENOENT;
     std::memcpy(buffer,bytes.data(),bytes.size());return static_cast<int>(bytes.size());
 }
@@ -260,11 +408,11 @@ int ezfa3fsSetxattr(const char* path,const char*,const char*,size_t,int) {
     return beginMutation(session());
 }
 int ezfa3fsGetxattr(const char* path,const char*,char*,size_t) {
-    std::lock_guard<std::mutex> lock(session().activityMutex(false));MountNode node;
+    TracedActivityLock lock("getxattr",path,false);MountNode node;
     return session().backend().lookup(path,node)?-ENODATA:-ENOENT;
 }
 int ezfa3fsListxattr(const char* path,char*,size_t) {
-    std::lock_guard<std::mutex> lock(session().activityMutex(false));MountNode node;
+    TracedActivityLock lock("listxattr",path,false);MountNode node;
     return session().backend().lookup(path,node)?0:-ENOENT;
 }
 int ezfa3fsRemovexattr(const char* path,const char*) {
@@ -274,7 +422,7 @@ int ezfa3fsRemovexattr(const char* path,const char*) {
     return beginMutation(session());
 }
 void ezfa3fsDestroy(void* private_data) {auto* mounted=static_cast<MountSession*>(private_data);std::lock_guard<std::mutex> lock(mounted->mutex());if(!mounted->backend().writable())return;if(mounted->commitFailed())return;std::string error;if(!mounted->commit(error))std::cerr<<"EZFA3FS commit failed: "<<error<<'\n';}
-int ezfa3fsStatfs(const char*,struct statvfs* status) {std::lock_guard<std::mutex> lock(session().activityMutex(false));
+int ezfa3fsStatfs(const char* path,struct statvfs* status) {TracedActivityLock lock("statfs",path,false);
     std::memset(status,0,sizeof(*status));status->f_bsize=4096;status->f_frsize=4096;
     status->f_blocks=session().backend().capacityBytes()/4096;status->f_bfree=session().backend().freeBytes()/4096;
     status->f_bavail=status->f_bfree;status->f_files=session().backend().entryCount()+1024;
