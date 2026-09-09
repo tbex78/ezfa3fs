@@ -10,16 +10,125 @@
 #include "ezfa3fs/live_cartridge_session.hpp"
 #include "ezfa3fs/version.hpp"
 #include <chrono>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <set>
+#include <sstream>
 #include <stdexcept>
+#include <streambuf>
 namespace fs=std::filesystem;
 namespace {
+
+class TimestampedStreamBuffer final : public std::streambuf {
+public:
+    explicit TimestampedStreamBuffer(std::streambuf* destination)
+        : destination_(destination) {}
+
+protected:
+    int_type overflow(int_type character) override {
+        if(traits_type::eq_int_type(character,traits_type::eof()))
+            return traits_type::not_eof(character);
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        writeCharacter(traits_type::to_char_type(character));
+        return character;
+    }
+
+    std::streamsize xsputn(const char* data,std::streamsize size) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        for(std::streamsize index=0;index<size;++index)
+            writeCharacter(data[index]);
+
+        return size;
+    }
+
+    int sync() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return destination_->pubsync();
+    }
+
+private:
+    static std::string timestamp() {
+        const auto now=std::chrono::system_clock::now();
+        const auto milliseconds=
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now.time_since_epoch())%1000;
+
+        const std::time_t time=
+            std::chrono::system_clock::to_time_t(now);
+
+        std::tm local{};
+#if defined(_WIN32)
+        localtime_s(&local,&time);
+#else
+        localtime_r(&time,&local);
+#endif
+
+        char date[32]{};
+        std::strftime(
+            date,
+            sizeof(date),
+            "%Y-%m-%d %H:%M:%S",
+            &local);
+
+        std::ostringstream out;
+        out
+            <<'['
+            <<date
+            <<'.'
+            <<std::setfill('0')
+            <<std::setw(3)
+            <<milliseconds.count()
+            <<"] ";
+
+        return out.str();
+    }
+
+    void writeCharacter(char character) {
+        if(at_line_start_&&character!='\r') {
+            const auto prefix=timestamp();
+            destination_->sputn(
+                prefix.data(),
+                static_cast<std::streamsize>(prefix.size()));
+            at_line_start_=false;
+        }
+
+        destination_->sputc(character);
+
+        if(character=='\n')
+            at_line_start_=true;
+    }
+
+    std::streambuf* destination_;
+    std::mutex mutex_;
+    bool at_line_start_=true;
+};
+
+class TimestampedStderr final {
+public:
+    TimestampedStderr()
+        : original_(std::cerr.rdbuf()),
+          buffer_(original_) {
+
+        std::cerr.rdbuf(&buffer_);
+    }
+
+    ~TimestampedStderr() {
+        std::cerr.flush();
+        std::cerr.rdbuf(original_);
+    }
+
+private:
+    std::streambuf* original_;
+    TimestampedStreamBuffer buffer_;
+};
 class ReadOnlyBlockDevice final
     : public ezfa3fs::live::BlockDevice {
 public:
@@ -518,6 +627,8 @@ int liveCardFormat(bool direct_boot) {
 
 }
 int main(int argc,char** argv) {
+    TimestampedStderr timestamped_stderr;
+
     if(argc==2&&std::string(argv[1])=="--version"){
         std::cout<<"ezfa3fs ";
 
