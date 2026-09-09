@@ -477,7 +477,7 @@ void usage() {
   ezfa3fs compact IMAGE.ezfa3fs
   ezfa3fs space IMAGE.ezfa3fs
   ezfa3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
-  ezfa3fs card-mount MOUNTPOINT [--writable] --foreground [--verify] [--verbose] [--logfile=PATH] [--skip-snapshot-restore]
+  ezfa3fs card-mount MOUNTPOINT [--writable] --foreground [--verify] [--verbose] [--logfile=PATH] [--skip-snapshot-restore] [--relaxed-sync]
   ezfa3fs card-pull IMAGE.ezfa3fs
   ezfa3fs card-format [--direct-boot]
   ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
@@ -585,7 +585,8 @@ int liveMount(const fs::path& image,const fs::path& mountpoint,bool writable,
 int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
                   bool verify_referenced_data,
                   bool skip_snapshot_restore,
-                  bool trace_enabled) {
+                  bool trace_enabled,
+                  bool relaxed_sync) {
     if(!foreground){
         std::cerr<<"Cartridge mounting requires --foreground.\n";
         return 1;
@@ -609,6 +610,14 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
                   "before restoring save memory.\n";
         }
 
+        if(relaxed_sync) {
+            std::cout
+                <<"WARNING: relaxed sync is enabled. FUSE fsync requests "
+                  "return after data enters the host-memory batch, before "
+                  "it is durable on the cartridge. Clean unmount still "
+                  "drains and verifies the batch.\n";
+        }
+
         if(!confirm("Proceed")){
             std::cout<<"Cancelled; cartridge was not modified.\n";
             return 1;
@@ -619,7 +628,9 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
             foreground,
             verify_referenced_data,
             !skip_snapshot_restore,
-            trace_enabled);
+            trace_enabled,
+            relaxed_sync?ezfa3fs::FsyncPolicy::deferred:
+                         ezfa3fs::FsyncPolicy::strict);
     }
 
     /*
@@ -1008,6 +1019,7 @@ int main(int argc,char** argv) {
         bool verify_referenced_data=false;
         bool verbose=false;
         bool skip_snapshot_restore=false;
+        bool relaxed_sync=false;
         std::string log_directory;
 
         for(int i=3;i<argc;++i) {
@@ -1023,6 +1035,8 @@ int main(int argc,char** argv) {
                 verbose=true;
             else if(option=="--skip-snapshot-restore")
                 skip_snapshot_restore=true;
+            else if(option=="--relaxed-sync")
+                relaxed_sync=true;
             else if(option.rfind("--logfile=",0)==0) {
                 constexpr const char* prefix="--logfile=";
 
@@ -1051,6 +1065,12 @@ int main(int argc,char** argv) {
             return 1;
         }
 
+        if(relaxed_sync&&!writable) {
+            std::cerr
+                <<"--relaxed-sync requires --writable.\n";
+            return 1;
+        }
+
         std::unique_ptr<CardMountLogging> logging;
 
         try {
@@ -1072,7 +1092,8 @@ int main(int argc,char** argv) {
             foreground,
             verify_referenced_data,
             skip_snapshot_restore,
-            verbose||!log_directory.empty());
+            verbose||!log_directory.empty(),
+            relaxed_sync);
     }
 
     TimestampedStderr timestamped_stderr;

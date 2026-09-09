@@ -16,6 +16,11 @@
 
 namespace ezfa3fs {
 
+enum class FsyncPolicy {
+    strict,
+    deferred
+};
+
 class MountSession final {
 public:
     using IdleMaintenance=
@@ -24,7 +29,8 @@ public:
     explicit MountSession(
         std::unique_ptr<MountBackend> backend,
         IdleMaintenance idle_maintenance = {},
-        bool fuse_trace_enabled = false);
+        bool fuse_trace_enabled = false,
+        FsyncPolicy fsync_policy = FsyncPolicy::strict);
     ~MountSession();
 
     MountBackend& backend() noexcept { return *backend_; }
@@ -76,14 +82,14 @@ public:
 
     std::uint64_t mountedAt() const noexcept { return mounted_at_; }
     bool fuseTraceEnabled() const noexcept { return fuse_trace_enabled_; }
+    FsyncPolicy fsyncPolicy() const noexcept { return fsync_policy_; }
 
     bool mutationAllowed(std::string& error) const;
     // These methods require mutex() to be held by the caller. Final release
     // uses the deferred form so adjacent Finder copies can share one flash
-    // transaction; fsync uses the flush form as an immediate durability
-    // boundary.
+    // transaction. synchronizeFile applies the mount's explicit fsync policy.
     bool deferFileCommit(const std::string& path,std::string& error);
-    bool flushFileCommits(const std::string& path,std::string& error);
+    bool synchronizeFile(const std::string& path,std::string& error);
     bool commitFile(const std::string& path,std::string& error);
     bool commit(std::string& error);
     bool commitFailed() const noexcept { return commit_failed_; }
@@ -103,6 +109,7 @@ private:
         deferred_commit_delay{1000};
 
     bool finishCommit(bool committed,std::string& error);
+    bool flushFileCommits(const std::string& path,std::string& error);
     std::vector<std::string> takeDeferredCommitPaths(
         const std::string& additional_path = {});
     void deferredCommitLoop();
@@ -126,6 +133,7 @@ private:
 
     std::uint64_t mounted_at_ = 0;
     bool fuse_trace_enabled_ = false;
+    FsyncPolicy fsync_policy_ = FsyncPolicy::strict;
     bool commit_failed_ = false;
     bool commit_failure_reported_ = false;
     std::string commit_error_;

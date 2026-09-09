@@ -313,9 +313,9 @@ int deferSessionFile(MountSession& value,const char* path) {
     if(value.deferFileCommit(path,error))return 0;
     return mutationFailure(value,error);
 }
-int flushSessionFiles(MountSession& value,const char* path) {
+int synchronizeSessionFile(MountSession& value,const char* path) {
     std::string error;
-    if(value.flushFileCommits(path,error))return 0;
+    if(value.synchronizeFile(path,error))return 0;
     return mutationFailure(value,error);
 }
 int finishMutation(bool changed,const std::string& error) {
@@ -523,6 +523,10 @@ int ezfa3fsRename(
     const char* to,
     unsigned flags) {
 
+    TracedActivityLock trace(
+        "rename",from,false,ActivityLockScope::none);
+    trace.note(std::string("to=")+(to?to:"<null>"));
+
 #if defined(RENAME_NOREPLACE)
     if((flags&~static_cast<unsigned>(RENAME_NOREPLACE))!=0)
         return -ENOTSUP;
@@ -571,32 +575,44 @@ int ezfa3fsRename(
     return commitSession(session());
 }
 
-int ezfa3fsFlush(const char*,struct fuse_file_info*) {
+int ezfa3fsFlush(const char* path,struct fuse_file_info*) {
+    TracedActivityLock trace(
+        "flush",path,false,ActivityLockScope::none);
     std::lock_guard<std::mutex> lock(session().activityMutex(false));
     // macFUSE may flush an open file repeatedly while a copy is still
     // growing. Committing here rewrites the complete copy-on-write extent and
     // both metadata generations for every partial size. Keep flush as a
     // health check; the final release remains the file durability boundary.
+    trace.note("durability=health-check");
     return beginMutation(session());
 }
 int ezfa3fsFsync(const char* path,int,struct fuse_file_info*) {
+    TracedActivityLock trace(
+        "fsync",path,false,ActivityLockScope::none);
     MutationLocks locks;
 
     if(const int failure=beginMutation(session());failure!=0)
         return failure;
 
-    // Unlike flush(), fsync is an explicit durability boundary. Include the
-    // current file and any finalized files already waiting in the batch.
     locks.releaseMetadata();
-    return flushSessionFiles(session(),path);
+
+    trace.note(
+        session().fsyncPolicy()==FsyncPolicy::deferred?
+            "durability=deferred":"durability=strict");
+    return synchronizeSessionFile(session(),path);
 }
 int ezfa3fsRelease(
     const char* path,
     struct fuse_file_info* info) {
 
+    TracedActivityLock trace(
+        "release",path,false,ActivityLockScope::none);
     MutationLocks locks;
 
     const auto handle=takeFileHandle(info);
+    trace.note(
+        handle?(handle->dirty?"handle=dirty":"handle=clean"):
+               "handle=missing");
 
     if(handle&&!handle->dirty)
         return beginMutation(session());
@@ -694,7 +710,8 @@ int runMount(MountSession& mounted,const std::string& mountpoint,
 int mountLiveCartridge(const std::string& mountpoint,bool foreground,
                        bool verify_referenced_data,
                        bool preserve_save_snapshot,
-                       bool trace_enabled) {
+                       bool trace_enabled,
+                       FsyncPolicy fsync_policy) {
     if(!foreground) {
         std::cerr<<"A writable live cartridge mount requires --foreground so the USB session is not inherited across FUSE daemonization.\n";
         return 1;
@@ -781,7 +798,8 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
         MountSession mounted(
             std::move(backend),
             std::move(idle_maintenance),
-            trace_enabled);
+            trace_enabled,
+            fsync_policy);
         result=runMount(
             mounted,mountpoint,foreground,"ezfa3fs-card");
     }
@@ -796,16 +814,19 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
 int mountBackend(std::unique_ptr<MountBackend> backend,
                  const std::string& mountpoint,bool foreground,
                  const std::string& filesystem_name,
-                 bool trace_enabled) {
-    MountSession mounted(std::move(backend),{},trace_enabled);
+                 bool trace_enabled,
+                 FsyncPolicy fsync_policy) {
+    MountSession mounted(
+        std::move(backend),{},trace_enabled,fsync_policy);
     return runMount(mounted,mountpoint,foreground,filesystem_name);
 }
 #else
-int mountLiveCartridge(const std::string&,bool,bool,bool,bool) {
+int mountLiveCartridge(
+    const std::string&,bool,bool,bool,bool,FsyncPolicy) {
     std::cerr<<"FUSE 3 support was not available when ezfa3fs was built.\n";return 1;
 }
 int mountBackend(std::unique_ptr<MountBackend>,const std::string&,bool,
-                 const std::string&,bool) {
+                 const std::string&,bool,FsyncPolicy) {
     std::cerr<<"FUSE 3 support was not available when ezfa3fs was built.\n";
     return 1;
 }

@@ -117,6 +117,13 @@ int main() {
     ezfa3fs::MountSession traced(
         std::move(traced_backend),{},true);
     require(traced.fuseTraceEnabled());
+    require(traced.fsyncPolicy()==ezfa3fs::FsyncPolicy::strict);
+
+    auto relaxed_backend=std::make_unique<FailingBackend>();
+    ezfa3fs::MountSession relaxed(
+        std::move(relaxed_backend),{},false,
+        ezfa3fs::FsyncPolicy::deferred);
+    require(relaxed.fsyncPolicy()==ezfa3fs::FsyncPolicy::deferred);
 
     {
         auto recording=std::make_unique<RecordingBackend>();
@@ -166,12 +173,27 @@ int main() {
         {
             std::lock_guard<std::mutex> lock(synchronous.mutex());
             require(synchronous.deferFileCommit("/queued.gba",error));
-            require(synchronous.flushFileCommits("/fsynced.gba",error));
+            require(synchronous.synchronizeFile("/fsynced.gba",error));
         }
 
         require(observed->batches()==
                 std::vector<std::vector<std::string>>{{
                     "/fsynced.gba","/queued.gba"}});
+    }
+
+    {
+        auto recording=std::make_unique<RecordingBackend>();
+        auto* observed=recording.get();
+        ezfa3fs::MountSession deferred(
+            std::move(recording),{},false,
+            ezfa3fs::FsyncPolicy::deferred);
+
+        {
+            std::lock_guard<std::mutex> lock(deferred.mutex());
+            require(deferred.synchronizeFile("/finder.gba",error));
+            require(observed->batches().empty());
+            require(deferred.commit(error));
+        }
     }
 
     {

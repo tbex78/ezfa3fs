@@ -1,6 +1,6 @@
 # EZFA3FS transactional format
 
-This document describes the 32 MiB EZFA3FS format implemented by application version **0.51.2**. The standard layout is experimental format **0.1.0**; the slotted direct-boot layout is experimental format **0.2.0**.
+This document describes the 32 MiB EZFA3FS format implemented by application version **0.52.0**. The standard layout is experimental format **0.1.0**; the slotted direct-boot layout is experimental format **0.2.0**.
 
 EZFA3FS is an independent indexed filesystem for EZ-Flash Advance III NOR flash. It is not FAT, has no partition table, and does not use the original EZ3 menu or ROM patching. All multibyte integers are little-endian.
 
@@ -120,7 +120,11 @@ A read-only cartridge mount pulls and verifies a complete snapshot. A writable m
 
 Reads use a lazy verified cache, refreshed after program and invalidated after erase. It can grow to all 512 blocks (32 MiB) if every block is accessed.
 
-FUSE stages ordinary file writes in host memory. `flush` and `fsync` report health; a dirty file commits on its final `release`, coalescing Finder and `cp` writes into one transaction.
+FUSE stages ordinary file writes in host memory and queues dirty releases for
+a one-second multi-file transaction window. `flush` reports health. By default,
+`fsync` immediately programs and verifies queued data; the explicit writable
+mount option `--relaxed-sync` acknowledges `fsync` after queueing and relies on
+the idle deadline or clean unmount for durability.
 
 Directories report mode `0755`, files `0644`. Unsupported ownership, mode, flags, timestamp-setting, and extended attributes are accepted as compatibility no-ops. `.DS_Store` and `._*` files live in a transient in-memory Finder overlay and never enter the manifest.
 

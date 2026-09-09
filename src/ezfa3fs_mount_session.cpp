@@ -13,10 +13,12 @@ namespace ezfa3fs {
 MountSession::MountSession(
     std::unique_ptr<MountBackend> backend,
     IdleMaintenance idle_maintenance,
-    bool fuse_trace_enabled)
+    bool fuse_trace_enabled,
+    FsyncPolicy fsync_policy)
     : backend_(std::move(backend)),
       mounted_at_(currentUnixTimestamp()),
       fuse_trace_enabled_(fuse_trace_enabled),
+      fsync_policy_(fsync_policy),
       idle_maintenance_(std::move(idle_maintenance)) {
 
     statfs_capacity_bytes_=backend_->capacityBytes();
@@ -434,6 +436,15 @@ bool MountSession::flushFileCommits(
 
     deferred_commit_condition_.notify_all();
     return finishCommit(backend_->commitFiles(paths,error),error);
+}
+
+bool MountSession::synchronizeFile(
+    const std::string& path,
+    std::string& error) {
+
+    return fsync_policy_==FsyncPolicy::deferred?
+        deferFileCommit(path,error):
+        flushFileCommits(path,error);
 }
 
 bool MountSession::commit(std::string& error) {
