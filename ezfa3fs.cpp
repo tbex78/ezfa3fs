@@ -11,6 +11,7 @@
 #include "ezfa3fs/version.hpp"
 #include <chrono>
 #include <ctime>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -129,6 +130,233 @@ private:
     std::streambuf* original_;
     TimestampedStreamBuffer buffer_;
 };
+
+class NullStreamBuffer final : public std::streambuf {
+protected:
+    int_type overflow(int_type character) override {
+        return traits_type::eq_int_type(character,traits_type::eof())
+            ? traits_type::not_eof(character)
+            : character;
+    }
+
+    std::streamsize xsputn(
+        const char*,
+        std::streamsize size) override {
+
+        return size;
+    }
+
+    int sync() override {
+        return 0;
+    }
+};
+
+class TeeStreamBuffer final : public std::streambuf {
+public:
+    TeeStreamBuffer(
+        std::streambuf* terminal,
+        std::streambuf* file)
+        : terminal_(terminal),
+          file_(file) {}
+
+protected:
+    int_type overflow(int_type character) override {
+        if(traits_type::eq_int_type(character,traits_type::eof()))
+            return traits_type::not_eof(character);
+
+        const auto byte=traits_type::to_char_type(character);
+
+        const bool terminal_ok=
+            !traits_type::eq_int_type(
+                terminal_->sputc(byte),
+                traits_type::eof());
+
+        const bool file_ok=
+            !traits_type::eq_int_type(
+                file_->sputc(byte),
+                traits_type::eof());
+
+        return terminal_ok&&file_ok
+            ? character
+            : traits_type::eof();
+    }
+
+    std::streamsize xsputn(
+        const char* data,
+        std::streamsize size) override {
+
+        const auto terminal_written=
+            terminal_->sputn(data,size);
+
+        const auto file_written=
+            file_->sputn(data,size);
+
+        return terminal_written==size&&file_written==size
+            ? size
+            : 0;
+    }
+
+    int sync() override {
+        const int terminal_result=terminal_->pubsync();
+        const int file_result=file_->pubsync();
+
+        return terminal_result==0&&file_result==0
+            ? 0
+            : -1;
+    }
+
+private:
+    std::streambuf* terminal_;
+    std::streambuf* file_;
+};
+
+std::string cardMountLogTimestamp() {
+    const auto now=std::chrono::system_clock::now();
+
+    const auto milliseconds=
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch())%1000;
+
+    const std::time_t time=
+        std::chrono::system_clock::to_time_t(now);
+
+    std::tm local{};
+
+#if defined(_WIN32)
+    localtime_s(&local,&time);
+#else
+    localtime_r(&time,&local);
+#endif
+
+    char date[32]{};
+
+    std::strftime(
+        date,
+        sizeof(date),
+        "%Y%m%d-%H%M%S",
+        &local);
+
+    std::ostringstream out;
+
+    out
+        <<date
+        <<'-'
+        <<std::setfill('0')
+        <<std::setw(3)
+        <<milliseconds.count();
+
+    return out.str();
+}
+
+fs::path cardMountLogPath() {
+    const char* home=std::getenv("HOME");
+
+#if defined(_WIN32)
+    if(!home||!*home)
+        home=std::getenv("USERPROFILE");
+#endif
+
+    if(!home||!*home)
+        throw std::runtime_error(
+            "could not determine the current user's home directory");
+
+    fs::path directory;
+
+#if defined(__APPLE__)
+    directory=
+        fs::path(home)/
+        "Library"/
+        "Logs"/
+        "ezfa3fs";
+#else
+    const char* state_home=std::getenv("XDG_STATE_HOME");
+
+    if(state_home&&*state_home)
+        directory=fs::path(state_home)/"ezfa3fs";
+    else
+        directory=
+            fs::path(home)/
+            ".local"/
+            "state"/
+            "ezfa3fs";
+#endif
+
+    std::error_code error;
+    fs::create_directories(directory,error);
+
+    if(error) {
+        throw std::runtime_error(
+            "could not create verbose log directory "+
+            directory.string()+
+            ": "+
+            error.message());
+    }
+
+    return
+        directory/
+        ("card-mount-"+
+         cardMountLogTimestamp()+
+         ".log");
+}
+
+class CardMountLogging final {
+public:
+    explicit CardMountLogging(bool verbose)
+        : original_(std::cerr.rdbuf()) {
+
+        if(!verbose) {
+            std::cerr.rdbuf(&null_);
+            return;
+        }
+
+        log_path_=cardMountLogPath();
+
+        file_.open(
+            log_path_,
+            std::ios::out|std::ios::trunc);
+
+        if(!file_) {
+            throw std::runtime_error(
+                "could not create verbose log file "+
+                log_path_.string());
+        }
+
+        tee_=std::make_unique<TeeStreamBuffer>(
+            original_,
+            file_.rdbuf());
+
+        timestamped_=
+            std::make_unique<TimestampedStreamBuffer>(
+                tee_.get());
+
+        std::cerr.rdbuf(timestamped_.get());
+
+        std::cout
+            <<"Verbose log file: "
+            <<log_path_
+            <<'\n';
+
+        std::cerr
+            <<"Verbose card-mount logging enabled.\n";
+    }
+
+    ~CardMountLogging() {
+        std::cerr.flush();
+        std::cerr.rdbuf(original_);
+
+        if(file_)
+            file_.flush();
+    }
+
+private:
+    std::streambuf* original_;
+    fs::path log_path_;
+    std::ofstream file_;
+    NullStreamBuffer null_;
+    std::unique_ptr<TeeStreamBuffer> tee_;
+    std::unique_ptr<TimestampedStreamBuffer> timestamped_;
+};
+
 class ReadOnlyBlockDevice final
     : public ezfa3fs::live::BlockDevice {
 public:
@@ -212,7 +440,7 @@ void usage() {
   ezfa3fs compact IMAGE.ezfa3fs
   ezfa3fs space IMAGE.ezfa3fs
   ezfa3fs mount IMAGE.ezfa3fs MOUNTPOINT [--writable] [--foreground]
-  ezfa3fs card-mount MOUNTPOINT [--writable] --foreground [--verify]
+  ezfa3fs card-mount MOUNTPOINT [--writable] --foreground [--verify] [--verbose]
   ezfa3fs card-pull IMAGE.ezfa3fs
   ezfa3fs card-format [--direct-boot]
   ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
@@ -331,7 +559,7 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
               "reconnect before the writer starts and again after unmount "
               "before restoring save memory.\n";
         if(!confirm("Proceed")){
-            std::cerr<<"Cancelled; cartridge was not modified.\n";
+            std::cout<<"Cancelled; cartridge was not modified.\n";
             return 1;
         }
 
@@ -516,7 +744,7 @@ int liveCardSpace() {
 int liveCardGarbageCollect() {
     std::cout<<"WARNING: this will erase unreferenced EZFA3FS data blocks on the cartridge.\n"
              <<"Unmount the cartridge before continuing.\n";
-    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    if(!confirm("Proceed")){std::cout<<"Cancelled; cartridge was not modified.\n";return 1;}
     ezfa3fs::LiveCartridgeSession cartridge;std::string error;
     if(!cartridge.open(error)){std::cerr<<error<<'\n';return 1;}
     const auto progress=progressReporter("Collecting EZFA3FS garbage");
@@ -528,7 +756,7 @@ int liveCardGarbageCollect() {
 int liveCardCompact() {
     std::cout<<"WARNING: this will relocate EZFA3FS files and erase their old cartridge blocks.\n"
              <<"Unmount the cartridge before continuing.\n";
-    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    if(!confirm("Proceed")){std::cout<<"Cancelled; cartridge was not modified.\n";return 1;}
     ezfa3fs::LiveCartridgeSession cartridge;std::string error;
     if(!cartridge.open(error)){std::cerr<<error<<'\n';return 1;}
     ezfa3fs::live::CompactionReport report;
@@ -579,7 +807,7 @@ int liveCardEraseBlock(const std::string& block_text) {
     catch(const std::exception&) { std::cerr<<"Invalid cartridge block: "<<block_text<<'\n';return 1; }
     if(block<2||block>=ezfa3fs::live::NorFlash::block_count){std::cerr<<"Only blocks 2 through 511 may be erased.\n";return 1;}
     std::cout<<"WARNING: this will erase live cartridge block "<<block<<" (64 KiB).\n";
-    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    if(!confirm("Proceed")){std::cout<<"Cancelled; cartridge was not modified.\n";return 1;}
     ezfa3fs::CartridgeProgrammer programmer;std::string error;if(!programmer.eraseLiveBlock(block,std::cout,error)){std::cerr<<error<<'\n';return 1;}return 0;
 }
 int liveCardProgramBlock(const std::string& block_text,const fs::path& input) {
@@ -588,7 +816,7 @@ int liveCardProgramBlock(const std::string& block_text,const fs::path& input) {
     if(block<2||block>=ezfa3fs::live::NorFlash::block_count){std::cerr<<"Only blocks 2 through 511 may be programmed.\n";return 1;}
     std::vector<std::uint8_t> bytes;if(!readFile(input,bytes)||bytes.size()!=ezfa3fs::live::NorFlash::block_size){std::cerr<<"Input must be exactly 64 KiB.\n";return 1;}
     std::cout<<"WARNING: this will program live cartridge block "<<block<<" (64 KiB).\n";
-    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    if(!confirm("Proceed")){std::cout<<"Cancelled; cartridge was not modified.\n";return 1;}
     ezfa3fs::CartridgeProgrammer programmer;std::string error;if(!programmer.programLiveBlock(block,bytes,std::cout,error)){std::cerr<<error<<'\n';return 1;}return 0;
 }
 int liveCardWrite(const fs::path& image,bool verify_after_write) {
@@ -601,7 +829,7 @@ int liveCardWrite(const fs::path& image,bool verify_after_write) {
     std::cout<<"WARNING: this will erase the complete 32-MiB cartridge and program\n"
              <<"the verified EZFA3FS image from "<<image<<".\n"
              <<"Confirm cartridge replacement"<<'\n';
-    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    if(!confirm("Proceed")){std::cout<<"Cancelled; cartridge was not modified.\n";return 1;}
     ezfa3fs::CartridgeProgrammer programmer;
     const ezfa3fs::CartridgeProgrammer::ProgramOptions options{verify_after_write};
     if(!programmer.program(bytes,options,std::cout,error)){std::cerr<<"Cartridge programming failed: "<<error<<'\n';return 1;}
@@ -614,7 +842,7 @@ int liveCardFormat(bool direct_boot) {
     std::cout<<"WARNING: this will erase the complete 32-MiB cartridge, zero all four save banks, and create an empty "
              <<(direct_boot?"direct-boot ":"")<<"EZFA3FS filesystem.\n"
              <<"Confirm cartridge format\n";
-    if(!confirm("Proceed")){std::cerr<<"Cancelled; cartridge was not modified.\n";return 1;}
+    if(!confirm("Proceed")){std::cout<<"Cancelled; cartridge was not modified.\n";return 1;}
     ezfa3fs::CartridgeProgrammer programmer;std::string error;
     const auto layout=direct_boot?ezfa3fs::CartridgeFormatLayout::direct_boot:
                                   ezfa3fs::CartridgeFormatLayout::standard;
@@ -627,6 +855,60 @@ int liveCardFormat(bool direct_boot) {
 
 }
 int main(int argc,char** argv) {
+    if(argc>=3&&std::string(argv[1])=="card-mount") {
+        bool writable=false;
+        bool foreground=false;
+        bool verify_referenced_data=false;
+        bool verbose=false;
+
+        for(int i=3;i<argc;++i) {
+            const std::string option(argv[i]);
+
+            if(option=="--writable")
+                writable=true;
+            else if(option=="--foreground")
+                foreground=true;
+            else if(option=="--verify")
+                verify_referenced_data=true;
+            else if(option=="--verbose")
+                verbose=true;
+            else {
+                std::cerr
+                    <<"Unknown card-mount option: "
+                    <<option
+                    <<'\n';
+                return 1;
+            }
+        }
+
+        // Argument errors must remain visible even in quiet mode.
+        if(!foreground) {
+            std::cerr
+                <<"Cartridge mounting requires --foreground.\n";
+            return 1;
+        }
+
+        std::unique_ptr<CardMountLogging> logging;
+
+        try {
+            logging=
+                std::make_unique<CardMountLogging>(
+                    verbose);
+        } catch(const std::exception& exception) {
+            std::cerr
+                <<"Could not enable card-mount logging: "
+                <<exception.what()
+                <<'\n';
+            return 1;
+        }
+
+        return liveCardMount(
+            argv[2],
+            writable,
+            foreground,
+            verify_referenced_data);
+    }
+
     TimestampedStderr timestamped_stderr;
 
     if(argc==2&&std::string(argv[1])=="--version"){
@@ -647,7 +929,6 @@ int main(int argc,char** argv) {
             else{std::cerr<<"Unknown mount option: "<<option<<'\n';return 1;}}
         return liveMount(argv[2],argv[3],writable,foreground);
     }
-    if(argc>=3&&std::string(argv[1])=="card-mount"){bool writable=false,foreground=false,verify_referenced_data=false;for(int i=3;i<argc;++i){const std::string option(argv[i]);if(option=="--writable")writable=true;else if(option=="--foreground")foreground=true;else if(option=="--verify")verify_referenced_data=true;else{std::cerr<<"Unknown card-mount option: "<<option<<'\n';return 1;}}return liveCardMount(argv[2],writable,foreground,verify_referenced_data);}
     if(argc==4&&std::string(argv[1])=="mkdir")return liveMkdir(argv[2],argv[3]);
     if((argc==4||argc==5)&&std::string(argv[1])=="put")return livePut(argv[2],argv[3],argc==5?argv[4]:argv[3]);
     if(argc==5&&std::string(argv[1])=="get")return liveGet(argv[2],argv[3],argv[4]);

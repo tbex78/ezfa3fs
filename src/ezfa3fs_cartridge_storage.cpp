@@ -221,22 +221,22 @@ bool waitForPhysicalReconnect(const char* purpose,std::string& error)
         finish();return false;
     }
 
-    std::cerr<<"\nEZFA3FS save safety requires a physical USB reconnect "
+    std::cout<<"\nEZFA3FS save safety requires a physical USB reconnect "
              <<purpose<<".\n";
     if(present) {
-        std::cerr<<"Disconnect the EZ-Flash Advance III now..."<<std::flush;
+        std::cout<<"Disconnect the EZ-Flash Advance III now..."<<std::flush;
         while(present) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             if(!ezFlashUsbPresent(watch_context,present,error)) {
                 finish();return false;
             }
         }
-        std::cerr<<" detected.\n";
+        std::cout<<" detected.\n";
     } else {
-        std::cerr<<"EZ-Flash is disconnected.\n";
+        std::cout<<"EZ-Flash is disconnected.\n";
     }
 
-    std::cerr<<"Reconnect the EZ-Flash Advance III now..."<<std::flush;
+    std::cout<<"Reconnect the EZ-Flash Advance III now..."<<std::flush;
     unsigned stable_present=0;
     while(stable_present<3) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -245,7 +245,7 @@ bool waitForPhysicalReconnect(const char* purpose,std::string& error)
         }
         stable_present=present?stable_present+1:0;
     }
-    std::cerr<<" detected.\n";
+    std::cout<<" detected.\n";
     finish();
     error.clear();return true;
 }
@@ -524,16 +524,16 @@ bool CartridgeStorage::Impl::finalizeSavePreservation(std::string& error)
     if(!waitForPhysicalReconnect("before automatic save restoration",error))
         return false;
 
-    std::cerr<<"Restoring the pre-writer 128-KiB save snapshot..."<<std::flush;
+    std::cout<<"Restoring the pre-writer 128-KiB save snapshot..."<<std::flush;
     if(!recoverSaveBanksAfterPowerCycle(snapshot,error)) {
-        std::cerr<<" failed.\n";
+        std::cout<<" failed.\n";
         return false;
     }
 
     save_dirty=false;
     save_backup.clear();
     automatic_save_recovery=false;
-    std::cerr<<" restored and verified.\n";
+    std::cout<<" restored and verified.\n";
     error.clear();return true;
 }
 
@@ -1217,7 +1217,7 @@ bool CartridgeStorage::Impl::openForProgramming(
             shutdown();return false;
         }
         if(automatic_recovery)
-            std::cerr<<"Captured stable pre-writer 128-KiB save snapshot in memory.\n";
+            std::cout<<"Captured stable pre-writer 128-KiB save snapshot in memory.\n";
     }
 
     if(!initialize(error,true,trust_validated_format)||!activateWriter(error)) {
