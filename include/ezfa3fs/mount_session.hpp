@@ -2,6 +2,7 @@
 
 #include "ezfa3fs/mount_backend.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -49,6 +50,25 @@ public:
 
     void noteActivity(bool maintenance_relevant = true);
 
+    struct StatfsSnapshot final {
+        std::uint64_t capacity_bytes = 0;
+        std::uint64_t free_bytes = 0;
+        std::size_t entry_count = 0;
+    };
+
+    StatfsSnapshot statfsSnapshot() const noexcept {
+        return {
+            statfs_capacity_bytes_,
+            statfs_free_bytes_.load(std::memory_order_relaxed),
+            statfs_entry_count_.load(std::memory_order_relaxed)
+        };
+    }
+
+    // The caller must already serialize filesystem mutation/cartridge state.
+    // Readers consume only the atomically published snapshot and therefore
+    // never wait for a flash erase or verification operation.
+    void refreshStatfsSnapshot();
+
     std::uint64_t mountedAt() const noexcept { return mounted_at_; }
 
     bool mutationAllowed(std::string& error) const;
@@ -78,6 +98,13 @@ private:
     // Serializes the RAM-visible directory/pending-file state independently
     // from slow cartridge maintenance. Mutations take both mutexes.
     std::mutex metadata_mutex_;
+
+    // statfs must never inspect live allocation state while background GC is
+    // erasing flash. Writers/maintenance publish fresh values here while they
+    // already own the main filesystem serialization.
+    std::uint64_t statfs_capacity_bytes_ = 0;
+    std::atomic<std::uint64_t> statfs_free_bytes_{0};
+    std::atomic<std::size_t> statfs_entry_count_{0};
 
     std::uint64_t mounted_at_ = 0;
     bool commit_failed_ = false;

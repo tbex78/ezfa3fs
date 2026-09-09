@@ -17,6 +17,9 @@ MountSession::MountSession(
       mounted_at_(currentUnixTimestamp()),
       idle_maintenance_(std::move(idle_maintenance)) {
 
+    statfs_capacity_bytes_=backend_->capacityBytes();
+    refreshStatfsSnapshot();
+
     if(idle_maintenance_)
         idle_maintenance_thread_=
             std::thread(&MountSession::idleMaintenanceLoop,this);
@@ -31,6 +34,16 @@ MountSession::~MountSession() {
 
     if(idle_maintenance_thread_.joinable())
         idle_maintenance_thread_.join();
+}
+
+void MountSession::refreshStatfsSnapshot() {
+    statfs_free_bytes_.store(
+        backend_->freeBytes(),
+        std::memory_order_relaxed);
+
+    statfs_entry_count_.store(
+        backend_->entryCount(),
+        std::memory_order_relaxed);
 }
 
 void MountSession::noteActivity(bool maintenance_relevant) {
@@ -198,6 +211,10 @@ void MountSession::idleMaintenanceLoop() {
                         resynchronize_next,
                         complete,
                         error);
+
+                    // GC may have reclaimed or reserved blocks. Publish the
+                    // resulting allocation state before releasing mutex_.
+                    refreshStatfsSnapshot();
                 }
             }
 
@@ -293,6 +310,8 @@ bool MountSession::commitFile(const std::string& path,std::string& error) {
 }
 
 bool MountSession::finishCommit(bool committed,std::string& error) {
+    refreshStatfsSnapshot();
+
     if (committed) return true;
     commit_failed_ = true;
     commit_error_ = error.empty() ? "mount commit failed" : error;

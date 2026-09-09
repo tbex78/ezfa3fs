@@ -21,3 +21,4 @@ pcap/
 .DS_Store
 *.sav
 *.patch
+logs

@@ -382,7 +382,7 @@ int ezfa3fsMkdir(const char* path,mode_t) {std::scoped_lock lock(
 int ezfa3fsCreate(const char* path,mode_t,struct fuse_file_info* info) {std::scoped_lock lock(
         session().activityMutex(),
         session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
-    const bool changed=session().backend().createFile(path,error);if(changed)installFileHandle(info,true,false);return changed?0:mutationFailure(session(),error);}
+    const bool changed=session().backend().createFile(path,error);if(changed){session().refreshStatfsSnapshot();installFileHandle(info,true,false);}return changed?0:mutationFailure(session(),error);}
 int ezfa3fsWrite(const char* path,const char* buffer,size_t size,off_t offset,struct fuse_file_info* info) {
     if(offset<0)return -EINVAL;std::scoped_lock lock(
         session().activityMutex(),
@@ -459,11 +459,22 @@ int ezfa3fsRemovexattr(const char* path,const char*) {
 void ezfa3fsDestroy(void* private_data) {auto* mounted=static_cast<MountSession*>(private_data);std::scoped_lock lock(
         mounted->mutex(),
         mounted->metadataMutex());if(!mounted->backend().writable())return;if(mounted->commitFailed())return;std::string error;if(!mounted->commit(error))std::cerr<<"EZFA3FS commit failed: "<<error<<'\n';}
-int ezfa3fsStatfs(const char* path,struct statvfs* status) {TracedActivityLock lock("statfs",path,false);
-    std::memset(status,0,sizeof(*status));status->f_bsize=4096;status->f_frsize=4096;
-    status->f_blocks=session().backend().capacityBytes()/4096;status->f_bfree=session().backend().freeBytes()/4096;
-    status->f_bavail=status->f_bfree;status->f_files=session().backend().entryCount()+1024;
-    status->f_ffree=1024;status->f_favail=1024;status->f_namemax=255;return 0;}
+int ezfa3fsStatfs(const char* path,struct statvfs* status) {
+    TracedActivityLock lock("statfs",path,false,true);
+    const auto snapshot=session().statfsSnapshot();
+
+    std::memset(status,0,sizeof(*status));
+    status->f_bsize=4096;
+    status->f_frsize=4096;
+    status->f_blocks=snapshot.capacity_bytes/4096;
+    status->f_bfree=snapshot.free_bytes/4096;
+    status->f_bavail=status->f_bfree;
+    status->f_files=snapshot.entry_count+1024;
+    status->f_ffree=1024;
+    status->f_favail=1024;
+    status->f_namemax=255;
+    return 0;
+}
 
 fuse_operations operations() {fuse_operations value{};value.getattr=ezfa3fsGetattr;value.readdir=ezfa3fsReaddir;value.open=ezfa3fsOpen;
     value.read=ezfa3fsRead;value.chmod=ezfa3fsChmod;value.chown=ezfa3fsChown;value.utimens=ezfa3fsUtimens;value.access=ezfa3fsAccess;
