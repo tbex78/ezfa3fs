@@ -35,9 +35,15 @@ public:
         //
         // Keep the already-qualified split blocks at the global cartridge
         // boundaries and include the observed window-1 top boot block.
+        // The cartridge's physical flash geometry exposes four logical
+        // 64-KiB blocks as groups of eight 8-KiB boot sectors. Runtime erase
+        // verification confirmed the two central boundary blocks as well:
+        // treating blocks 255 or 256 as one 64-KiB sector leaves unerased
+        // data beginning exactly at byte 0x2000.
         const bool split_boot_block=
             block==0||
             block==255||
+            block==256||
             block==511;
         const auto count=split_boot_block?
             static_cast<unsigned>((byte_count+boot_sector_size-1)/boot_sector_size):1u;
