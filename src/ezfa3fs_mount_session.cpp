@@ -25,9 +25,19 @@ MountSession::MountSession(
     if(idle_maintenance_)
         idle_maintenance_thread_=
             std::thread(&MountSession::idleMaintenanceLoop,this);
+
+    if(backend_->writable())
+        deferred_commit_thread_=
+            std::thread(&MountSession::deferredCommitLoop,this);
 }
 
 MountSession::~MountSession() {
+    {
+        std::lock_guard<std::mutex> lock(deferred_commit_mutex_);
+        stop_deferred_commit_=true;
+        deferred_commit_condition_.notify_all();
+    }
+
     {
         std::lock_guard<std::mutex> lock(activity_mutex_);
         stop_idle_maintenance_=true;
@@ -36,6 +46,9 @@ MountSession::~MountSession() {
 
     if(idle_maintenance_thread_.joinable())
         idle_maintenance_thread_.join();
+
+    if(deferred_commit_thread_.joinable())
+        deferred_commit_thread_.join();
 }
 
 void MountSession::refreshStatfsSnapshot() {
@@ -49,24 +62,91 @@ void MountSession::refreshStatfsSnapshot() {
 }
 
 void MountSession::noteActivity(bool maintenance_relevant) {
-    if(!idle_maintenance_)
-        return;
-
-    std::lock_guard<std::mutex> lock(activity_mutex_);
-
     const auto now=std::chrono::steady_clock::now();
 
-    last_foreground_activity_=now;
-    ++activity_generation_;
+    if(idle_maintenance_) {
+        std::lock_guard<std::mutex> lock(activity_mutex_);
 
-    // Every foreground request can interrupt an active maintenance step, but
-    // only mutations restart the full maintenance-idle interval.
-    if(maintenance_relevant) {
-        last_activity_=now;
-        ++maintenance_request_generation_;
+        last_foreground_activity_=now;
+        ++activity_generation_;
+
+        // Every foreground request can interrupt an active maintenance step,
+        // but only mutations restart the full maintenance-idle interval.
+        if(maintenance_relevant) {
+            last_activity_=now;
+            ++maintenance_request_generation_;
+        }
+
+        activity_condition_.notify_all();
     }
 
-    activity_condition_.notify_all();
+    if(maintenance_relevant) {
+        std::lock_guard<std::mutex> lock(deferred_commit_mutex_);
+
+        if(!deferred_commit_paths_.empty()) {
+            deferred_commit_deadline_=now+deferred_commit_delay;
+            ++deferred_commit_generation_;
+            deferred_commit_condition_.notify_all();
+        }
+    }
+}
+
+void MountSession::deferredCommitLoop() {
+    for(;;) {
+        std::uint64_t generation=0;
+
+        {
+            std::unique_lock<std::mutex> lock(deferred_commit_mutex_);
+            deferred_commit_condition_.wait(lock,[&] {
+                return stop_deferred_commit_||
+                       !deferred_commit_paths_.empty();
+            });
+
+            if(stop_deferred_commit_)
+                return;
+
+            generation=deferred_commit_generation_;
+            const auto deadline=deferred_commit_deadline_;
+            const bool interrupted=deferred_commit_condition_.wait_until(
+                lock,deadline,[&] {
+                    return stop_deferred_commit_||
+                           deferred_commit_generation_!=generation;
+                });
+
+            if(stop_deferred_commit_)
+                return;
+
+            if(interrupted)
+                continue;
+        }
+
+        // Activity may have reset the deadline while this worker waited for a
+        // foreground cartridge operation. Verify the generation only after
+        // acquiring the same mutex used by all mutations, then atomically take
+        // the finalized paths.
+        std::unique_lock<std::mutex> session_lock(mutex_);
+        std::vector<std::string> paths;
+
+        {
+            std::lock_guard<std::mutex> lock(deferred_commit_mutex_);
+
+            if(stop_deferred_commit_)
+                return;
+
+            if(deferred_commit_generation_!=generation||
+               std::chrono::steady_clock::now()<deferred_commit_deadline_)
+                continue;
+
+            paths=takeDeferredCommitPaths();
+        }
+
+        std::string error;
+        if(!mutationAllowed(error)||
+           !finishCommit(backend_->commitFiles(paths,error),error))
+            std::cerr
+                <<"EZFA3FS deferred commit failed: "
+                <<error<<'\n';
+    }
 }
 
 void MountSession::idleMaintenanceLoop() {
@@ -301,13 +381,80 @@ bool MountSession::mutationAllowed(std::string& error) const {
     return false;
 }
 
+bool MountSession::deferFileCommit(
+    const std::string& path,
+    std::string& error) {
+
+    if(!mutationAllowed(error))
+        return false;
+
+    {
+        std::lock_guard<std::mutex> lock(deferred_commit_mutex_);
+        deferred_commit_paths_.insert(path);
+        deferred_commit_deadline_=
+            std::chrono::steady_clock::now()+deferred_commit_delay;
+        ++deferred_commit_generation_;
+    }
+
+    deferred_commit_condition_.notify_all();
+    error.clear();
+    return true;
+}
+
+std::vector<std::string> MountSession::takeDeferredCommitPaths(
+    const std::string& additional_path) {
+
+    if(!additional_path.empty())
+        deferred_commit_paths_.insert(additional_path);
+
+    std::vector<std::string> paths(
+        deferred_commit_paths_.begin(),
+        deferred_commit_paths_.end());
+
+    deferred_commit_paths_.clear();
+    ++deferred_commit_generation_;
+    return paths;
+}
+
+bool MountSession::flushFileCommits(
+    const std::string& path,
+    std::string& error) {
+
+    if(!mutationAllowed(error))
+        return false;
+
+    std::vector<std::string> paths;
+    {
+        std::lock_guard<std::mutex> lock(deferred_commit_mutex_);
+        paths=takeDeferredCommitPaths(path);
+    }
+
+    deferred_commit_condition_.notify_all();
+    return finishCommit(backend_->commitFiles(paths,error),error);
+}
+
 bool MountSession::commit(std::string& error) {
     if (!mutationAllowed(error)) return false;
+
+    {
+        std::lock_guard<std::mutex> lock(deferred_commit_mutex_);
+        takeDeferredCommitPaths();
+    }
+
+    deferred_commit_condition_.notify_all();
     return finishCommit(backend_->commit(error),error);
 }
 
 bool MountSession::commitFile(const std::string& path,std::string& error) {
     if (!mutationAllowed(error)) return false;
+
+    {
+        std::lock_guard<std::mutex> lock(deferred_commit_mutex_);
+        deferred_commit_paths_.erase(path);
+        ++deferred_commit_generation_;
+    }
+
+    deferred_commit_condition_.notify_all();
     return finishCommit(backend_->commitFile(path,error),error);
 }
 

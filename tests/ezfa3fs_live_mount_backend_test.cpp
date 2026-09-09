@@ -75,9 +75,19 @@ int main() {
     require(persisted_backend.createFile("/saved/second.bin",error));
     require(persisted_backend.write(
         "/saved/second.bin",0,data,sizeof(data),error));
-    require(persisted_backend.commit(error));
+    require(persisted_backend.createFile("/saved/still-open.bin",error));
+    require(persisted_backend.write(
+        "/saved/still-open.bin",0,deferred_data,sizeof(deferred_data),error));
+    require(persisted_backend.commitFiles(
+        {"/saved/first.bin","/saved/second.bin"},error));
     require(persisted_filesystem.generation()==batch_generation+1);
     require(persistence_count==3);
+    require(!persisted_filesystem.readFile("saved/still-open.bin",output,error));
+    require(persisted_backend.read(
+        "/saved/still-open.bin",0,sizeof(deferred_data),output));
+    require(output==std::vector<std::uint8_t>({'n','e','x','t'}));
+    require(persisted_backend.commitFile("/saved/still-open.bin",error));
+    require(persistence_count==4);
 
     ezfa3fs::live::NorFlash retry_flash;
     require(ezfa3fs::live::Filesystem::format(retry_flash,error));

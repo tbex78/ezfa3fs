@@ -33,6 +33,12 @@ public:
         (void)path;
         return commit(error);
     }
+    virtual bool commitFiles(
+        const std::vector<std::string>& paths,
+        std::string& error) {
+        (void)paths;
+        return commit(error);
+    }
     virtual bool commit(std::string& error) = 0;
     virtual std::uint64_t capacityBytes() const noexcept = 0;
     virtual std::uint64_t freeBytes() const = 0;

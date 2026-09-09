@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <iostream>
 #include <limits>
+#include <set>
 
 namespace ezfa3fs {
 std::string LiveMountBackend::normalize(const std::string& path) {
@@ -337,13 +338,6 @@ bool LiveMountBackend::stageFile(const std::string& path,PendingFile*& pending,
     pending=&pending_files_.emplace(path,std::move(staged)).first->second;error.clear();return true;
 }
 
-bool LiveMountBackend::persistFile(const std::string& path,
-                                   const PendingFile& pending,
-                                   std::string& error) {
-    return filesystem_.putFile(path,pending.bytes,pending.modified_time,error,
-                               maintenance_observer_);
-}
-
 bool LiveMountBackend::commitReady(const PendingFile& pending) const noexcept {
     // Finder and POSIX copy tools commonly create/synchronize destination
     // placeholders before sending their contents. Keep every zero-byte staged
@@ -354,38 +348,52 @@ bool LiveMountBackend::commitReady(const PendingFile& pending) const noexcept {
 }
 
 bool LiveMountBackend::commitFile(const std::string& path,std::string& error) {
-    const auto current=pending_files_.find(normalize(path));
-    if(current==pending_files_.end()||!commitReady(current->second)) {
+    return commitSelected({path},error);
+}
+
+bool LiveMountBackend::commitFiles(
+    const std::vector<std::string>& paths,
+    std::string& error) {
+
+    return commitSelected(paths,error);
+}
+
+bool LiveMountBackend::commitSelected(
+    const std::vector<std::string>& paths,
+    std::string& error) {
+
+    std::vector<live::FileWrite> batch;
+    batch.reserve(paths.size());
+    std::set<std::string> selected_paths;
+
+    for(const auto& path:paths) {
+        const auto current=pending_files_.find(normalize(path));
+
+        if(current==pending_files_.end()||!commitReady(current->second))
+            continue;
+
+        if(!selected_paths.insert(current->first).second)
+            continue;
+
+        std::cerr
+            <<"Finished staging file: "
+            <<current->first
+            <<" ("<<current->second.bytes.size()/1024
+            <<" KiB).\n";
+
+        batch.push_back({current->first,std::move(current->second.bytes),
+                         current->second.modified_time});
+    }
+
+    if(batch.empty()) {
         error.clear();
         return true;
     }
-    std::cerr
-        <<"Finished staging file: "
-        <<current->first
-        <<" ("<<current->second.bytes.size()/1024
-        <<" KiB).\n";
 
     std::cerr
-        <<"Committing file: "
-        <<current->first
-        <<" ("<<current->second.bytes.size()/1024
-        <<" KiB)...\n";
+        <<"Committing "<<batch.size()
+        <<" finalized file(s) in one filesystem transaction...\n";
 
-    if(!persistFile(current->first,current->second,error))return false;
-    if(persistence_observer_&&!persistence_observer_(error))return false;
-    pending_files_.erase(current);
-    error.clear();
-    return true;
-}
-
-bool LiveMountBackend::commit(std::string& error) {
-    std::vector<live::FileWrite> batch;
-    batch.reserve(pending_files_.size());
-    for(auto& current:pending_files_) {
-        if(commitReady(current.second))
-            batch.push_back({current.first,std::move(current.second.bytes),
-                             current.second.modified_time});
-    }
     const auto restore_staged_bytes=[&] {
         for(auto& file:batch)
             pending_files_.at(file.path).bytes=std::move(file.bytes);
@@ -409,6 +417,27 @@ bool LiveMountBackend::commit(std::string& error) {
     }
     for(const auto& file:batch)pending_files_.erase(file.path);
     error.clear();return true;
+}
+
+bool LiveMountBackend::commit(std::string& error) {
+    std::vector<std::string> paths;
+    paths.reserve(pending_files_.size());
+
+    for(const auto& current:pending_files_)
+        if(commitReady(current.second))
+            paths.push_back(current.first);
+
+    // Namespace-only mutations (for example mkdir or rename) have no staged
+    // payload, but still need the outer live-image/cartridge persistence
+    // boundary that commit() has always provided.
+    if(paths.empty()) {
+        if(persistence_observer_&&!persistence_observer_(error))
+            return false;
+        error.clear();
+        return true;
+    }
+
+    return commitSelected(paths,error);
 }
 
 std::size_t LiveMountBackend::entryCount() const noexcept {

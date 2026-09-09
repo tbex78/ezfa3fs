@@ -9,8 +9,10 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace ezfa3fs {
 
@@ -74,6 +76,12 @@ public:
     bool fuseTraceEnabled() const noexcept { return fuse_trace_enabled_; }
 
     bool mutationAllowed(std::string& error) const;
+    // These methods require mutex() to be held by the caller. Final release
+    // uses the deferred form so adjacent Finder copies can share one flash
+    // transaction; fsync uses the flush form as an immediate durability
+    // boundary.
+    bool deferFileCommit(const std::string& path,std::string& error);
+    bool flushFileCommits(const std::string& path,std::string& error);
     bool commitFile(const std::string& path,std::string& error);
     bool commit(std::string& error);
     bool commitFailed() const noexcept { return commit_failed_; }
@@ -89,7 +97,13 @@ private:
     inline static constexpr std::chrono::milliseconds
         foreground_resume_delay{250};
 
+    inline static constexpr std::chrono::milliseconds
+        deferred_commit_delay{250};
+
     bool finishCommit(bool committed,std::string& error);
+    std::vector<std::string> takeDeferredCommitPaths(
+        const std::string& additional_path = {});
+    void deferredCommitLoop();
     void idleMaintenanceLoop();
 
     std::unique_ptr<MountBackend> backend_;
@@ -126,9 +140,18 @@ private:
     std::chrono::steady_clock::time_point last_foreground_activity_ =
         std::chrono::steady_clock::now();
 
+    std::mutex deferred_commit_mutex_;
+    std::condition_variable deferred_commit_condition_;
+    std::set<std::string> deferred_commit_paths_;
+    std::uint64_t deferred_commit_generation_ = 0;
+    std::chrono::steady_clock::time_point deferred_commit_deadline_ =
+        std::chrono::steady_clock::now();
+    bool stop_deferred_commit_ = false;
+
     // Keep the worker last so every state member it accesses exists before
     // the thread starts and remains alive until after it is joined.
     std::thread idle_maintenance_thread_;
+    std::thread deferred_commit_thread_;
 };
 
 } // namespace ezfa3fs

@@ -29,6 +29,8 @@ public:
     bool rename(const std::string& from,const std::string& to,
                 std::string& error) override;
     bool commitFile(const std::string& path,std::string& error) override;
+    bool commitFiles(const std::vector<std::string>& paths,
+                     std::string& error) override;
     bool commit(std::string& error) override;
     std::uint64_t capacityBytes() const noexcept override;
     std::uint64_t freeBytes() const override;

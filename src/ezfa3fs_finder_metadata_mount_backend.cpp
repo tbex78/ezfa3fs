@@ -219,6 +219,20 @@ bool FinderMetadataMountBackend::commitFile(
     return backend_->commitFile(path,error);
 }
 
+bool FinderMetadataMountBackend::commitFiles(
+    const std::vector<std::string>& paths,
+    std::string& error) {
+
+    std::vector<std::string> persistent_paths;
+    persistent_paths.reserve(paths.size());
+
+    for(const auto& path:paths)
+        if(!isFinderMetadata(path))
+            persistent_paths.push_back(path);
+
+    return backend_->commitFiles(persistent_paths,error);
+}
+
 bool FinderMetadataMountBackend::commit(std::string& error) {
     return backend_->commit(error);
 }

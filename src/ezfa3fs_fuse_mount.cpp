@@ -308,6 +308,16 @@ int commitSessionFile(MountSession& value,const char* path) {
     if(value.commitFile(path,error))return 0;
     return mutationFailure(value,error);
 }
+int deferSessionFile(MountSession& value,const char* path) {
+    std::string error;
+    if(value.deferFileCommit(path,error))return 0;
+    return mutationFailure(value,error);
+}
+int flushSessionFiles(MountSession& value,const char* path) {
+    std::string error;
+    if(value.flushFileCommits(path,error))return 0;
+    return mutationFailure(value,error);
+}
 int finishMutation(bool changed,const std::string& error) {
     if(!changed)return mutationFailure(session(),error);
     return commitSession(session());
@@ -569,7 +579,17 @@ int ezfa3fsFlush(const char*,struct fuse_file_info*) {
     // health check; the final release remains the file durability boundary.
     return beginMutation(session());
 }
-int ezfa3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().activityMutex(false));return beginMutation(session());}
+int ezfa3fsFsync(const char* path,int,struct fuse_file_info*) {
+    MutationLocks locks;
+
+    if(const int failure=beginMutation(session());failure!=0)
+        return failure;
+
+    // Unlike flush(), fsync is an explicit durability boundary. Include the
+    // current file and any finalized files already waiting in the batch.
+    locks.releaseMetadata();
+    return flushSessionFiles(session(),path);
+}
 int ezfa3fsRelease(
     const char* path,
     struct fuse_file_info* info) {
@@ -582,11 +602,11 @@ int ezfa3fsRelease(
         return beginMutation(session());
 
     // create/write/truncate have already published the staged file's visible
-    // size and timestamp. Keep only the cartridge/session lock while the slow
-    // extent program and readback verification run.
+    // size and timestamp. Queue finalized paths briefly so Finder's sequential
+    // releases can share one extent program and metadata transaction.
     locks.releaseMetadata();
 
-    return commitSessionFile(
+    return deferSessionFile(
         session(),
         path);
 }

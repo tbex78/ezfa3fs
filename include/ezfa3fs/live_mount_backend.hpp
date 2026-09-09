@@ -45,6 +45,8 @@ public:
     bool removeDirectory(const std::string& path,std::string& error) override;
     bool rename(const std::string& from,const std::string& to,std::string& error) override;
     bool commitFile(const std::string& path,std::string& error) override;
+    bool commitFiles(const std::vector<std::string>& paths,
+                     std::string& error) override;
     bool commit(std::string& error) override;
     std::uint64_t capacityBytes() const noexcept override { return live::NorFlash::capacity; }
     std::uint64_t freeBytes() const override { return filesystem_.freeBlocks()*live::NorFlash::block_size; }
@@ -57,8 +59,8 @@ private:
     static std::string normalize(const std::string& path);
     bool stageFile(const std::string& path,PendingFile*& pending,std::string& error);
     bool commitReady(const PendingFile& pending) const noexcept;
-    bool persistFile(const std::string& path,const PendingFile& pending,
-                     std::string& error);
+    bool commitSelected(const std::vector<std::string>& paths,
+                        std::string& error);
 
     void publishPendingFile(
         const std::string& name,
