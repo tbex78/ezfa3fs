@@ -129,11 +129,38 @@ int ezfa3fsGetattr(const char* path,struct stat* status,struct fuse_file_info*) 
     const auto timestamp=static_cast<time_t>(info.modified_time?info.modified_time:session().mountedAt());
     status->st_atime=timestamp;status->st_mtime=timestamp;status->st_ctime=timestamp;return 0;
 }
-int ezfa3fsReaddir(const char* path,void* buffer,fuse_fill_dir_t filler,off_t,struct fuse_file_info*,enum fuse_readdir_flags) {
-    std::lock_guard<std::mutex> lock(session().activityMutex(false));std::vector<std::string> children;
+int ezfa3fsReaddir(const char* path,void* buffer,fuse_fill_dir_t filler,
+                   off_t offset,struct fuse_file_info*,
+                   enum fuse_readdir_flags) {
+    if(offset<0)return -EINVAL;
+
+    std::lock_guard<std::mutex> lock(session().activityMutex(false));
+    std::vector<std::string> children;
     if(!session().backend().list(path,children))return -ENOENT;
-    filler(buffer,".",nullptr,0,FUSE_FILL_DIR_DEFAULTS);filler(buffer,"..",nullptr,0,FUSE_FILL_DIR_DEFAULTS);
-    for(const auto& child:children)if(filler(buffer,child.c_str(),nullptr,0,FUSE_FILL_DIR_DEFAULTS)!=0)break;return 0;
+
+    const auto start=static_cast<std::size_t>(offset);
+    const auto total=children.size()+2;
+
+    for(std::size_t index=start;index<total;++index) {
+        const char* name=nullptr;
+
+        if(index==0)
+            name=".";
+        else if(index==1)
+            name="..";
+        else
+            name=children[index-2].c_str();
+
+        // The cookie describes the next entry. If the FUSE buffer fills,
+        // macFUSE can call us again with this value instead of restarting the
+        // directory from the beginning.
+        const auto next=static_cast<off_t>(index+1);
+
+        if(filler(buffer,name,nullptr,next,FUSE_FILL_DIR_DEFAULTS)!=0)
+            break;
+    }
+
+    return 0;
 }
 int ezfa3fsOpen(const char* path,struct fuse_file_info* info) {
     std::lock_guard<std::mutex> lock(session().activityMutex(false));MountNode node;if(!session().backend().lookup(path,node)||node.directory)return -ENOENT;

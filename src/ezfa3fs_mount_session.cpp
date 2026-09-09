@@ -102,6 +102,7 @@ void MountSession::idleMaintenanceLoop() {
 
         for(;;) {
             bool interrupted_before_lock=false;
+            bool maintenance_changed_before_lock=false;
 
             {
                 std::lock_guard<std::mutex> lock(activity_mutex_);
@@ -111,11 +112,18 @@ void MountSession::idleMaintenanceLoop() {
 
                 interrupted_before_lock=
                     activity_generation_!=activity_generation;
+                maintenance_changed_before_lock=
+                    maintenance_request_generation_!=request_generation;
             }
 
             if(interrupted_before_lock) {
                 if(pass_in_progress) {
-                    resynchronize_next=true;
+                    // Read-only activity should pause GC so foreground FUSE
+                    // requests win, but only mutations invalidate the
+                    // manifest synchronization established for this pass.
+                    if(maintenance_changed_before_lock)
+                        resynchronize_next=true;
+
                     std::cerr
                         <<"EZFA3FS background garbage collection paused: "
                           "filesystem activity resumed.\n";
@@ -127,6 +135,7 @@ void MountSession::idleMaintenanceLoop() {
             bool maintenance_ok=false;
             std::string error;
             bool interrupted_before_step=false;
+            bool maintenance_changed_before_step=false;
 
             {
                 // The normal FUSE callbacks use this same mutex. Only one GC
@@ -141,6 +150,8 @@ void MountSession::idleMaintenanceLoop() {
 
                     interrupted_before_step=
                         activity_generation_!=activity_generation;
+                    maintenance_changed_before_step=
+                        maintenance_request_generation_!=request_generation;
                 }
 
                 if(!interrupted_before_step) {
@@ -154,7 +165,9 @@ void MountSession::idleMaintenanceLoop() {
 
             if(interrupted_before_step) {
                 if(pass_in_progress) {
-                    resynchronize_next=true;
+                    if(maintenance_changed_before_step)
+                        resynchronize_next=true;
+
                     std::cerr
                         <<"EZFA3FS background garbage collection paused: "
                           "filesystem activity resumed.\n";
@@ -179,11 +192,14 @@ void MountSession::idleMaintenanceLoop() {
             }
 
             bool activity_changed=false;
+            bool maintenance_changed=false;
 
             {
                 std::lock_guard<std::mutex> lock(activity_mutex_);
                 activity_changed=
                     activity_generation_!=activity_generation;
+                maintenance_changed=
+                    maintenance_request_generation_!=request_generation;
             }
 
             if(complete) {
@@ -195,7 +211,8 @@ void MountSession::idleMaintenanceLoop() {
             pass_in_progress=true;
 
             if(activity_changed) {
-                resynchronize_next=true;
+                if(maintenance_changed)
+                    resynchronize_next=true;
 
                 std::cerr
                     <<"EZFA3FS background garbage collection paused: "
