@@ -137,12 +137,19 @@ std::string fuseCallerCommandLine(pid_t pid) {
 #endif
 }
 
+enum class ActivityLockScope {
+    session,
+    metadata,
+    none
+};
+
 class TracedActivityLock final {
 public:
-    TracedActivityLock(const char* operation,
-                       const char* path,
-                       bool maintenance_relevant,
-                       bool metadata_only = false)
+    TracedActivityLock(
+        const char* operation,
+        const char* path,
+        bool maintenance_relevant,
+        ActivityLockScope scope=ActivityLockScope::session)
         : id_(++next_id_),
           operation_(operation),
           path_(path?path:"<null>"),
@@ -158,12 +165,17 @@ public:
             " command="+fuseCallerCommandLine(pid)+
             " waiting");
 
-        auto& mutex=
-            metadata_only
-                ? session().metadataActivityMutex()
-                : session().activityMutex(maintenance_relevant);
+        if(scope==ActivityLockScope::none) {
+            session().noteActivity(maintenance_relevant);
+        } else {
+            auto& mutex=
+                scope==ActivityLockScope::metadata
+                    ? session().metadataActivityMutex()
+                    : session().activityMutex(
+                        maintenance_relevant);
 
-        lock_=std::unique_lock<std::mutex>(mutex);
+            lock_=std::unique_lock<std::mutex>(mutex);
+        }
 
         acquired_=std::chrono::steady_clock::now();
 
@@ -210,6 +222,37 @@ private:
     std::chrono::steady_clock::time_point acquired_;
     std::unique_lock<std::mutex> lock_;
 };
+
+class MutationLocks final {
+public:
+    MutationLocks()
+        : session_lock_(
+              session().activityMutex(),
+              std::defer_lock),
+          metadata_lock_(
+              session().metadataMutex(),
+              std::defer_lock) {
+
+        std::lock(
+            session_lock_,
+            metadata_lock_);
+    }
+
+    void releaseMetadata() {
+        if(metadata_lock_.owns_lock())
+            metadata_lock_.unlock();
+    }
+
+    void reacquireMetadata() {
+        if(!metadata_lock_.owns_lock())
+            metadata_lock_.lock();
+    }
+
+private:
+    std::unique_lock<std::mutex> session_lock_;
+    std::unique_lock<std::mutex> metadata_lock_;
+};
+
 int mutationFailure(MountSession& value,const std::string& error) {
     if(value.shouldReportFailure(error))std::cerr<<"EZFA3FS mutation failed: "<<error<<'\n';
     if(!value.backend().writable())return -EROFS;
@@ -253,26 +296,51 @@ int metadataMutation(const char* path) {
     return beginMutation(session());
 }
 
-int resizeFile(const char* path,off_t size,struct fuse_file_info* info) {
+int resizeFile(
+    const char* path,
+    off_t size,
+    struct fuse_file_info* info,
+    MutationLocks& locks) {
+
     if(size<0)return -EINVAL;
+
     MountNode node;
-    if(!session().backend().lookup(path,node))return -ENOENT;
-    if(node.directory)return -EISDIR;
-    if(!session().backend().writable())return -EROFS;
-    if(const int failure=beginMutation(session());failure!=0)return failure;
-    if(static_cast<std::uint64_t>(size)==node.size)return 0;
+
+    if(!session().backend().lookup(path,node))
+        return -ENOENT;
+
+    if(node.directory)
+        return -EISDIR;
+
+    if(!session().backend().writable())
+        return -EROFS;
+
+    if(const int failure=beginMutation(session());
+       failure!=0)
+        return failure;
+
+    if(static_cast<std::uint64_t>(size)==node.size)
+        return 0;
+
     std::string error;
-    if(!session().backend().truncate(path,static_cast<std::size_t>(size),error))
+
+    if(!session().backend().truncate(
+            path,
+            static_cast<std::size_t>(size),
+            error))
         return mutationFailure(session(),error);
+
     if(fileHandle(info)) {
         markFileHandleDirty(info);
         return 0;
     }
+
+    locks.releaseMetadata();
     return commitSessionFile(session(),path);
 }
 
 int ezfa3fsGetattr(const char* path,struct stat* status,struct fuse_file_info*) {
-    TracedActivityLock lock("getattr",path,false,true);MountNode info;if(!session().backend().lookup(path,info))return -ENOENT;
+    TracedActivityLock lock("getattr",path,false,ActivityLockScope::metadata);MountNode info;if(!session().backend().lookup(path,info))return -ENOENT;
     std::memset(status,0,sizeof(*status));status->st_mode=(info.directory?S_IFDIR|0755:S_IFREG|0644);
     status->st_nlink=info.directory?2:1;status->st_size=static_cast<off_t>(info.size);status->st_uid=getuid();status->st_gid=getgid();
     const auto timestamp=static_cast<time_t>(info.modified_time?info.modified_time:session().mountedAt());
@@ -283,7 +351,7 @@ int ezfa3fsReaddir(const char* path,void* buffer,fuse_fill_dir_t filler,
                    enum fuse_readdir_flags) {
     if(offset<0)return -EINVAL;
 
-    TracedActivityLock lock("readdir",path,false,true);
+    TracedActivityLock lock("readdir",path,false,ActivityLockScope::metadata);
     std::vector<std::string> children;
     if(!session().backend().list(path,children))return -ENOENT;
 
@@ -347,12 +415,14 @@ int ezfa3fsUtimens(const char* path,const struct timespec[2],struct fuse_file_in
 #if defined(__APPLE__)
 int ezfa3fsSetattr(const char* path,struct fuse_darwin_attr* attributes,
                  int to_set,struct fuse_file_info* info) {
-    std::scoped_lock lock(
-        session().activityMutex(),
-        session().metadataMutex());
+    MutationLocks locks;
     if((to_set&FUSE_SET_ATTR_SIZE)!=0) {
         if(!attributes)return -EINVAL;
-        return resizeFile(path,attributes->size,info);
+        return resizeFile(
+            path,
+            attributes->size,
+            info,
+            locks);
     }
     // macFUSE combines chmod, chown, timestamps, and BSD flags in this
     // Darwin-specific callback. EZFA3FS exposes those as fixed metadata, so
@@ -367,7 +437,7 @@ int ezfa3fsChflags(const char* path,struct fuse_file_info*,unsigned int) {
 }
 #endif
 int ezfa3fsAccess(const char* path,int) {
-    TracedActivityLock lock("access",path,false,true);MountNode node;
+    TracedActivityLock lock("access",path,false,ActivityLockScope::metadata);MountNode node;
     return session().backend().lookup(path,node)?0:-ENOENT;
 }
 int ezfa3fsRead(const char* path,char* buffer,size_t size,off_t offset,struct fuse_file_info*) {
@@ -390,11 +460,17 @@ int ezfa3fsWrite(const char* path,const char* buffer,size_t size,off_t offset,st
     if(!session().backend().write(path,static_cast<std::size_t>(offset),reinterpret_cast<const std::uint8_t*>(buffer),size,error))return mutationFailure(session(),error);
     markFileHandleDirty(info);return static_cast<int>(size);
 }
-int ezfa3fsTruncate(const char* path,off_t size,struct fuse_file_info* info) {
-    std::scoped_lock lock(
-        session().activityMutex(),
-        session().metadataMutex());
-    return resizeFile(path,size,info);
+int ezfa3fsTruncate(
+    const char* path,
+    off_t size,
+    struct fuse_file_info* info) {
+
+    MutationLocks locks;
+    return resizeFile(
+        path,
+        size,
+        info,
+        locks);
 }
 int ezfa3fsUnlink(const char* path) {std::scoped_lock lock(
         session().activityMutex(),
@@ -404,16 +480,59 @@ int ezfa3fsRmdir(const char* path) {std::scoped_lock lock(
         session().activityMutex(),
         session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
     const bool changed=session().backend().removeDirectory(path,error);return finishMutation(changed,error);}
-int ezfa3fsRename(const char* from,const char* to,unsigned flags) {
+int ezfa3fsRename(
+    const char* from,
+    const char* to,
+    unsigned flags) {
+
 #if defined(RENAME_NOREPLACE)
-    if((flags&~static_cast<unsigned>(RENAME_NOREPLACE))!=0)return -ENOTSUP;
+    if((flags&~static_cast<unsigned>(RENAME_NOREPLACE))!=0)
+        return -ENOTSUP;
 #else
-    if(flags!=0)return -ENOTSUP;
+    if(flags!=0)
+        return -ENOTSUP;
 #endif
-    std::scoped_lock lock(
-        session().activityMutex(),
-        session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
-    const bool changed=session().backend().rename(from,to,error);return finishMutation(changed,error);}
+
+    MutationLocks locks;
+
+    if(const int failure=beginMutation(session());
+       failure!=0)
+        return failure;
+
+    MountNode source;
+
+    if(!session().backend().lookup(from,source))
+        return -ENOENT;
+
+    // A regular-file rename commonly follows the final Finder/cp write.
+    // Persist any staged extent without holding metadata_mutex_, so Finder,
+    // ls, statfs, and xattr traffic remain responsive during programming and
+    // readback verification.
+    if(!source.directory) {
+        locks.releaseMetadata();
+
+        if(const int failure=
+                commitSessionFile(session(),from);
+           failure!=0)
+            return failure;
+
+        locks.reacquireMetadata();
+    }
+
+    std::string error;
+
+    if(!session().backend().rename(
+            from,
+            to,
+            error))
+        return mutationFailure(session(),error);
+
+    // The visible namespace has already been updated. Metadata-only readers
+    // may observe it while the final persistence step completes.
+    locks.releaseMetadata();
+    return commitSession(session());
+}
+
 int ezfa3fsFlush(const char*,struct fuse_file_info*) {
     std::lock_guard<std::mutex> lock(session().activityMutex(false));
     // macFUSE may flush an open file repeatedly while a copy is still
@@ -423,13 +542,27 @@ int ezfa3fsFlush(const char*,struct fuse_file_info*) {
     return beginMutation(session());
 }
 int ezfa3fsFsync(const char*,int,struct fuse_file_info*) {std::lock_guard<std::mutex> lock(session().activityMutex(false));return beginMutation(session());}
-int ezfa3fsRelease(const char* path,struct fuse_file_info* info) {std::scoped_lock lock(
-        session().activityMutex(),
-        session().metadataMutex());
+int ezfa3fsRelease(
+    const char* path,
+    struct fuse_file_info* info) {
+
+    MutationLocks locks;
+
     const auto handle=takeFileHandle(info);
-    if(handle&&!handle->dirty)return beginMutation(session());
-    return commitSessionFile(session(),path);
+
+    if(handle&&!handle->dirty)
+        return beginMutation(session());
+
+    // create/write/truncate have already published the staged file's visible
+    // size and timestamp. Keep only the cartridge/session lock while the slow
+    // extent program and readback verification run.
+    locks.releaseMetadata();
+
+    return commitSessionFile(
+        session(),
+        path);
 }
+
 int ezfa3fsSetxattr(const char* path,const char*,const char*,size_t,int) {
     std::scoped_lock lock(
         session().mutex(),
@@ -441,11 +574,11 @@ int ezfa3fsSetxattr(const char* path,const char*,const char*,size_t,int) {
     return beginMutation(session());
 }
 int ezfa3fsGetxattr(const char* path,const char*,char*,size_t) {
-    TracedActivityLock lock("getxattr",path,false,true);MountNode node;
+    TracedActivityLock lock("getxattr",path,false,ActivityLockScope::metadata);MountNode node;
     return session().backend().lookup(path,node)?-ENODATA:-ENOENT;
 }
 int ezfa3fsListxattr(const char* path,char*,size_t) {
-    TracedActivityLock lock("listxattr",path,false,true);MountNode node;
+    TracedActivityLock lock("listxattr",path,false,ActivityLockScope::metadata);MountNode node;
     return session().backend().lookup(path,node)?0:-ENOENT;
 }
 int ezfa3fsRemovexattr(const char* path,const char*) {
@@ -460,7 +593,7 @@ void ezfa3fsDestroy(void* private_data) {auto* mounted=static_cast<MountSession*
         mounted->mutex(),
         mounted->metadataMutex());if(!mounted->backend().writable())return;if(mounted->commitFailed())return;std::string error;if(!mounted->commit(error))std::cerr<<"EZFA3FS commit failed: "<<error<<'\n';}
 int ezfa3fsStatfs(const char* path,struct statvfs* status) {
-    TracedActivityLock lock("statfs",path,false,true);
+    TracedActivityLock lock("statfs",path,false,ActivityLockScope::none);
     const auto snapshot=session().statfsSnapshot();
 
     std::memset(status,0,sizeof(*status));

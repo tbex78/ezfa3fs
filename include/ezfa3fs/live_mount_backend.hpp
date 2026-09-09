@@ -18,7 +18,21 @@ public:
         PersistenceObserver persistence_observer = {},bool writable = true)
         : filesystem_(filesystem),
           maintenance_observer_(std::move(maintenance_observer)),
-          persistence_observer_(std::move(persistence_observer)),writable_(writable) {}
+          persistence_observer_(std::move(persistence_observer)),
+          writable_(writable) {
+        // Metadata-only FUSE callbacks must not inspect Filesystem::entries()
+        // while a slow putFile() transaction is modifying the live filesystem.
+        // Keep the namespace/size/timestamp view separately in RAM.
+        for(const auto& entry:filesystem_.entries()) {
+            visible_nodes_.emplace(
+                entry.name,
+                MountNode{
+                    entry.directory,
+                    entry.size,
+                    entry.modified_time
+                });
+        }
+    }
     bool lookup(const std::string& path,MountNode& node) const override;
     bool list(const std::string& path,std::vector<std::string>& children) const override;
     bool read(const std::string& path,std::size_t offset,std::size_t size,std::vector<std::uint8_t>& bytes) const override;
@@ -45,10 +59,26 @@ private:
     bool commitReady(const PendingFile& pending) const noexcept;
     bool persistFile(const std::string& path,const PendingFile& pending,
                      std::string& error);
+
+    void publishPendingFile(
+        const std::string& name,
+        const PendingFile& pending);
+
+    void publishFilesystemEntry(const std::string& name);
+
+    void renameVisibleTree(
+        const std::string& from,
+        const std::string& to);
     live::Filesystem& filesystem_;
     live::Filesystem::MaintenanceObserver maintenance_observer_;
     PersistenceObserver persistence_observer_;
     bool writable_;
+
+    // Protected by MountSession::metadataMutex() for mutations. Slow
+    // persistence may run without that mutex because it never changes this
+    // FUSE-visible view.
+    std::map<std::string,MountNode> visible_nodes_;
+
     std::map<std::string,PendingFile> pending_files_;
 };
 

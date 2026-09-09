@@ -7,28 +7,141 @@
 
 namespace ezfa3fs {
 std::string LiveMountBackend::normalize(const std::string& path) {
-    const auto first=path.find_first_not_of('/');return first==std::string::npos?std::string{}:path.substr(first);
+    const auto first=path.find_first_not_of('/');
+    return first==std::string::npos
+        ? std::string{}
+        : path.substr(first);
 }
-bool LiveMountBackend::lookup(const std::string& path,MountNode& node) const {
-    const auto name=normalize(path);const auto pending=pending_files_.find(name);
-    if(pending!=pending_files_.end()){node={false,pending->second.bytes.size(),pending->second.modified_time};return true;}
-    for(const auto& entry:filesystem_.entries())if(entry.name==name){node={entry.directory,entry.size,entry.modified_time};return true;}
-    if(name.empty()){node={true,0,0};return true;}return false;
+
+void LiveMountBackend::publishPendingFile(
+    const std::string& name,
+    const PendingFile& pending) {
+
+    visible_nodes_[name]={
+        false,
+        pending.bytes.size(),
+        pending.modified_time
+    };
 }
-bool LiveMountBackend::list(const std::string& path,std::vector<std::string>& children) const {
-    const auto name=normalize(path);children.clear();MountNode node;
-    if(!name.empty()&&(!lookup(name,node)||!node.directory))return false;
-    const auto prefix=name.empty()?std::string{}:name+'/';
-    for(const auto& entry:filesystem_.entries())if(entry.name.rfind(prefix,0)==0){const auto rest=entry.name.substr(prefix.size());const auto slash=rest.find('/');if(slash==std::string::npos)children.push_back(rest);}
-    for(const auto& [pending_name,pending]:pending_files_) {
-        (void)pending;
-        if(pending_name.rfind(prefix,0)!=0)continue;
-        const auto rest=pending_name.substr(prefix.size());
-        if(rest.find('/')==std::string::npos&&
-           std::find(children.begin(),children.end(),rest)==children.end())children.push_back(rest);
+
+void LiveMountBackend::publishFilesystemEntry(
+    const std::string& name) {
+
+    const auto found=
+        std::find_if(
+            filesystem_.entries().begin(),
+            filesystem_.entries().end(),
+            [&](const live::Entry& entry) {
+                return entry.name==name;
+            });
+
+    if(found==filesystem_.entries().end())
+        return;
+
+    visible_nodes_[name]={
+        found->directory,
+        found->size,
+        found->modified_time
+    };
+}
+
+void LiveMountBackend::renameVisibleTree(
+    const std::string& from,
+    const std::string& to) {
+
+    const auto prefix=from+'/';
+
+    std::vector<std::pair<std::string,MountNode>> moved;
+
+    for(auto current=visible_nodes_.begin();
+        current!=visible_nodes_.end();) {
+
+        if(current->first!=from &&
+           current->first.rfind(prefix,0)!=0) {
+            ++current;
+            continue;
+        }
+
+        moved.emplace_back(
+            to+current->first.substr(from.size()),
+            current->second);
+
+        current=visible_nodes_.erase(current);
     }
+
+    for(auto& item:moved)
+        visible_nodes_[std::move(item.first)]=item.second;
+}
+
+bool LiveMountBackend::lookup(
+    const std::string& path,
+    MountNode& node) const {
+
+    const auto name=normalize(path);
+
+    if(name.empty()) {
+        node={true,0,0};
+        return true;
+    }
+
+    const auto found=visible_nodes_.find(name);
+
+    if(found==visible_nodes_.end())
+        return false;
+
+    node=found->second;
     return true;
 }
+
+bool LiveMountBackend::list(
+    const std::string& path,
+    std::vector<std::string>& children) const {
+
+    const auto name=normalize(path);
+
+    children.clear();
+
+    MountNode node;
+
+    if(!name.empty() &&
+       (!lookup(name,node)||!node.directory))
+        return false;
+
+    const auto prefix=
+        name.empty()
+            ? std::string{}
+            : name+'/';
+
+    for(const auto& item:visible_nodes_) {
+        const auto& entry_name=item.first;
+
+        if(entry_name.rfind(prefix,0)!=0)
+            continue;
+
+        const auto rest=
+            entry_name.substr(prefix.size());
+
+        if(rest.empty())
+            continue;
+
+        const auto slash=rest.find('/');
+
+        const auto child=
+            slash==std::string::npos
+                ? rest
+                : rest.substr(0,slash);
+
+        if(std::find(
+                children.begin(),
+                children.end(),
+                child)==children.end()) {
+            children.push_back(child);
+        }
+    }
+
+    return true;
+}
+
 bool LiveMountBackend::read(const std::string& path,std::size_t offset,std::size_t size,std::vector<std::uint8_t>& bytes) const {
     const auto name=normalize(path);const auto pending=pending_files_.find(name);
     if(pending!=pending_files_.end()) {
@@ -37,14 +150,35 @@ bool LiveMountBackend::read(const std::string& path,std::size_t offset,std::size
     }
     std::string error;return filesystem_.readFileRange(name,offset,size,bytes,error);
 }
-bool LiveMountBackend::createDirectory(const std::string& path,std::string& error) { return filesystem_.createDirectory(normalize(path),error); }
+bool LiveMountBackend::createDirectory(
+    const std::string& path,
+    std::string& error) {
+
+    const auto name=normalize(path);
+
+    if(!filesystem_.createDirectory(name,error))
+        return false;
+
+    publishFilesystemEntry(name);
+    return true;
+}
 bool LiveMountBackend::createFile(const std::string& path,std::string& error) {
     const auto name=normalize(path);
     if(pending_files_.find(name)!=pending_files_.end()) {
         error="invalid or existing live file path";return false;
     }
     if(!filesystem_.canCreateFile(name,error))return false;
-    pending_files_.emplace(name,PendingFile{{},currentUnixTimestamp()});
+    const auto modified_time=currentUnixTimestamp();
+
+    pending_files_.emplace(
+        name,
+        PendingFile{{},modified_time});
+
+    visible_nodes_[name]={
+        false,
+        0,
+        modified_time
+    };
 
     std::cerr
         <<"Staging file: "<<name
@@ -55,26 +189,71 @@ bool LiveMountBackend::createFile(const std::string& path,std::string& error) {
 bool LiveMountBackend::write(const std::string& path,std::size_t offset,const std::uint8_t* bytes,std::size_t size,std::string& error) {
     const auto name=normalize(path);PendingFile* pending=nullptr;if(!stageFile(name,pending,error))return false;
     if(offset>pending->bytes.size())pending->bytes.resize(offset,0);if(size>std::numeric_limits<std::size_t>::max()-offset){error="live write size overflow";return false;}
-    if(offset+size>pending->bytes.size())pending->bytes.resize(offset+size);std::copy(bytes,bytes+size,pending->bytes.begin()+static_cast<std::ptrdiff_t>(offset));pending->modified_time=currentUnixTimestamp();error.clear();return true;
+    if(offset+size>pending->bytes.size())pending->bytes.resize(offset+size);std::copy(bytes,bytes+size,pending->bytes.begin()+static_cast<std::ptrdiff_t>(offset));pending->modified_time=currentUnixTimestamp();publishPendingFile(name,*pending);error.clear();return true;
 }
-bool LiveMountBackend::truncate(const std::string& path,std::size_t size,std::string& error) { const auto name=normalize(path);PendingFile* pending=nullptr;if(!stageFile(name,pending,error))return false;pending->bytes.resize(size);pending->modified_time=currentUnixTimestamp();error.clear();return true; }
-bool LiveMountBackend::removeFile(const std::string& path,std::string& error) {
+bool LiveMountBackend::truncate(const std::string& path,std::size_t size,std::string& error) { const auto name=normalize(path);PendingFile* pending=nullptr;if(!stageFile(name,pending,error))return false;pending->bytes.resize(size);pending->modified_time=currentUnixTimestamp();publishPendingFile(name,*pending);error.clear();return true; }
+bool LiveMountBackend::removeFile(
+    const std::string& path,
+    std::string& error) {
+
     const auto name=normalize(path);
-    const auto committed=std::any_of(filesystem_.entries().begin(),filesystem_.entries().end(),
-        [&](const live::Entry& entry){return entry.name==name&&!entry.directory;});
-    const bool pending=pending_files_.erase(name)!=0;
-    if(committed)return filesystem_.removeFile(name,error);
-    if(pending){error.clear();return true;}
-    error="live file does not exist";return false;
-}
-bool LiveMountBackend::removeDirectory(const std::string& path,std::string& error) {
-    const auto name=normalize(path);const auto prefix=name+'/';
-    if(std::any_of(pending_files_.begin(),pending_files_.end(),
-        [&](const auto& pending){return pending.first.rfind(prefix,0)==0;})) {
-        error="live directory is not empty";return false;
+
+    const auto committed=
+        std::any_of(
+            filesystem_.entries().begin(),
+            filesystem_.entries().end(),
+            [&](const live::Entry& entry) {
+                return entry.name==name&&!entry.directory;
+            });
+
+    const auto pending=pending_files_.find(name);
+
+    if(committed) {
+        if(!filesystem_.removeFile(name,error))
+            return false;
+
+        if(pending!=pending_files_.end())
+            pending_files_.erase(pending);
+
+        visible_nodes_.erase(name);
+        return true;
     }
-    return filesystem_.removeDirectory(name,error);
+
+    if(pending!=pending_files_.end()) {
+        pending_files_.erase(pending);
+        visible_nodes_.erase(name);
+        error.clear();
+        return true;
+    }
+
+    error="live file does not exist";
+    return false;
 }
+
+bool LiveMountBackend::removeDirectory(
+    const std::string& path,
+    std::string& error) {
+
+    const auto name=normalize(path);
+    const auto prefix=name+'/';
+
+    if(std::any_of(
+            pending_files_.begin(),
+            pending_files_.end(),
+            [&](const auto& pending) {
+                return pending.first.rfind(prefix,0)==0;
+            })) {
+        error="live directory is not empty";
+        return false;
+    }
+
+    if(!filesystem_.removeDirectory(name,error))
+        return false;
+
+    visible_nodes_.erase(name);
+    return true;
+}
+
 bool LiveMountBackend::rename(const std::string& from,const std::string& to,
                               std::string& error) {
     const auto source_name=normalize(from);
@@ -116,6 +295,7 @@ bool LiveMountBackend::rename(const std::string& from,const std::string& to,
             auto pending=std::move(pending_source->second);
             pending_files_.erase(pending_source);
             pending_files_.emplace(destination_name,std::move(pending));
+            renameVisibleTree(source_name,destination_name);
 
             std::cerr
                 <<"Renamed staged zero-byte file: "
@@ -134,7 +314,18 @@ bool LiveMountBackend::rename(const std::string& from,const std::string& to,
         if(!commitFile(from,error))return false;
     }
 
-    return filesystem_.rename(source_name,destination_name,error);
+    if(!filesystem_.rename(
+            source_name,
+            destination_name,
+            error))
+        return false;
+
+    renameVisibleTree(
+        source_name,
+        destination_name);
+
+    error.clear();
+    return true;
 }
 
 bool LiveMountBackend::stageFile(const std::string& path,PendingFile*& pending,
@@ -203,13 +394,7 @@ bool LiveMountBackend::commit(std::string& error) {
 }
 
 std::size_t LiveMountBackend::entryCount() const noexcept {
-    std::size_t count=filesystem_.entries().size();
-    for(const auto& pending:pending_files_) {
-        const auto& name=pending.first;
-        const auto committed=std::any_of(filesystem_.entries().begin(),filesystem_.entries().end(),
-            [&](const live::Entry& entry){return entry.name==name;});
-        if(!committed)++count;
-    }
-    return count;
+    return visible_nodes_.size();
 }
+
 } // namespace ezfa3fs
