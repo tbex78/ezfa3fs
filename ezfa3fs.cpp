@@ -103,7 +103,11 @@ private:
 
         destination_->sputc(character);
 
-        if(character=='\n')
+        // A carriage return starts a terminal progress-line replacement just
+        // as a newline starts a new logical line. Prefix every replacement
+        // consistently so a shorter unprefixed update cannot leave remnants
+        // of the preceding timestamped text visible.
+        if(character=='\n'||character=='\r')
             at_line_start_=true;
     }
 
