@@ -150,6 +150,11 @@ public:
     bool readFileRange(const std::string& path,std::size_t offset,std::size_t size,
                        std::vector<std::uint8_t>& bytes,std::string& error) const;
     bool verify(std::string& error,ScanProgress progress = {}) const;
+
+    // Writable cartridge mounts remove zero-byte files that were left behind
+    // by an interrupted/failed previous copy before exposing the filesystem.
+    bool removeEmptyFiles(std::size_t& removed_files,std::string& error);
+
     bool collectGarbage(std::size_t& reclaimed_blocks,std::string& error,
                         ScanProgress progress = {});
 
@@ -172,7 +177,6 @@ public:
 private:
     enum class ExtentSearchResult { found,no_extent,error };
     bool commit(std::string& error);
-    bool releaseEmptyFileAllocations();
     ExtentSearchResult findBlankExtent(std::size_t block_count,
                                        std::size_t& first_block,
                                        std::string& error);

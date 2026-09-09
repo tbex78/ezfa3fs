@@ -661,47 +661,79 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
     if(commit(error))return true;entries_=old;return false;
 }
 
-bool Filesystem::releaseEmptyFileAllocations() {
-    bool changed=false;
+bool Filesystem::removeEmptyFiles(
+    std::size_t& removed_files,
+    std::string& error) {
 
-    for(auto& entry:entries_) {
-        if(entry.directory||
-           entry.size!=0||
-           entry.block_count==0||
-           isDirectBootRom(entry))
+    removed_files=0;
+
+    const auto old_entries=entries_;
+    const auto old_next_free_block=next_free_block_;
+
+    for(auto it=entries_.begin();it!=entries_.end();) {
+        if(it->directory||
+           it->size!=0||
+           isDirectBootRom(*it)) {
+            ++it;
             continue;
-
-        const auto first=
-            static_cast<std::size_t>(entry.first_block);
-        const auto count=
-            static_cast<std::size_t>(entry.block_count);
+        }
 
         std::cerr
-            <<"Releasing stale allocation for empty file: "
-            <<entry.name
-            <<" (block ";
+            <<"Removing stale zero-byte file: "
+            <<it->name;
 
-        if(count==1)
-            std::cerr<<first;
-        else
-            std::cerr<<first<<'-'<<(first+count-1);
+        if(it->block_count) {
+            std::cerr
+                <<" (releasing block "
+                <<it->first_block;
 
-        std::cerr
-            <<", "<<count
-            <<" block(s)).\n";
+            if(it->block_count>1)
+                std::cerr
+                    <<'-'
+                    <<(static_cast<std::size_t>(it->first_block)+
+                       it->block_count-1);
 
-        // Preserve the current hot allocation cursor for the metadata-only
-        // entry. Its former extent becomes unreferenced and will be reclaimed
-        // by the normal garbage collector below.
-        entry.first_block=
-            static_cast<std::uint32_t>(next_free_block_);
-        entry.block_count=0;
-        entry.crc32=Crc32::calculate(nullptr,0);
+            std::cerr<<')';
+        }
 
-        changed=true;
+        std::cerr<<".\n";
+
+        it=entries_.erase(it);
+        ++removed_files;
     }
 
-    return changed;
+    if(removed_files==0) {
+        error.clear();
+        return true;
+    }
+
+    // This is mount-startup cleanup, so there is no useful hot allocation
+    // cursor to preserve. Recompute it without any stale empty-file extents.
+    next_free_block_=allocationStartBlock();
+
+    for(const auto& entry:entries_) {
+        if(entry.directory)
+            continue;
+
+        next_free_block_=std::max(
+            next_free_block_,
+            static_cast<std::size_t>(
+                entry.first_block+entry.block_count));
+    }
+
+    // Publish the manifest without the empty entries before GC is allowed to
+    // erase any physical blocks they may previously have occupied.
+    if(commit(error)) {
+        error.clear();
+        return true;
+    }
+
+    entries_=old_entries;
+    next_free_block_=old_next_free_block;
+
+    error=
+        "could not remove stale zero-byte files: "+error;
+    return false;
 }
 
 
@@ -723,25 +755,6 @@ bool Filesystem::collectGarbageStep(
     state.last_reclaimed_blocks.clear();
 
     if(!state.initialized) {
-        // Older manifests may contain zero-size files that still own physical
-        // blocks. Convert them to true metadata-only files first. The old
-        // blocks then become ordinary garbage and are reclaimed by this pass.
-        const auto old_entries=entries_;
-
-        if(releaseEmptyFileAllocations()) {
-            if(!commit(error)) {
-                entries_=old_entries;
-                error=
-                    "could not release stale empty-file allocations: "+
-                    error;
-                return false;
-            }
-
-            // The logical manifest changed. Require the normal pre-erase
-            // synchronization before the first destructive GC batch.
-            state.metadata_synchronized=false;
-        }
-
         state.next_block=first_data_block;
         state.reclaimed_blocks=0;
         state.pending_blocks.clear();
@@ -856,21 +869,6 @@ bool Filesystem::collectGarbage(
     ScanProgress progress) {
 
     reclaimed_blocks=0;
-
-    // Legacy/corrupt metadata can describe an empty file while still
-    // reserving physical data blocks. Make those blocks unreferenced before
-    // the GC scan so they can be erased safely.
-    const auto old_entries=entries_;
-
-    if(releaseEmptyFileAllocations()) {
-        if(!commit(error)) {
-            entries_=old_entries;
-            error=
-                "could not release stale empty-file allocations: "+
-                error;
-            return false;
-        }
-    }
 
     const auto first_data_block=firstDataBlock();
     const auto end_block=dataEndBlock();

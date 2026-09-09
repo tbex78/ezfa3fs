@@ -260,6 +260,25 @@ bool LiveCartridgeSession::open(
     if(!live::Filesystem::open(metadata_device_,filesystem_,error)){
         std::string ignored;storage_.close(ignored);return false;
     }
+
+    // Clean files left as zero-byte placeholders by an interrupted previous
+    // writable mount. Do this before FUSE starts so we never race Finder's
+    // temporary zero-byte files during a live copy.
+    std::size_t removed_empty_files=0;
+
+    if(!filesystem_.removeEmptyFiles(removed_empty_files,error)) {
+        std::string ignored;
+        storage_.close(ignored);
+        return false;
+    }
+
+    if(removed_empty_files) {
+        std::cerr
+            <<"Removed "
+            <<removed_empty_files
+            <<" stale zero-byte file(s) at writable mount startup.\n";
+    }
+
     // Keep full referenced-file checksum verification strictly opt-in.
     // With verify_referenced_data == false, Filesystem::verify() is not called.
     if(verify_referenced_data){
