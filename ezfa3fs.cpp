@@ -462,7 +462,7 @@ std::uint64_t fileModifiedTime(const fs::path& path) {
     return seconds>0?static_cast<std::uint64_t>(seconds):0;
 }
 void usage() {
-    std::cerr<<R"(Usage:
+    std::cout<<R"(Usage:
   ezfa3fs format IMAGE.ezfa3fs
   ezfa3fs format --direct-boot IMAGE.ezfa3fs ROM.gba
   ezfa3fs list IMAGE.ezfa3fs
