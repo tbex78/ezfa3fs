@@ -97,8 +97,39 @@ bool LiveMountBackend::rename(const std::string& from,const std::string& to,
         // so retain the existing full-commit behaviour for directories.
         if(!commit(error))return false;
     } else {
+        const auto pending_source=pending_files_.find(source_name);
+
+        // An empty staged file intentionally has no persistent filesystem
+        // entry. Rename the RAM-only placeholder directly instead of forcing
+        // it through commitFile() and then asking Filesystem::rename() to
+        // rename an entry that does not exist on flash.
+        if(pending_source!=pending_files_.end()&&
+           pending_source->second.bytes.empty()) {
+            if(source_name==destination_name) {
+                error.clear();
+                return true;
+            }
+
+            if(!filesystem_.canCreateFile(destination_name,error))
+                return false;
+
+            auto pending=std::move(pending_source->second);
+            pending_files_.erase(pending_source);
+            pending_files_.emplace(destination_name,std::move(pending));
+
+            std::cerr
+                <<"Renamed staged zero-byte file: "
+                <<source_name
+                <<" -> "
+                <<destination_name
+                <<".\n";
+
+            error.clear();
+            return true;
+        }
+
         // Finder may have several copy destinations pending simultaneously.
-        // Commit only the file being renamed; never flush unrelated
+        // Commit only the non-empty file being renamed; never flush unrelated
         // placeholders.
         if(!commitFile(from,error))return false;
     }
@@ -123,9 +154,12 @@ bool LiveMountBackend::persistFile(const std::string& path,
 }
 
 bool LiveMountBackend::commitReady(const PendingFile& pending) const noexcept {
-    // POSIX copy tools may synchronize an empty destination before sending
-    // its data. An empty direct-boot ROM is not a valid cartridge state.
-    return !filesystem_.awaitsDirectBootRom()||!pending.bytes.empty();
+    // Finder and POSIX copy tools commonly create/synchronize destination
+    // placeholders before sending their contents. Keep every zero-byte staged
+    // file in RAM only. If data later arrives it becomes commit-ready normally;
+    // if the mount ends while it is still empty, the placeholder disappears
+    // without ever consuming cartridge metadata.
+    return !pending.bytes.empty();
 }
 
 bool LiveMountBackend::commitFile(const std::string& path,std::string& error) {
