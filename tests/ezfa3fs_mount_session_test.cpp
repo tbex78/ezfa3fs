@@ -129,6 +129,10 @@ int main() {
         auto recording=std::make_unique<RecordingBackend>();
         auto* observed=recording.get();
         ezfa3fs::FinderMetadataMountBackend finder(std::move(recording));
+        require(finder.fileRemovalRequiresCommit("/game.gba"));
+        require(finder.createFile("/._game.gba",error));
+        require(!finder.fileRemovalRequiresCommit("/._game.gba"));
+        require(finder.removeFile("/._game.gba",error));
         require(finder.commitFiles(
             {"/game.gba","/.DS_Store","/._game.gba"},error));
         require(observed->batches()==

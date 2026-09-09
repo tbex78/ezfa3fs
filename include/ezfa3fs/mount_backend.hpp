@@ -26,6 +26,13 @@ public:
     virtual bool write(const std::string& path,std::size_t offset,const std::uint8_t* bytes,
                        std::size_t size,std::string& error) = 0;
     virtual bool truncate(const std::string& path,std::size_t size,std::string& error) = 0;
+    // Reports whether a successful removal changes durable backend state.
+    // Decorators may keep compatibility-only files entirely in memory.
+    virtual bool fileRemovalRequiresCommit(
+        const std::string& path) const noexcept {
+        (void)path;
+        return true;
+    }
     virtual bool removeFile(const std::string& path,std::string& error) = 0;
     virtual bool removeDirectory(const std::string& path,std::string& error) = 0;
     virtual bool rename(const std::string& from,const std::string& to,std::string& error) = 0;

@@ -142,6 +142,21 @@ bool FinderMetadataMountBackend::truncate(
     return true;
 }
 
+bool FinderMetadataMountBackend::fileRemovalRequiresCommit(
+    const std::string& path) const noexcept {
+
+    if(!isFinderMetadata(path))
+        return backend_->fileRemovalRequiresCommit(path);
+
+    const auto transient=transient_files_.find(normalize(path));
+
+    // Removing metadata created during this mount changes only the transient
+    // compatibility view. A staged copy of an older persisted metadata file
+    // still needs the normal cartridge durability boundary when removed.
+    return transient==transient_files_.end()||
+           transient->second.shadows_persisted_file;
+}
+
 bool FinderMetadataMountBackend::removeFile(
     const std::string& path,std::string& error) {
     if(!isFinderMetadata(path))return backend_->removeFile(path,error);

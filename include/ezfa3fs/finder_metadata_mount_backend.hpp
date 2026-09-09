@@ -24,6 +24,8 @@ public:
     bool write(const std::string& path,std::size_t offset,const std::uint8_t* bytes,
                std::size_t size,std::string& error) override;
     bool truncate(const std::string& path,std::size_t size,std::string& error) override;
+    bool fileRemovalRequiresCommit(
+        const std::string& path) const noexcept override;
     bool removeFile(const std::string& path,std::string& error) override;
     bool removeDirectory(const std::string& path,std::string& error) override;
     bool rename(const std::string& from,const std::string& to,

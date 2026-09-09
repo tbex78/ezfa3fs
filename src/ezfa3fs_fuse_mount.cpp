@@ -322,6 +322,19 @@ int finishMutation(bool changed,const std::string& error) {
     if(!changed)return mutationFailure(session(),error);
     return commitSession(session());
 }
+int finishFileRemoval(
+    bool requires_commit,
+    bool changed,
+    const std::string& error) {
+
+    if(!changed)
+        return mutationFailure(session(),error);
+
+    if(!requires_commit)
+        return 0;
+
+    return commitSession(session());
+}
 int metadataMutation(const char* path) {
     MountNode node;
     if(!session().backend().lookup(path,node))return -ENOENT;
@@ -453,9 +466,14 @@ int ezfa3fsUtimens(const char* path,const struct timespec[2],struct fuse_file_in
 #if defined(__APPLE__)
 int ezfa3fsSetattr(const char* path,struct fuse_darwin_attr* attributes,
                  int to_set,struct fuse_file_info* info) {
+    TracedActivityLock trace(
+        "setattr",path,true,ActivityLockScope::none);
     MutationLocks locks;
     if((to_set&FUSE_SET_ATTR_SIZE)!=0) {
         if(!attributes)return -EINVAL;
+        trace.note(
+            "size="+
+            std::to_string(static_cast<long long>(attributes->size)));
         return resizeFile(
             path,
             attributes->size,
@@ -483,10 +501,17 @@ int ezfa3fsRead(const char* path,char* buffer,size_t size,off_t offset,struct fu
     if(!session().backend().read(path,static_cast<std::size_t>(offset),size,bytes))return -ENOENT;
     std::memcpy(buffer,bytes.data(),bytes.size());return static_cast<int>(bytes.size());
 }
-int ezfa3fsMkdir(const char* path,mode_t) {std::scoped_lock lock(
+int ezfa3fsMkdir(const char* path,mode_t) {
+    TracedActivityLock trace(
+        "mkdir",path,true,ActivityLockScope::none);
+    std::scoped_lock lock(
         session().activityMutex(),
-        session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
-    const bool changed=session().backend().createDirectory(path,error);return finishMutation(changed,error);}
+        session().metadataMutex());
+    if(const int failure=beginMutation(session());failure!=0)return failure;
+    std::string error;
+    const bool changed=session().backend().createDirectory(path,error);
+    return finishMutation(changed,error);
+}
 int ezfa3fsCreate(const char* path,mode_t,struct fuse_file_info* info) {std::scoped_lock lock(
         session().activityMutex(),
         session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
@@ -503,6 +528,10 @@ int ezfa3fsTruncate(
     off_t size,
     struct fuse_file_info* info) {
 
+    TracedActivityLock trace(
+        "truncate",path,true,ActivityLockScope::none);
+    trace.note(
+        "size="+std::to_string(static_cast<long long>(size)));
     MutationLocks locks;
     return resizeFile(
         path,
@@ -510,14 +539,38 @@ int ezfa3fsTruncate(
         info,
         locks);
 }
-int ezfa3fsUnlink(const char* path) {std::scoped_lock lock(
+int ezfa3fsUnlink(const char* path) {
+    TracedActivityLock trace(
+        "unlink",path,true,ActivityLockScope::none);
+    std::scoped_lock lock(
         session().activityMutex(),
-        session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
-    const bool changed=session().backend().removeFile(path,error);return finishMutation(changed,error);}
-int ezfa3fsRmdir(const char* path) {std::scoped_lock lock(
+        session().metadataMutex());
+    if(const int failure=beginMutation(session());failure!=0)return failure;
+
+    const bool requires_commit=
+        session().backend().fileRemovalRequiresCommit(path);
+    trace.note(
+        requires_commit?
+            "durability=persistent":"durability=transient");
+
+    std::string error;
+    const bool changed=session().backend().removeFile(path,error);
+    return finishFileRemoval(
+        requires_commit,
+        changed,
+        error);
+}
+int ezfa3fsRmdir(const char* path) {
+    TracedActivityLock trace(
+        "rmdir",path,true,ActivityLockScope::none);
+    std::scoped_lock lock(
         session().activityMutex(),
-        session().metadataMutex());if(const int failure=beginMutation(session());failure!=0)return failure;std::string error;
-    const bool changed=session().backend().removeDirectory(path,error);return finishMutation(changed,error);}
+        session().metadataMutex());
+    if(const int failure=beginMutation(session());failure!=0)return failure;
+    std::string error;
+    const bool changed=session().backend().removeDirectory(path,error);
+    return finishMutation(changed,error);
+}
 int ezfa3fsRename(
     const char* from,
     const char* to,
