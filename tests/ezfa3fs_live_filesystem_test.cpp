@@ -442,7 +442,9 @@ int main()
     require(reopened.putFile("docs/recycled.txt",{'z'},1238,error));
     const auto recycled=std::find_if(reopened.entries().begin(),reopened.entries().end(),
         [](const ezfa3fs::live::Entry& entry){return entry.name=="docs/recycled.txt";});
-    require(recycled!=reopened.entries().end()&&recycled->first_block==2);
+    // GC preserves the hot allocation cursor, so newly written data keeps
+    // moving forward instead of immediately jumping back into reclaimed space.
+    require(recycled!=reopened.entries().end()&&recycled->first_block==10);
     const auto generation_before_compaction=reopened.generation();
     const auto prepares_before_compaction=
         reopened_device.prepare_erase_count;
@@ -452,20 +454,34 @@ int main()
     ezfa3fs::live::CompactionReport compaction;
     require(reopened.compact(compaction,error));
     require(compaction.garbage_blocks_reclaimed==0);
-    require(compaction.files_relocated==1);
-    require(compaction.blocks_relocated==1);
-    require(reopened.generation()==generation_before_compaction+2);
-    const auto compacted_recovered=std::find_if(reopened.entries().begin(),reopened.entries().end(),
-        [](const ezfa3fs::live::Entry& entry){return entry.name=="docs/recovered.txt";});
+    // recycled moves 10 -> 2, then recovered moves 9 -> 6.
+    require(compaction.files_relocated==2);
+    require(compaction.blocks_relocated==2);
+
+    // Each relocation publishes two metadata generations before its old
+    // source block is erased.
+    require(reopened.generation()==generation_before_compaction+4);
+    const auto compacted_recycled=std::find_if(
+        reopened.entries().begin(),reopened.entries().end(),
+        [](const ezfa3fs::live::Entry& entry){
+            return entry.name=="docs/recycled.txt";
+        });
+    require(compacted_recycled!=reopened.entries().end()&&
+            compacted_recycled->first_block==2);
+
+    const auto compacted_recovered=std::find_if(
+        reopened.entries().begin(),reopened.entries().end(),
+        [](const ezfa3fs::live::Entry& entry){
+            return entry.name=="docs/recovered.txt";
+        });
     require(compacted_recovered!=reopened.entries().end()&&
             compacted_recovered->first_block==6);
 
-    // compact() finds no garbage here, then erases the relocated source
-    // extent as one batch.
+    // Both relocated source extents are erased as independent batches.
     require(reopened_device.prepare_erase_count==
-            prepares_before_compaction+1);
+            prepares_before_compaction+2);
     require(reopened_device.erase_batch_count==
-            batches_before_compaction+1);
+            batches_before_compaction+2);
 
     require(reopened.verify(error));
     ezfa3fs::live::SpaceReport compacted_space;
