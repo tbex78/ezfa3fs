@@ -62,6 +62,14 @@ void MountSession::idleMaintenanceLoop() {
     bool pass_in_progress=false;
     bool resynchronize_next=false;
 
+    // A foreground request may spend several seconds waiting behind a
+    // destructive cartridge operation. Its original activity timestamp can
+    // therefore already be stale when GC finally releases the session mutex.
+    // Always give queued foreground work a fresh quiet window from the actual
+    // pause point before allowing maintenance to resume.
+    auto foreground_resume_not_before=
+        std::chrono::steady_clock::time_point::min();
+
     for(;;) {
         std::uint64_t activity_generation=0;
         std::uint64_t request_generation=0;
@@ -91,11 +99,16 @@ void MountSession::idleMaintenanceLoop() {
                 // Once a pass has already started, read-only foreground
                 // traffic should pause it long enough for a complete FUSE
                 // request burst to finish, but not for another ten seconds.
-                if(pass_in_progress)
+                if(pass_in_progress) {
                     deadline=std::max(
                         deadline,
                         last_foreground_activity_+
                             foreground_resume_delay);
+
+                    deadline=std::max(
+                        deadline,
+                        foreground_resume_not_before);
+                }
 
                 const bool interrupted=
                     activity_condition_.wait_until(
@@ -145,6 +158,10 @@ void MountSession::idleMaintenanceLoop() {
                     if(maintenance_changed_before_lock)
                         resynchronize_next=true;
 
+                    foreground_resume_not_before=
+                        std::chrono::steady_clock::now()+
+                        foreground_resume_delay;
+
                     std::cerr
                         <<"EZFA3FS background garbage collection paused: "
                           "filesystem activity resumed.\n";
@@ -188,6 +205,10 @@ void MountSession::idleMaintenanceLoop() {
                 if(pass_in_progress) {
                     if(maintenance_changed_before_step)
                         resynchronize_next=true;
+
+                    foreground_resume_not_before=
+                        std::chrono::steady_clock::now()+
+                        foreground_resume_delay;
 
                     std::cerr
                         <<"EZFA3FS background garbage collection paused: "
@@ -234,6 +255,10 @@ void MountSession::idleMaintenanceLoop() {
             if(activity_changed) {
                 if(maintenance_changed)
                     resynchronize_next=true;
+
+                foreground_resume_not_before=
+                    std::chrono::steady_clock::now()+
+                    foreground_resume_delay;
 
                 std::cerr
                     <<"EZFA3FS background garbage collection paused: "
