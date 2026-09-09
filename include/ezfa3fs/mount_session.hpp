@@ -83,11 +83,14 @@ public:
     std::uint64_t mountedAt() const noexcept { return mounted_at_; }
     bool fuseTraceEnabled() const noexcept { return fuse_trace_enabled_; }
     FsyncPolicy fsyncPolicy() const noexcept { return fsync_policy_; }
+    bool writebackEnabled() const noexcept {
+        return fsync_policy_==FsyncPolicy::deferred;
+    }
 
     bool mutationAllowed(std::string& error) const;
-    // These methods require mutex() to be held by the caller. Final release
-    // uses the deferred form so adjacent Finder copies can share one flash
-    // transaction. synchronizeFile applies the mount's explicit fsync policy.
+    // These methods require mutex() to be held by the caller. synchronizeFile
+    // applies the mount's durability policy to both fsync and final release:
+    // strict waits for persistence, while deferred enables write-back batching.
     bool deferFileCommit(const std::string& path,std::string& error);
     bool synchronizeFile(const std::string& path,std::string& error);
     bool commitFile(const std::string& path,std::string& error);

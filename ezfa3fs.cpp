@@ -597,10 +597,13 @@ int liveCardMount(const fs::path& mountpoint,bool writable,bool foreground,
 
         if(relaxed_sync) {
             std::cout
-                <<"WARNING: relaxed sync is enabled. FUSE fsync requests "
-                  "return after data enters the host-memory batch, before "
-                  "it is durable on the cartridge. Clean unmount still "
-                  "drains and verifies the batch.\n";
+                <<"WARNING: relaxed sync write-back is enabled. File release "
+                  "and fsync requests return after data enters host memory, "
+                  "before it is durable on the cartridge. Finder may report "
+                  "the copy complete while terminal programming continues. "
+                  "Do not disconnect or force-unmount the cartridge; wait "
+                  "for programming to finish. Clean unmount drains and "
+                  "verifies the batch.\n";
         }
 
         if(!confirm("Proceed")){

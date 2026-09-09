@@ -687,12 +687,17 @@ int ezfa3fsRelease(
     if(handle&&!handle->dirty)
         return beginMutation(session());
 
-    // create/write/truncate have already published the staged file's visible
-    // size and timestamp. Queue finalized paths briefly so Finder's sequential
-    // releases can share one extent program and metadata transaction.
+    const bool deferred=session().writebackEnabled();
+    trace.note(
+        deferred?
+            "durability=deferred":"durability=strict");
+
+    // Strict mode keeps Finder's completion display aligned with cartridge
+    // durability. Relaxed mode explicitly opts into the host-memory queue so
+    // adjacent releases can share one extent and metadata transaction.
     locks.releaseMetadata();
 
-    return deferSessionFile(
+    return synchronizeSessionFile(
         session(),
         path);
 }

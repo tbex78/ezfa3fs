@@ -5,7 +5,7 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.52.5**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
+Application version: **0.52.6**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
 
 The FUSE/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
@@ -65,19 +65,22 @@ Mount with direct transactional writes:
 ./build/cmake/ezfa3fs card-mount mountpoint --writable --foreground
 ```
 
-Finder requests per-file `fsync` durability and therefore normally waits for
-each cartridge transaction before advancing to the next file. To allow Finder
-files to enter the one-second multi-file batch, explicitly select relaxed sync:
+By default, each dirty file's final release waits for cartridge programming and
+readback verification. Finder therefore reports a copy as complete only after
+its contents are durable. To allow Finder files to enter the one-second
+multi-file write-back batch, explicitly select relaxed sync:
 
 ```sh
 ./build/cmake/ezfa3fs card-mount mountpoint --writable --foreground --relaxed-sync
 ```
 
-In relaxed-sync mode, `fsync` returns after the file enters the host-memory
-queue, before it is durable on the cartridge. Clean unmount still drains and
-verifies the queue. A crash, forced unmount, process termination, USB removal,
-or power loss during that interval can lose acknowledged writes. Strict sync
-remains the default.
+In relaxed-sync mode, final file release and `fsync` return after the file enters
+the host-memory queue, before it is durable on the cartridge. Finder can report
+the copy complete while terminal programming continues. Wait for programming
+to finish before disconnecting or force-unmounting the cartridge. Clean unmount
+still drains and verifies the queue. A crash, forced unmount, process
+termination, USB removal, or power loss during that interval can lose
+acknowledged writes. Strict sync remains the default.
 
 Add `--verify` to either mount mode to verify referenced file data before mounting. A writable mount without `--verify` reads only the metadata needed to start, which is much faster on cartridges containing large files. Without `--verify`, `card-mount` does not run the full referenced-file checksum verification.
 
@@ -171,28 +174,31 @@ Raw erase and program commands modify cartridge blocks after confirmation. Stand
 
 ## MacFUSE behavior
 
-Ordinary writes are staged in host memory. A dirty file's final `release` queues
-it for one second of relevant foreground inactivity, allowing adjacent files
-from a Finder or `cp` copy to share one extent program, writer activation,
-verification pass, and metadata generation. Replacement unlinks and macFUSE
-`.fuse_hidden*` renames join that deferred transaction instead of interrupting
-the copy with a namespace-only cartridge commit. Operations requiring the main
-session lock, including file `open` and `read`, postpone the batch so Finder can
-advance to its next file. Metadata-only `getattr`, xattr, and `statfs` traffic
-does not postpone it indefinitely. `flush` reports mount health without
-persisting a partially copied file. In default strict mode, `fsync` immediately
-drains the current file and every finalized file already queued. Clean unmount
-also drains all staged work. An asynchronous programming
+Ordinary writes are staged in host memory. In default strict mode, a dirty
+file's final `release` programs and verifies it before returning, keeping
+Finder's completion display aligned with cartridge durability. In relaxed-sync
+mode, final release instead queues the file for one second of relevant
+foreground inactivity, allowing adjacent files from a Finder or `cp` copy to
+share one extent program, writer activation, verification pass, and metadata
+generation. Replacement unlinks and macFUSE `.fuse_hidden*` renames join that
+deferred transaction instead of interrupting the copy with a namespace-only
+cartridge commit. Operations requiring the main session lock, including file
+`open` and `read`, postpone the batch so Finder can advance to its next file.
+Metadata-only `getattr`, xattr, and `statfs` traffic does not postpone it
+indefinitely. `flush` reports mount health without persisting a partially copied
+file. In default strict mode, `fsync` immediately drains the current file and
+every finalized file already queued. Clean unmount also drains all staged work.
+An asynchronous programming
 failure becomes sticky: later mutations fail until the cartridge is remounted,
 while the previous committed generation remains the recovery point.
 
-Strict mode makes every `fsync` wait for programming and verification.
-`--relaxed-sync` acknowledges `fsync` after queueing instead, enabling Finder
-to stage following files into the same batch. This is an explicit durability
-tradeoff and is accepted only with a writable cartridge mount. Verbose logs
-identify `fsync` as `durability=strict` or `durability=deferred` and also trace
-`release` and `rename` callbacks. Diagnostic timestamps are enabled only when
-`--verbose` or `--logfile=PATH` is supplied.
+Strict mode makes final release and every `fsync` wait for programming and
+verification. `--relaxed-sync` acknowledges both after queueing instead,
+enabling Finder to stage following files into the same batch. This is an
+explicit durability tradeoff and is accepted only with a writable cartridge
+mount. Verbose logs identify releases and `fsync` as `durability=strict` or
+`durability=deferred` and also trace `rename` callbacks. Diagnostic timestamps
+are enabled only when `--verbose` or `--logfile=PATH` is supplied.
 
 Directories are reported as mode `0755` and files as `0644`. Unsupported ownership, mode, flag, timestamp-setting, and extended-attribute changes are accepted as compatibility no-ops. Finder `.DS_Store` and AppleDouble `._*` files are held only in memory and disappear on unmount; they do not consume flash.
 

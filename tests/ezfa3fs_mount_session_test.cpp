@@ -118,12 +118,14 @@ int main() {
         std::move(traced_backend),{},true);
     require(traced.fuseTraceEnabled());
     require(traced.fsyncPolicy()==ezfa3fs::FsyncPolicy::strict);
+    require(!traced.writebackEnabled());
 
     auto relaxed_backend=std::make_unique<FailingBackend>();
     ezfa3fs::MountSession relaxed(
         std::move(relaxed_backend),{},false,
         ezfa3fs::FsyncPolicy::deferred);
     require(relaxed.fsyncPolicy()==ezfa3fs::FsyncPolicy::deferred);
+    require(relaxed.writebackEnabled());
 
     {
         auto recording=std::make_unique<RecordingBackend>();
