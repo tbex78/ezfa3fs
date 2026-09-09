@@ -172,6 +172,7 @@ public:
 private:
     enum class ExtentSearchResult { found,no_extent,error };
     bool commit(std::string& error);
+    bool releaseEmptyFileAllocations();
     ExtentSearchResult findBlankExtent(std::size_t block_count,
                                        std::size_t& first_block,
                                        std::string& error);
