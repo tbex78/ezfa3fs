@@ -339,9 +339,6 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
                   "garbage collection.\n";
         }
 
-        const auto reclaimed_before=
-            idle_gc.reclaimed_blocks;
-
         if(!cartridge.filesystem().collectGarbageStep(
                 idle_gc,
                 resynchronize,
@@ -350,11 +347,13 @@ int mountLiveCartridge(const std::string& mountpoint,bool foreground,
             return false;
         }
 
-        if(idle_gc.reclaimed_blocks!=reclaimed_before) {
+        if(!idle_gc.last_reclaimed_blocks.empty()) {
             std::cerr
-                <<"Reclaimed cartridge block "
-                <<idle_gc.last_reclaimed_block
-                <<".\n";
+                <<"Idle GC reclaimed "
+                <<idle_gc.last_reclaimed_blocks.size()
+                <<" cartridge block(s); "
+                <<idle_gc.reclaimed_blocks
+                <<" total in this pass.\n";
         }
 
         if(complete) {

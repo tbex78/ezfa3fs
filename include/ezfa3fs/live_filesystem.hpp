@@ -102,7 +102,12 @@ struct CompactionReport final {
 struct GarbageCollectionState final {
     std::size_t next_block = 0;
     std::size_t reclaimed_blocks = 0;
-    std::size_t last_reclaimed_block = NorFlash::block_count;
+
+    // Idle GC scans one block at a time but erases stale blocks in small
+    // batches so the expensive cartridge writer transition is amortized.
+    std::vector<std::size_t> pending_blocks;
+    std::vector<std::size_t> last_reclaimed_blocks;
+
     bool metadata_synchronized = false;
     bool initialized = false;
 };

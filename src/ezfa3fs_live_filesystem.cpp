@@ -667,124 +667,218 @@ bool Filesystem::collectGarbageStep(
     bool& complete,
     std::string& error) {
 
+    // Eight logical 64-KiB blocks keeps the expensive writer restart and
+    // post-erase verification amortized while still giving foreground FUSE
+    // activity frequent opportunities to interrupt background maintenance.
+    constexpr std::size_t erase_batch_size=8;
+
     const auto first_data_block=firstDataBlock();
     const auto end_block=dataEndBlock();
+
+    complete=false;
+    state.last_reclaimed_blocks.clear();
 
     if(!state.initialized) {
         state.next_block=first_data_block;
         state.reclaimed_blocks=0;
-        state.last_reclaimed_block=NorFlash::block_count;
+        state.pending_blocks.clear();
+        state.last_reclaimed_blocks.clear();
         state.metadata_synchronized=false;
         state.initialized=true;
     }
 
-    // A filesystem mutation may have occurred while idle GC was paused.
-    // Before the next destructive erase, publish the newest manifest again.
-    if(resynchronize_metadata)
+    if(resynchronize_metadata) {
         state.metadata_synchronized=false;
 
-    if(state.next_block>=end_block) {
-        complete=true;
-        error.clear();
-        return true;
+        // The manifest may have changed while GC was paused. Do not retain a
+        // stale erase decision across that mutation. Rewind to the first
+        // queued block and inspect those candidates again.
+        if(!state.pending_blocks.empty()) {
+            state.next_block=std::min(
+                state.next_block,
+                state.pending_blocks.front());
+            state.pending_blocks.clear();
+        }
     }
 
-    const auto block=state.next_block++;
-    complete=state.next_block>=end_block;
+    // Scan at most one block per cooperative maintenance step.
+    if(state.next_block<end_block) {
+        const auto block=state.next_block++;
 
-    if(blockReferenced(block)) {
-        error.clear();
-        return true;
+        if(!blockReferenced(block)) {
+            std::vector<std::uint8_t> bytes(NorFlash::block_size);
+
+            if(!flash_.read(
+                    block*NorFlash::block_size,
+                    bytes.data(),bytes.size(),error)) {
+                error=
+                    "could not inspect idle garbage block "+
+                    std::to_string(block)+": "+error;
+                return false;
+            }
+
+            const bool blank=std::all_of(
+                bytes.begin(),bytes.end(),
+                [](std::uint8_t byte){return byte==0xFF;});
+
+            if(blank) {
+                unavailable_blocks_[block]=false;
+            } else {
+                state.pending_blocks.push_back(block);
+            }
+        }
     }
 
-    std::vector<std::uint8_t> bytes(NorFlash::block_size);
+    const bool end_of_scan=state.next_block>=end_block;
+    const bool erase_ready=
+        state.pending_blocks.size()>=erase_batch_size ||
+        (end_of_scan&&!state.pending_blocks.empty());
 
-    if(!flash_.read(
-            block*NorFlash::block_size,
-            bytes.data(),bytes.size(),error)) {
-        error=
-            "could not inspect idle garbage block "+
-            std::to_string(block)+": "+error;
-        return false;
-    }
+    if(erase_ready) {
+        // Before the first destructive batch -- and again after any foreground
+        // mutation -- publish an identical current manifest generation. Both
+        // durable generations then agree that these stale blocks are garbage.
+        if(!state.metadata_synchronized) {
+            if(!commit(error)) {
+                error=
+                    "could not synchronize metadata before idle garbage "
+                    "collection: "+error;
+                return false;
+            }
 
-    const bool blank=std::all_of(
-        bytes.begin(),bytes.end(),
-        [](std::uint8_t byte){return byte==0xFF;});
+            state.metadata_synchronized=true;
+        }
 
-    if(blank) {
-        unavailable_blocks_[block]=false;
-        error.clear();
-        return true;
-    }
-
-    // Synchronize the manifest once before this run starts erasing stale
-    // blocks. CoalescingMetadataBlockDevice's erase safety barrier will make
-    // this generation physically durable before the first erase proceeds.
-    if(!state.metadata_synchronized) {
-        if(!commit(error)) {
+        // Inspection leaves the cartridge in its read mapping. Transition to
+        // the writer exactly once for the entire batch.
+        if(!flash_.prepareForErase(error)) {
             error=
-                "could not synchronize metadata before idle garbage "
-                "collection: "+error;
+                "could not prepare idle garbage erase batch: "+error;
             return false;
         }
-        state.metadata_synchronized=true;
+
+        const auto batch=state.pending_blocks;
+
+        for(const auto block:batch)
+            unavailable_blocks_[block]=true;
+
+        if(!flash_.eraseBlocks(batch,error)) {
+            // Leave these blocks unavailable after an uncertain partial batch.
+            // A later maintenance pass may inspect/reclaim them safely.
+            error=
+                "could not erase idle garbage batch: "+error;
+            return false;
+        }
+
+        for(const auto block:batch)
+            unavailable_blocks_[block]=false;
+
+        state.reclaimed_blocks+=batch.size();
+        state.last_reclaimed_blocks=batch;
+        state.pending_blocks.clear();
     }
 
-    unavailable_blocks_[block]=true;
-
-    if(!flash_.prepareForErase(error)||
-       !flash_.eraseBlock(block,error)) {
-        error=
-            "could not reclaim idle garbage block "+
-            std::to_string(block)+": "+error;
-        return false;
-    }
-
-    unavailable_blocks_[block]=false;
-    ++state.reclaimed_blocks;
-    state.last_reclaimed_block=block;
+    complete=
+        state.next_block>=end_block &&
+        state.pending_blocks.empty();
 
     error.clear();
     return true;
 }
 
-bool Filesystem::collectGarbage(std::size_t& reclaimed_blocks,
-                                std::string& error,ScanProgress progress) {
-    reclaimed_blocks=0;const auto first_data_block=firstDataBlock();
-    const auto total=dataEndBlock()-first_data_block;
-    std::vector<std::uint8_t> bytes(NorFlash::block_size);std::vector<std::size_t> garbage;
-    if(progress)progress(0,total);
-    for(std::size_t block=first_data_block;block<dataEndBlock();++block) {
+
+bool Filesystem::collectGarbage(
+    std::size_t& reclaimed_blocks,
+    std::string& error,
+    ScanProgress progress) {
+
+    reclaimed_blocks=0;
+
+    const auto first_data_block=firstDataBlock();
+    const auto end_block=dataEndBlock();
+    const auto total=end_block-first_data_block;
+
+    std::vector<std::uint8_t> bytes(NorFlash::block_size);
+    std::vector<std::size_t> garbage;
+
+    if(progress)
+        progress(0,total);
+
+    for(std::size_t block=first_data_block;
+        block<end_block;
+        ++block) {
+
         if(!blockReferenced(block)) {
-            if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
-                error="could not inspect garbage-collection block "+std::to_string(block)+": "+error;return false;
+            if(!flash_.read(
+                    block*NorFlash::block_size,
+                    bytes.data(),bytes.size(),error)) {
+                error=
+                    "could not inspect garbage-collection block "+
+                    std::to_string(block)+": "+error;
+                return false;
             }
-            const bool blank=std::all_of(bytes.begin(),bytes.end(),[](std::uint8_t byte){return byte==0xFF;});
-            if(blank)unavailable_blocks_[block]=false;
-            else garbage.push_back(block);
+
+            const bool blank=std::all_of(
+                bytes.begin(),bytes.end(),
+                [](std::uint8_t byte){return byte==0xFF;});
+
+            if(blank)
+                unavailable_blocks_[block]=false;
+            else
+                garbage.push_back(block);
         }
-        if(progress)progress(block-first_data_block+1,total);
+
+        if(progress)
+            progress(block-first_data_block+1,total);
     }
-    if(!garbage.empty()) {
-        // Write the selected manifest to the alternate superblock before
-        // reclaiming anything. Both valid generations then protect the same
-        // active extents if a later collection step is interrupted.
-        if(!commit(error)){error="could not synchronize live metadata before garbage collection: "+error;return false;}
+
+    if(garbage.empty()) {
+        error.clear();
+        return true;
     }
-    for(const auto block:garbage) {
+
+    // Publish the same current manifest to the alternate superblock before
+    // reclaiming anything. Both durable generations therefore agree that the
+    // complete batch below is unreferenced.
+    if(!commit(error)) {
+        error=
+            "could not synchronize live metadata before garbage collection: "+
+            error;
+        return false;
+    }
+
+    // The allocation scan left the cartridge in read mode. Restart the writer
+    // ONCE, then send every stale logical block through the cartridge's batch
+    // erase implementation. Previously prepareForErase() was called once per
+    // block, causing a multi-second writer restart for every 64-KiB block.
+    if(!flash_.prepareForErase(error)) {
+        error=
+            "could not prepare cartridge for garbage-collection batch: "+
+            error;
+        return false;
+    }
+
+    for(const auto block:garbage)
         unavailable_blocks_[block]=true;
-        // Real hardware needs a clean writer transition after the inspection
-        // read. In-memory devices implement this boundary as a no-op.
-        if(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error)) {
-            error="could not reclaim live block "+std::to_string(block)+": "+error;return false;
-        }
-        unavailable_blocks_[block]=false;++reclaimed_blocks;
+
+    if(!flash_.eraseBlocks(garbage,error)) {
+        // Keep every candidate unavailable after an uncertain partial batch.
+        error=
+            "could not reclaim live garbage batch: "+error;
+        return false;
     }
-    // Preserve the hot allocation cursor. Reclaimed blocks below it remain
-    // available when findBlankExtent() naturally wraps around.
-    error.clear();return true;
+
+    for(const auto block:garbage)
+        unavailable_blocks_[block]=false;
+
+    reclaimed_blocks=garbage.size();
+
+    // Do not reset next_free_block_. Keeping the hot allocation cursor avoids
+    // another scan from the beginning of the cartridge after collection.
+    error.clear();
+    return true;
 }
+
 
 bool Filesystem::compact(CompactionReport& report,std::string& error,
                          ScanProgress progress) {
@@ -820,14 +914,31 @@ bool Filesystem::compactFiles(CompactionReport& report,std::string& error) {
             // The second identical manifest generation makes both valid
             // superblocks reference the destination before the source is erased.
             if(!commit(error)){error="could not synchronize compacted live metadata: "+error;return false;}
-            for(std::size_t i=0;i<original.block_count;++i) {
-                const auto block=static_cast<std::size_t>(original.first_block)+i;
-                unavailable_blocks_[block]=true;
-                if(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error)) {
-                    error="could not erase relocated source block "+std::to_string(block)+": "+error;return false;
-                }
-                unavailable_blocks_[block]=false;
+            std::vector<std::size_t> source_blocks;
+            source_blocks.reserve(original.block_count);
+
+            for(std::size_t i=0;i<original.block_count;++i)
+                source_blocks.push_back(
+                    static_cast<std::size_t>(original.first_block)+i);
+
+            if(!flash_.prepareForErase(error)) {
+                error=
+                    "could not prepare relocated source extent for erase: "+
+                    error;
+                return false;
             }
+
+            for(const auto block:source_blocks)
+                unavailable_blocks_[block]=true;
+
+            if(!flash_.eraseBlocks(source_blocks,error)) {
+                error=
+                    "could not erase relocated source extent: "+error;
+                return false;
+            }
+
+            for(const auto block:source_blocks)
+                unavailable_blocks_[block]=false;
             ++report.files_relocated;report.blocks_relocated+=original.block_count;
             next_free_block_=allocationStartBlock();relocated=true;break;
         }
