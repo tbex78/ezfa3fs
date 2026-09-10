@@ -413,6 +413,14 @@ bool LiveMountBackend::commitSelected(
         <<"Committing "<<batch.size()
         <<" finalized file(s) in one filesystem transaction...\n";
 
+    for(const auto& file:batch) {
+        const auto status=
+            "Programming EZFA3FS file: /"+file.path+'\n';
+        std::cerr.write(
+            status.data(),
+            static_cast<std::streamsize>(status.size()));
+    }
+
     const auto restore_staged_bytes=[&] {
         for(auto& file:batch)
             pending_files_.at(file.path).bytes=std::move(file.bytes);

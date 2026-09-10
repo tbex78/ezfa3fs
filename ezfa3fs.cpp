@@ -152,8 +152,9 @@ protected:
     }
 
 private:
-    static constexpr std::array<std::string_view,8> prefixes_={
+    static constexpr std::array<std::string_view,9> prefixes_={
         "Erasing EZFA3FS extent: ",
+        "Programming EZFA3FS file: ",
         "Programming EZFA3FS extent: ",
         "Writable cartridge idle; starting background garbage collection.",
         "Writable cartridge idle; resuming background garbage collection.",

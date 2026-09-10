@@ -11,6 +11,7 @@
 #include <iostream>
 #include <iterator>
 #include <sstream>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -23,6 +24,31 @@
 #endif
 
 namespace ezfa3fs {
+
+namespace {
+
+void writeExtentProgress(
+    std::ostream& progress,
+    std::string_view operation,
+    std::size_t completed,
+    std::size_t total) {
+
+    std::ostringstream message;
+    message
+        <<'\r'
+        <<operation
+        <<completed*100/total
+        <<'%'
+        <<(completed==total?'\n':'\r');
+
+    const auto text=message.str();
+    progress.write(
+        text.data(),
+        static_cast<std::streamsize>(text.size()));
+    progress.flush();
+}
+
+}
 
 class CartridgeStorage::Impl final {
 public:
@@ -991,7 +1017,11 @@ bool CartridgeStorage::Impl::eraseLiveBlocks(
             completed_sectors*100/sector_count);
         if(percent==displayed_percent)return;
         displayed_percent=percent;
-        progress<<"\rErasing EZFA3FS extent: "<<percent<<'%'<<std::flush;
+        writeExtentProgress(
+            progress,
+            "Erasing EZFA3FS extent: ",
+            completed_sectors,
+            sector_count);
     };
     report_progress();
     unsigned selected_window=4;
@@ -1029,7 +1059,7 @@ bool CartridgeStorage::Impl::eraseLiveBlocks(
     const bool finished=wait_until_ready?finishLiveWriteOperation(error):
                                          finishWriteOperation(error);
     if(!finished)return false;
-    progress<<'\n';error.clear();return true;
+    error.clear();return true;
 }
 bool CartridgeStorage::Impl::eraseLiveBlockPrefix(
     std::size_t block,std::size_t byte_count,std::ostream& progress,
@@ -1113,12 +1143,15 @@ bool CartridgeStorage::Impl::programLiveExtent(
         }
         ++completed_blocks;
         if(block_count>1)
-            progress<<"\rProgramming EZFA3FS extent: "
-                    <<(completed_blocks*100/block_count)<<'%'<<std::flush;
+            writeExtentProgress(
+                progress,
+                "Programming EZFA3FS extent: ",
+                completed_blocks,
+                block_count);
     }
     if(!finishLiveWriteOperation(error))return false;
-    if(block_count>1)progress<<'\n';
-    else progress<<"Programmed cartridge block "<<first_block<<".\n";
+    if(block_count==1)
+        progress<<"Programmed cartridge block "<<first_block<<".\n";
     error.clear();return true;
 }
 #else
