@@ -119,9 +119,9 @@ private:
     bool at_line_start_=true;
 };
 
-class ExtentProgressStreamBuffer final : public std::streambuf {
+class CardMountStatusStreamBuffer final : public std::streambuf {
 public:
-    explicit ExtentProgressStreamBuffer(std::streambuf* destination)
+    explicit CardMountStatusStreamBuffer(std::streambuf* destination)
         : destination_(destination) {}
 
 protected:
@@ -152,12 +152,18 @@ protected:
     }
 
 private:
-    static constexpr std::array<std::string_view,2> prefixes_={
+    static constexpr std::array<std::string_view,8> prefixes_={
         "Erasing EZFA3FS extent: ",
-        "Programming EZFA3FS extent: "
+        "Programming EZFA3FS extent: ",
+        "Writable cartridge idle; starting background garbage collection.",
+        "Writable cartridge idle; resuming background garbage collection.",
+        "EZFA3FS background garbage collection paused: ",
+        "EZFA3FS idle garbage collection failed: ",
+        "Idle GC reclaimed ",
+        "Idle garbage collection complete: "
     };
 
-    static bool isPossibleProgressPrefix(std::string_view text) {
+    static bool isPossibleStatusPrefix(std::string_view text) {
         for(const auto prefix:prefixes_) {
             if(prefix.substr(0,std::min(prefix.size(),text.size()))==text)
                 return true;
@@ -166,7 +172,7 @@ private:
         return false;
     }
 
-    static bool isCompleteProgressPrefix(std::string_view text) {
+    static bool isCompleteStatusPrefix(std::string_view text) {
         for(const auto prefix:prefixes_) {
             if(text.size()>=prefix.size()&&
                text.substr(0,prefix.size())==prefix)
@@ -213,9 +219,9 @@ private:
 
         candidate_.push_back(character);
 
-        if(isCompleteProgressPrefix(candidate_)) {
+        if(isCompleteStatusPrefix(candidate_)) {
             beginForwarding();
-        } else if(!isPossibleProgressPrefix(candidate_)) {
+        } else if(!isPossibleStatusPrefix(candidate_)) {
             candidate_.clear();
             pending_separator_='\0';
             discarding_=true;
@@ -434,27 +440,27 @@ public:
             std::cerr.rdbuf(timestamped_.get());
         } else if(file_.is_open()) {
             // --logfile only:
-            // log all diagnostics with timestamps while displaying only
-            // unadorned extent progress in the terminal.
-            progress_only_=
-                std::make_unique<ExtentProgressStreamBuffer>(
+            // Log all diagnostics with timestamps while displaying only
+            // unadorned operational status in the terminal.
+            status_only_=
+                std::make_unique<CardMountStatusStreamBuffer>(
                     original_);
             timestamped_=
                 std::make_unique<TimestampedStreamBuffer>(
                     file_.rdbuf());
             tee_=std::make_unique<TeeStreamBuffer>(
-                progress_only_.get(),
+                status_only_.get(),
                 timestamped_.get());
 
             std::cerr.rdbuf(tee_.get());
         } else {
             // Neither option:
-            // keep diagnostics quiet but always expose cartridge progress.
-            progress_only_=
-                std::make_unique<ExtentProgressStreamBuffer>(
+            // Keep diagnostics quiet but always expose operational status.
+            status_only_=
+                std::make_unique<CardMountStatusStreamBuffer>(
                     original_);
 
-            std::cerr.rdbuf(progress_only_.get());
+            std::cerr.rdbuf(status_only_.get());
         }
 
         if(verbose)
@@ -480,7 +486,7 @@ private:
     std::streambuf* original_;
     fs::path log_path_;
     std::ofstream file_;
-    std::unique_ptr<ExtentProgressStreamBuffer> progress_only_;
+    std::unique_ptr<CardMountStatusStreamBuffer> status_only_;
     std::unique_ptr<TeeStreamBuffer> tee_;
     std::unique_ptr<TimestampedStreamBuffer> timestamped_;
 };
