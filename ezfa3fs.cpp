@@ -9,6 +9,8 @@
 #include "ezfa3fs/live_mount_backend.hpp"
 #include "ezfa3fs/live_cartridge_session.hpp"
 #include "ezfa3fs/version.hpp"
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <ctime>
 #include <cstdlib>
@@ -23,6 +25,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <streambuf>
+#include <string_view>
 namespace fs=std::filesystem;
 namespace {
 
@@ -116,24 +119,115 @@ private:
     bool at_line_start_=true;
 };
 
-class NullStreamBuffer final : public std::streambuf {
+class ExtentProgressStreamBuffer final : public std::streambuf {
+public:
+    explicit ExtentProgressStreamBuffer(std::streambuf* destination)
+        : destination_(destination) {}
+
 protected:
     int_type overflow(int_type character) override {
-        return traits_type::eq_int_type(character,traits_type::eof())
-            ? traits_type::not_eof(character)
-            : character;
+        if(traits_type::eq_int_type(character,traits_type::eof()))
+            return traits_type::not_eof(character);
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        writeCharacter(traits_type::to_char_type(character));
+        return character;
     }
 
     std::streamsize xsputn(
-        const char*,
+        const char* data,
         std::streamsize size) override {
+
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        for(std::streamsize index=0;index<size;++index)
+            writeCharacter(data[index]);
 
         return size;
     }
 
     int sync() override {
-        return 0;
+        std::lock_guard<std::mutex> lock(mutex_);
+        return destination_->pubsync();
     }
+
+private:
+    static constexpr std::array<std::string_view,2> prefixes_={
+        "Erasing EZFA3FS extent: ",
+        "Programming EZFA3FS extent: "
+    };
+
+    static bool isPossibleProgressPrefix(std::string_view text) {
+        for(const auto prefix:prefixes_) {
+            if(prefix.substr(0,std::min(prefix.size(),text.size()))==text)
+                return true;
+        }
+
+        return false;
+    }
+
+    static bool isCompleteProgressPrefix(std::string_view text) {
+        for(const auto prefix:prefixes_) {
+            if(text.size()>=prefix.size()&&
+               text.substr(0,prefix.size())==prefix)
+                return true;
+        }
+
+        return false;
+    }
+
+    void beginForwarding() {
+        if(pending_separator_!='\0') {
+            destination_->sputc(pending_separator_);
+            pending_separator_='\0';
+        }
+
+        destination_->sputn(
+            candidate_.data(),
+            static_cast<std::streamsize>(candidate_.size()));
+        candidate_.clear();
+        forwarding_=true;
+    }
+
+    void writeCharacter(char character) {
+        if(character=='\n'||character=='\r') {
+            const bool separator_was_written=forwarding_;
+
+            if(separator_was_written)
+                destination_->sputc(character);
+
+            candidate_.clear();
+            forwarding_=false;
+            discarding_=false;
+            pending_separator_=separator_was_written?'\0':character;
+            return;
+        }
+
+        if(forwarding_) {
+            destination_->sputc(character);
+            return;
+        }
+
+        if(discarding_)
+            return;
+
+        candidate_.push_back(character);
+
+        if(isCompleteProgressPrefix(candidate_)) {
+            beginForwarding();
+        } else if(!isPossibleProgressPrefix(candidate_)) {
+            candidate_.clear();
+            pending_separator_='\0';
+            discarding_=true;
+        }
+    }
+
+    std::streambuf* destination_;
+    std::mutex mutex_;
+    std::string candidate_;
+    char pending_separator_='\0';
+    bool forwarding_=false;
+    bool discarding_=false;
 };
 
 class TeeStreamBuffer final : public std::streambuf {
@@ -318,8 +412,6 @@ public:
             }
         }
 
-        std::streambuf* destination=nullptr;
-
         if(verbose&&file_.is_open()) {
             // --verbose + --logfile:
             // display diagnostics and write them to the file.
@@ -327,28 +419,43 @@ public:
                 original_,
                 file_.rdbuf());
 
-            destination=tee_.get();
+            timestamped_=
+                std::make_unique<TimestampedStreamBuffer>(
+                    tee_.get());
+
+            std::cerr.rdbuf(timestamped_.get());
         } else if(verbose) {
             // --verbose only:
             // display diagnostics, but create no file.
-            destination=original_;
+            timestamped_=
+                std::make_unique<TimestampedStreamBuffer>(
+                    original_);
+
+            std::cerr.rdbuf(timestamped_.get());
         } else if(file_.is_open()) {
             // --logfile only:
-            // write diagnostics to the file without displaying them.
-            destination=file_.rdbuf();
+            // log all diagnostics with timestamps while displaying only
+            // unadorned extent progress in the terminal.
+            progress_only_=
+                std::make_unique<ExtentProgressStreamBuffer>(
+                    original_);
+            timestamped_=
+                std::make_unique<TimestampedStreamBuffer>(
+                    file_.rdbuf());
+            tee_=std::make_unique<TeeStreamBuffer>(
+                progress_only_.get(),
+                timestamped_.get());
+
+            std::cerr.rdbuf(tee_.get());
         } else {
             // Neither option:
-            // preserve the current quiet card-mount behavior.
-            std::cerr.rdbuf(&null_);
-            return;
+            // keep diagnostics quiet but always expose cartridge progress.
+            progress_only_=
+                std::make_unique<ExtentProgressStreamBuffer>(
+                    original_);
+
+            std::cerr.rdbuf(progress_only_.get());
         }
-
-        timestamped_=
-            std::make_unique<TimestampedStreamBuffer>(
-                destination);
-
-        std::cerr.rdbuf(
-            timestamped_.get());
 
         if(verbose)
             std::cerr
@@ -373,7 +480,7 @@ private:
     std::streambuf* original_;
     fs::path log_path_;
     std::ofstream file_;
-    NullStreamBuffer null_;
+    std::unique_ptr<ExtentProgressStreamBuffer> progress_only_;
     std::unique_ptr<TeeStreamBuffer> tee_;
     std::unique_ptr<TimestampedStreamBuffer> timestamped_;
 };

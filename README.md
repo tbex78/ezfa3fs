@@ -5,7 +5,7 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.52.6**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
+Application version: **0.52.7**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
 
 The FUSE/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
@@ -198,7 +198,9 @@ enabling Finder to stage following files into the same batch. This is an
 explicit durability tradeoff and is accepted only with a writable cartridge
 mount. Verbose logs identify releases and `fsync` as `durability=strict` or
 `durability=deferred` and also trace `rename` callbacks. Diagnostic timestamps
-are enabled only when `--verbose` or `--logfile=PATH` is supplied.
+are enabled only when `--verbose` or `--logfile=PATH` is supplied. Erasing and
+programming extent percentages remain visible in the terminal without
+`--verbose`; these quiet-mode progress lines have no timestamp.
 
 Directories are reported as mode `0755` and files as `0644`. Unsupported ownership, mode, flag, timestamp-setting, and extended-attribute changes are accepted as compatibility no-ops. Finder `.DS_Store` and AppleDouble `._*` files are held only in memory and disappear on unmount; they do not consume flash.
 
