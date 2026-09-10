@@ -1,6 +1,10 @@
 # EZFA3FS transactional format
 
-This document describes the 32 MiB EZFA3FS format implemented by application version **0.53.2**. The standard layout is experimental format **0.1.0**; the slotted direct-boot layout is experimental format **0.2.0**.
+This document describes the 32 MiB EZFA3FS format implemented by application
+version **0.54.0**. Newly formatted standard filesystems use experimental
+format **0.3.0**; newly formatted slotted direct-boot filesystems use
+experimental format **0.4.0**. The older **0.1.0** and **0.2.0** revisions
+remain readable and writable without implicit conversion.
 
 EZFA3FS is an independent indexed filesystem for EZ-Flash Advance III NOR flash. It is not FAT, has no partition table, and does not use the original EZ3 menu or ROM patching. All multibyte integers are little-endian.
 
@@ -25,7 +29,8 @@ Standard layout:
 | 0 and 1 | Alternating metadata superblocks |
 | 2 through 511 | File data and erased free space |
 
-Its magic is `EZ3LIVE1`, major `0`, minor `1`.
+Its magic is `EZFA3FS\0`, major `0`, minor `3`. Minor `1` is the compatible
+legacy revision without packed storage.
 
 Direct-boot layout:
 
@@ -35,7 +40,14 @@ Direct-boot layout:
 | `boot_slot_blocks` through 509 | Other file data and free space |
 | 510 and 511 | Alternating metadata superblocks |
 
-Its magic is `EZFA3FS1`, major `0`, minor `2`. An empty direct-boot format initially reserves one provisional 64 KiB block. Installing the first ROM or a replacement resizes the slot to exactly the ROM's rounded-up logical block count. On open, the immutable ROM extent also normalizes oversized reservations written by earlier application versions. The slot can grow toward block 509 while the required blocks are available; shrinking releases the unused tail as reclaimable filesystem space.
+Its magic is `EZFA3DB\0`, major `0`, minor `4`. Minor `2` is the compatible
+legacy revision without packed storage. An empty direct-boot format initially
+reserves one provisional 64 KiB block. Installing the first ROM or a
+replacement resizes the slot to exactly the ROM's rounded-up logical block
+count. On open, the immutable ROM extent also normalizes oversized reservations
+written by earlier application versions. The slot can grow toward block 509
+while the required blocks are available; shrinking releases the unused tail as
+reclaimable filesystem space.
 
 ## Superblock
 
@@ -44,7 +56,7 @@ Each metadata block starts with this 32-byte header:
 | Offset | Size | Meaning |
 |---:|---:|---|
 | `0x00` | 8 | Layout magic |
-| `0x08` | 2 | Major version, `2` |
+| `0x08` | 2 | Major version, `0` |
 | `0x0A` | 2 | Layout minor version |
 | `0x0C` | 8 | Monotonically increasing generation |
 | `0x14` | 4 | Manifest length |
@@ -59,21 +71,65 @@ On open, both layout-appropriate superblocks are inspected. A candidate is valid
 
 A standard manifest begins with one 32-bit entry count. A direct-boot manifest begins with a 32-bit boot-slot size followed by the 32-bit entry count.
 
-Each entry then has a 32-byte fixed header followed by its UTF-8 path:
+Revisions 0.3.0 and 0.4.0 use a 48-byte fixed entry header followed by its
+UTF-8 path:
 
 | Offset | Size | Meaning |
 |---:|---:|---|
 | `0x00` | 2 | Path length |
-| `0x02` | 1 | Flags; bit 0 marks a directory |
+| `0x02` | 1 | Flags; bit 0 marks a directory, bit 1 marks packed storage |
 | `0x03` | 1 | Reserved |
-| `0x04` | 4 | First logical data block |
-| `0x08` | 4 | Contiguous logical block count |
-| `0x0C` | 8 | File size |
+| `0x04` | 8 | File size |
+| `0x0C` | 8 | Modification time as Unix seconds |
 | `0x14` | 4 | File CRC32 |
-| `0x18` | 8 | Modification time as Unix seconds |
-| `0x20` | variable | UTF-8 path |
+| `0x18` | 4 | First logical data block |
+| `0x1C` | 4 | Logical block count |
+| `0x20` | 8 | Packed-block generation, or zero for a dedicated extent |
+| `0x28` | 4 | Packed record identifier, or zero for a dedicated extent |
+| `0x2C` | 4 | Packed record header offset, or zero for a dedicated extent |
+| `0x30` | variable | UTF-8 path |
 
-Directories have no data extent. Empty regular files also use no blocks. File extents must be in the layout's data region, large enough for the declared size, and non-overlapping.
+Legacy revisions 0.1.0 and 0.2.0 use the first 32 bytes of this header and place
+the path at `0x20`; bit 1 and packed references are unavailable. A legacy
+filesystem continues using dedicated extents when modified.
+
+Directories have no data extent. Empty regular files also use no blocks.
+Dedicated extents must be in the layout's data region, large enough for the
+declared size, and non-overlapping. A packed entry references exactly one
+shared block and must describe a non-empty file no larger than 16 KiB.
+
+## Packed blocks
+
+Small-file records share a validated 64-KiB block. Its 64-byte header is:
+
+| Offset | Size | Meaning |
+|---:|---:|---|
+| `0x00` | 8 | Magic `EZ3PACK\0` |
+| `0x08` | 4 | Packed-block encoding version, `1` |
+| `0x0C` | 8 | Packed-block generation |
+| `0x14` | 4 | Record count |
+| `0x18` | 4 | Used length including the header |
+| `0x1C` | 4 | CRC32 of encoded records |
+| `0x20` | 4 | Header CRC32, calculated with this field zero |
+| `0x24` | 28 | Zero-filled reserved bytes |
+
+Records begin at `0x40`. Each has a 32-byte header followed by its contents
+and enough padding to align the next record to eight bytes:
+
+| Offset | Size | Meaning |
+|---:|---:|---|
+| `0x00` | 4 | Nonzero record identifier |
+| `0x04` | 4 | Content length |
+| `0x08` | 4 | Content CRC32 |
+| `0x0C` | 4 | Flags, currently zero |
+| `0x10` | 8 | Modification time as Unix seconds |
+| `0x18` | 8 | Reserved, zero |
+| `0x20` | variable | File contents and alignment padding |
+
+The manifest path stays outside the packed block, so rename and directory
+moves do not rewrite contents. Reads accept a record only when its block,
+generation, identifier, offset, size, modification time, and CRC all agree
+with the manifest reference.
 
 ## Namespace rules
 
@@ -85,7 +141,14 @@ Directories have no data extent. Empty regular files also use no blocks. File ex
 
 ## Transactions and allocation
 
-Data is copy-on-write. A new or replaced file receives a contiguous erased extent, which is programmed and verified before metadata refers to it. The new manifest is written to the inactive superblock with generation `active + 1` and read back. Until that succeeds, the prior valid generation remains authoritative.
+Data is copy-on-write. A new or replaced large file receives a contiguous
+erased extent. Files from 1 byte through 16 KiB are assigned packed records;
+live records from an affected shared block are copied into replacement blocks.
+One transaction combines all new packed blocks and dedicated extents into a
+single program operation. Data is programmed and verified before metadata
+refers to it. The new manifest is written to the inactive superblock with
+generation `active + 1` and read back. Until that succeeds, the prior valid
+generation remains authoritative.
 
 Blocks dropped by a new generation become unreferenced garbage; they need not be erased during the metadata commit. Allocation prefers an erased contiguous extent. If none is large enough, the implementation can collect garbage and compact active files. Explicit maintenance before a large copy makes latency more predictable.
 
@@ -110,7 +173,11 @@ Standalone cartridge erases and all programmed data are verified by readback. Di
 
 ## Space management
 
-`gc` erases programmed blocks not referenced by the active manifest. `compact` relocates active extents to create a larger contiguous erased region, while leaving a direct-boot ROM fixed at block zero.
+`gc` erases programmed blocks not referenced by the active manifest. `compact`
+first combines live records when multiple packed blocks can occupy fewer
+replacement blocks, then relocates dedicated extents to create a larger
+contiguous erased region. Both operations preserve copy-on-write ordering and
+leave a direct-boot ROM fixed at block zero.
 
 `space` and `card-space` report active data, erased reusable blocks, unreferenced programmed blocks, potentially available space, largest current and post-GC extents, fragmentation, and whether collection is recommended. Cartridge GC and compaction require an unmounted filesystem and confirmation.
 
@@ -156,7 +223,7 @@ Raw erase and program commands bypass allocation. Never use them on active data 
 ## Limits
 
 - Storage is fixed at 32 MiB.
-- Files occupy contiguous 64 KiB logical extents; fragmentation can require compaction.
+- Files above 16 KiB occupy contiguous 64 KiB logical extents; smaller non-empty files share packed blocks.
 - The complete manifest must fit in one metadata block.
 - Permissions, ownership, links, sparse files, persistent extended attributes, and persistent Finder metadata are unsupported.
 - FAT and partition tools cannot mount the format.

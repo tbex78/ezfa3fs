@@ -5,7 +5,11 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.53.2**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
+Application version: **0.54.0**. Newly formatted filesystems use experimental
+format **0.3.0** in the standard layout and **0.4.0** in the slotted
+direct-boot layout. Existing **0.1.0** and **0.2.0** filesystems remain
+readable and writable with their dedicated-extent allocation rules; opening
+them never silently converts their format.
 
 The FUSE/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
@@ -38,6 +42,12 @@ The binary is `build/cmake/ezfa3fs`.
 `put-many` imports source files at the image root using their basenames. It
 allocates and programs one combined contiguous extent, publishes one metadata
 generation, and writes the 32-MiB host image once.
+
+In the current format, non-empty files up to 16 KiB share validated 64-KiB
+packed blocks. Larger files keep dedicated contiguous extents, while empty
+files and directories use no data blocks. A multi-file transaction programs
+all of its replacement packed blocks and dedicated extents in one combined
+cartridge operation.
 
 `card-write` verifies the image, asks for `y/N` confirmation, then erases, programs, and verifies the complete 32 MiB cartridge. Pass `--skip-verification` to omit only the final cartridge read-back verification:
 
@@ -109,7 +119,7 @@ The experimental direct-boot layout places one root-level GBA ROM at cartridge b
 Create it with a ROM:
 
 ```sh
-./build/cmake/ezfa3fs format --direct-boot direct-boot.ezfa3fs game.gba
+./build/cmake/ezfa3fs format --direct-boot direct-boot.ezfa3fs rom.gba
 ```
 
 Or create an empty image with a one-block provisional boot slot and copy the first ROM through a writable mount later:
@@ -215,7 +225,7 @@ Live cartridge reads retry transient USB failures by reopening the validated wri
 ```sh
 ./build/cmake/ezfa3fs card-pull pulled.ezfa3fs
 ./build/cmake/ezfa3fs verify pulled.ezfa3fs
-./build/cmake/ezfa3fs get pulled.ezfa3fs path/to/game.gba recovered.gba
+./build/cmake/ezfa3fs get pulled.ezfa3fs path/to/rom.gba recovered.gba
 shasum -a 256 source.gba recovered.gba
 ```
 
@@ -230,6 +240,12 @@ one allocation/program transaction and one metadata generation, amortizing the
 cartridge writer transition that otherwise occurs for each separately committed
 file. The existing `commit()` mount boundary also batches all simultaneously
 staged non-empty files through this same filesystem transaction.
+
+Small files of 16 KiB or less are packed together instead of each reserving a
+complete 64-KiB block. Replacing a packed file uses copy-on-write: live records
+from its shared block are validated and written to a new block before the
+manifest changes. Rename and deletion remain metadata-only, and compaction can
+combine partially live packed blocks.
 
 NOR operations remain slow: changed blocks are programmed and read back, and metadata is written to the alternate superblock and verified. Hardware failures are retried up to three times. Large copies can take materially longer than ordinary host-filesystem copies.
 

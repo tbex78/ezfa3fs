@@ -16,8 +16,11 @@
 
 namespace ezfa3fs::live {
 
-inline constexpr std::string_view format_version = "0.1.0";
-inline constexpr std::string_view direct_boot_format_version = "0.2.0";
+struct PackedRecord;
+struct PackedRecordLocation;
+
+inline constexpr std::string_view format_version = "0.3.0";
+inline constexpr std::string_view direct_boot_format_version = "0.4.0";
 inline constexpr std::array<std::uint8_t,8> format_magic{
     {'E','Z','F','A','3','F','S',0}};
 inline constexpr std::array<std::uint8_t,8> direct_boot_format_magic{
@@ -75,6 +78,11 @@ private:
     std::optional<std::size_t> fault_bytes_;
 };
 
+enum class StorageType : std::uint8_t {
+    dedicated,
+    packed
+};
+
 struct Entry final {
     std::string name;
     std::uint64_t size = 0;
@@ -83,6 +91,10 @@ struct Entry final {
     std::uint32_t first_block = 0;
     std::uint32_t block_count = 0;
     bool directory = false;
+    StorageType storage = StorageType::dedicated;
+    std::uint64_t packed_generation = 0;
+    std::uint32_t packed_record_id = 0;
+    std::uint32_t packed_record_offset = 0;
 };
 
 struct FileWrite final {
@@ -183,6 +195,9 @@ public:
     Layout layout() const noexcept { return layout_; }
     bool isDirectBoot() const noexcept { return layout_==Layout::direct_boot; }
     bool awaitsDirectBootRom() const noexcept;
+    bool packedStorageEnabled() const noexcept {
+        return packed_storage_enabled_;
+    }
 
 private:
     struct FileWriteView final {
@@ -215,6 +230,7 @@ private:
     bool readEntryRange(const Entry& entry,std::size_t offset,std::size_t size,
                         std::vector<std::uint8_t>& bytes,std::string& error,
                         const std::function<void()>& block_read = {}) const;
+    bool compactPackedBlocks(CompactionReport& report,std::string& error);
     bool compactFiles(CompactionReport& report,std::string& error);
     bool blockReferenced(std::size_t block) const noexcept;
     bool parentExists(const std::string& path) const;
@@ -222,6 +238,13 @@ private:
     const Entry* find(const std::string& path) const;
     const Entry* directBootRom() const noexcept;
     bool isDirectBootRom(const Entry& entry) const noexcept;
+    bool readPackedBlock(
+        std::uint32_t block,std::uint64_t expected_generation,
+        std::vector<PackedRecord>& records,
+        std::vector<PackedRecordLocation>& locations,
+        std::string& error) const;
+    bool readPackedEntry(const Entry& entry,std::vector<std::uint8_t>& bytes,
+                         std::string& error) const;
     std::size_t firstDataBlock() const noexcept;
     std::size_t allocationStartBlock() const noexcept;
     std::size_t dataEndBlock() const noexcept;
@@ -233,6 +256,7 @@ private:
     std::size_t next_free_block_ = 2;
     Layout layout_ = Layout::transactional;
     std::size_t boot_slot_blocks_ = 0;
+    bool packed_storage_enabled_ = false;
     std::array<bool,NorFlash::block_count> unavailable_blocks_{};
 };
 

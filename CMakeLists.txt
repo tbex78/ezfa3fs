@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ezfa3fs VERSION 0.53.2 LANGUAGES CXX)
+project(ezfa3fs VERSION 0.54.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -12,7 +12,8 @@ endif()
 set(EZFA3FS_SOURCES
     src/ezfa3fs_crc32.cpp src/ezfa3fs_cached_block_device.cpp
     src/ezfa3fs_finder_metadata_mount_backend.cpp src/ezfa3fs_live_filesystem.cpp
-    src/ezfa3fs_live_mount_backend.cpp src/ezfa3fs_mount_session.cpp)
+    src/ezfa3fs_live_mount_backend.cpp src/ezfa3fs_mount_session.cpp
+    src/ezfa3fs_packed_block.cpp)
 set(EZFA3FS_CLI_SOURCES
     ezfa3fs.cpp src/ezfa3fs_fuse_mount.cpp src/ezfa3fs_cartridge_storage.cpp
     src/ezfa3fs_cartridge_live_device.cpp src/ezfa3fs_live_cartridge_session.cpp
@@ -49,5 +50,5 @@ if(BUILD_TESTING)
     ezfa3fs_add_test(ezfa3fs_mount_session_test tests/ezfa3fs_mount_session_test.cpp)
     ezfa3fs_add_test(ezfa3fs_save_bank_restore_policy_test tests/ezfa3fs_save_bank_restore_policy_test.cpp)
     add_test(NAME ezfa3fs_cli_version COMMAND ezfa3fs --version)
-    set_tests_properties(ezfa3fs_cli_version PROPERTIES PASS_REGULAR_EXPRESSION "ezfa3fs 0.53.2")
+    set_tests_properties(ezfa3fs_cli_version PROPERTIES PASS_REGULAR_EXPRESSION "ezfa3fs 0.54.0")
 endif()

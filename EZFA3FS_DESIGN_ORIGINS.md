@@ -112,9 +112,14 @@ A manifest records each file or directory together with its:
 - Modification time.
 - CRC32.
 - First logical block.
-- Contiguous block count.
+- Logical block count and storage type.
+- Packed-block generation, record identifier, and offset when applicable.
 
-Directories have no data extent. Files occupy contiguous logical blocks so reads can be translated directly into cartridge offsets.
+Directories and empty files have no data extent. Large files occupy contiguous
+logical blocks so reads can be translated directly into cartridge offsets.
+Files up to 16 KiB can instead share validated packed blocks; their typed
+manifest references prevent stale records from being mistaken for current
+contents.
 
 ### Alternating superblocks
 
@@ -140,7 +145,10 @@ Garbage collection erases these blocks and returns them to the reusable erased p
 
 ### Compaction
 
-Because files require contiguous extents, enough total free space does not guarantee that a large file can be allocated. Compaction relocates active files to combine smaller free regions into a larger erased extent.
+Because large files require contiguous extents, enough total free space does
+not guarantee that a large file can be allocated. Compaction combines sparse
+packed blocks and relocates active dedicated extents to form larger erased
+regions.
 
 ### Integrity checks
 
@@ -178,7 +186,7 @@ These rules were refined using both terminal operations and Finder copies on mac
 
 The following are project-specific design decisions rather than recovered official EZ-Flash structures:
 
-- The `EZ3LIVE1` and `EZFA3FS1` format identities.
+- The `EZFA3FS\0`, `EZFA3DB\0`, and `EZ3PACK\0` format identities.
 - The manifest record layout.
 - Alternating superblock locations and generation selection.
 - Copy-on-write allocation rules.
@@ -200,6 +208,7 @@ EZFA3FS currently provides:
 - Image creation and editing.
 - Read-only and writable FUSE mounts.
 - Direct-boot and multi-file layouts.
+- Packed storage for small files.
 - Garbage collection, compaction, and space inspection.
 - Pullback and complete-image verification.
 

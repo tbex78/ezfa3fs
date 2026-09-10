@@ -1,4 +1,5 @@
 #include "ezfa3fs/live_filesystem.hpp"
+#include "ezfa3fs/packed_block.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,25 +10,36 @@
 #include <iterator>
 #include <limits>
 #include <set>
+#include <utility>
 
 namespace ezfa3fs::live {
 namespace {
-constexpr std::uint16_t major=0, minor=1, direct_boot_minor=2;
+constexpr std::uint16_t major=0;
+constexpr std::uint16_t legacy_minor=1;
+constexpr std::uint16_t legacy_direct_boot_minor=2;
+constexpr std::uint16_t packed_minor=3;
+constexpr std::uint16_t packed_direct_boot_minor=4;
 constexpr std::uint32_t commit_marker=0xC0FF17EDu;
 constexpr std::size_t superblock_header=32;
+constexpr std::size_t legacy_entry_size=32;
+constexpr std::size_t packed_entry_size=48;
 
-bool isStandardRevision(std::uint16_t candidate_major,
-                        std::uint16_t candidate_minor) noexcept {
-    return candidate_major==major&&candidate_minor==minor;
+enum class FormatRevision { invalid,legacy,packed };
+
+FormatRevision standardRevision(std::uint16_t candidate_major,
+                                std::uint16_t candidate_minor) noexcept {
+    if(candidate_major!=major)return FormatRevision::invalid;
+    if(candidate_minor==legacy_minor)return FormatRevision::legacy;
+    if(candidate_minor==packed_minor)return FormatRevision::packed;
+    return FormatRevision::invalid;
 }
 
-enum class DirectBootRevision { invalid,unslotted,slotted };
-
-DirectBootRevision directBootRevision(std::uint16_t candidate_major,
-                                      std::uint16_t candidate_minor) noexcept {
-    if(candidate_major==major&&candidate_minor==direct_boot_minor)
-        return DirectBootRevision::slotted;
-    return DirectBootRevision::invalid;
+FormatRevision directBootRevision(std::uint16_t candidate_major,
+                                  std::uint16_t candidate_minor) noexcept {
+    if(candidate_major!=major)return FormatRevision::invalid;
+    if(candidate_minor==legacy_direct_boot_minor)return FormatRevision::legacy;
+    if(candidate_minor==packed_direct_boot_minor)return FormatRevision::packed;
+    return FormatRevision::invalid;
 }
 
 template<typename T> void put(std::uint8_t* bytes,std::size_t offset,T value) {
@@ -36,6 +48,34 @@ template<typename T> void put(std::uint8_t* bytes,std::size_t offset,T value) {
 template<typename T> T get(const std::uint8_t* bytes,std::size_t offset) {
     T value=0;for(std::size_t i=0;i<sizeof(T);++i)value|=static_cast<T>(bytes[offset+i])<<(i*8);return value;
 }
+
+bool resolvePackedRecord(
+    const Entry& entry,const std::vector<PackedRecord>& records,
+    const std::vector<PackedRecordLocation>& locations,
+    std::vector<std::uint8_t>& bytes,std::string& error) {
+
+    for(std::size_t index=0;index<records.size();++index) {
+        const auto& record=records[index];
+        const auto& location=locations[index];
+        if(record.id!=entry.packed_record_id||
+           location.offset!=entry.packed_record_offset)
+            continue;
+        if(record.modified_time!=entry.modified_time||
+           record.bytes.size()!=entry.size||
+           Crc32::calculate(record.bytes.data(),record.bytes.size())!=
+               entry.crc32) {
+            error="packed record does not match its manifest reference";
+            return false;
+        }
+        bytes=record.bytes;
+        error.clear();
+        return true;
+    }
+
+    error="packed record referenced by the manifest was not found";
+    return false;
+}
+
 bool validPath(const std::string& path) {
     if(path.empty()||path.front()=='/'||path.find('\\')!=std::string::npos)return false;
     std::size_t begin=0;while(begin<=path.size()) {
@@ -166,7 +206,8 @@ bool NorFlash::eraseBlock(std::size_t block,std::string& error) {
 bool Filesystem::format(BlockDevice& flash,std::string& error) {
     for(std::size_t block=0;block<NorFlash::block_count;++block)
         if(!flash.eraseBlock(block,error))return false;
-    Filesystem filesystem(flash);return filesystem.commit(error);
+    Filesystem filesystem(flash);filesystem.packed_storage_enabled_=true;
+    return filesystem.commit(error);
 }
 
 bool Filesystem::formatDirectBootEmpty(BlockDevice& flash,std::string& error,
@@ -174,7 +215,9 @@ bool Filesystem::formatDirectBootEmpty(BlockDevice& flash,std::string& error,
     if(boot_slot_blocks==0||boot_slot_blocks>NorFlash::block_count-2){error="direct-boot slot must be between 1 and 510 blocks";return false;}
     for(std::size_t block=0;block<NorFlash::block_count;++block)
         if(!flash.eraseBlock(block,error))return false;
-    Filesystem filesystem(flash);filesystem.layout_=Layout::direct_boot;filesystem.boot_slot_blocks_=boot_slot_blocks;
+    Filesystem filesystem(flash);filesystem.layout_=Layout::direct_boot;
+    filesystem.boot_slot_blocks_=boot_slot_blocks;
+    filesystem.packed_storage_enabled_=true;
     return filesystem.commit(error);
 }
 
@@ -191,7 +234,9 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
     // Retained for source compatibility. Allocation is now checked lazily at
     // the point of use instead of scanning the complete free tail on mount.
     (void)progress;
-    bool found=false;std::uint64_t newest=0;std::size_t chosen=0;Layout chosen_layout=Layout::transactional;std::vector<Entry> entries;
+    bool found=false;std::uint64_t newest=0;std::size_t chosen=0;
+    bool chosen_packed=false;
+    Layout chosen_layout=Layout::transactional;std::vector<Entry> entries;
     const std::array<std::pair<std::size_t,Layout>,4> candidates{{
         {0,Layout::transactional},{1,Layout::transactional},
         {NorFlash::block_count-2,Layout::direct_boot},{NorFlash::block_count-1,Layout::direct_boot}}};
@@ -200,53 +245,84 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
         if(!flash.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error))return false;
         const auto candidate_major=get<std::uint16_t>(bytes.data(),8);
         const auto candidate_minor=get<std::uint16_t>(bytes.data(),10);
+        const auto standard_revision=
+            standardRevision(candidate_major,candidate_minor);
         const bool current_format=std::equal(format_magic.begin(),format_magic.end(),bytes.begin())&&
-            isStandardRevision(candidate_major,candidate_minor);
+            standard_revision!=FormatRevision::invalid;
         const auto direct_revision=directBootRevision(candidate_major,candidate_minor);
         const bool direct_format=std::equal(direct_boot_format_magic.begin(),direct_boot_format_magic.end(),bytes.begin())&&
-            direct_revision!=DirectBootRevision::invalid;
+            direct_revision!=FormatRevision::invalid;
         if((layout==Layout::transactional?!current_format:!direct_format)||get<std::uint32_t>(bytes.data(),28)!=commit_marker)continue;
         const auto length=get<std::uint32_t>(bytes.data(),20);
         if(length>NorFlash::block_size-superblock_header||
            Crc32::calculate(bytes.data()+superblock_header,length)!=get<std::uint32_t>(bytes.data(),24))continue;
         std::vector<Entry> parsed;std::set<std::string> names;
-        const bool slotted_direct=layout==Layout::direct_boot&&
-            direct_revision==DirectBootRevision::slotted;
+        const bool slotted_direct=layout==Layout::direct_boot;
+        const bool packed_format=layout==Layout::direct_boot?
+            direct_revision==FormatRevision::packed:
+            standard_revision==FormatRevision::packed;
+        const auto entry_size=packed_format?packed_entry_size:legacy_entry_size;
         const auto slot_blocks=slotted_direct?get<std::uint32_t>(bytes.data()+superblock_header,0):0;
         std::size_t direct_boot_blocks=slotted_direct?slot_blocks:0;
         const auto count=get<std::uint32_t>(bytes.data()+superblock_header,slotted_direct?4:0);std::size_t offset=slotted_direct?8:4;bool valid= !slotted_direct||(slot_blocks>0&&slot_blocks<=NorFlash::block_count-2);
         for(std::uint32_t i=0;i<count&&valid;++i) {
-            if(offset+32>length){valid=false;break;}
+            if(offset+entry_size>length){valid=false;break;}
             const auto name_length=get<std::uint16_t>(bytes.data()+superblock_header,offset);
-            if(name_length==0||offset+32+name_length>length){valid=false;break;}
+            if(name_length==0||offset+entry_size+name_length>length){valid=false;break;}
             const auto* base=bytes.data()+superblock_header+offset;
-            Entry entry;entry.name=std::string(reinterpret_cast<const char*>(base+32),name_length);
-            entry.directory=(base[2]&1)!=0;entry.size=get<std::uint64_t>(base,4);entry.modified_time=get<std::uint64_t>(base,12);
+            Entry entry;entry.name=std::string(reinterpret_cast<const char*>(base+entry_size),name_length);
+            entry.directory=(base[2]&1)!=0;
+            entry.storage=(base[2]&2)!=0?StorageType::packed:StorageType::dedicated;
+            entry.size=get<std::uint64_t>(base,4);entry.modified_time=get<std::uint64_t>(base,12);
             entry.crc32=get<std::uint32_t>(base,20);entry.first_block=get<std::uint32_t>(base,24);entry.block_count=get<std::uint32_t>(base,28);
+            if(packed_format) {
+                entry.packed_generation=get<std::uint64_t>(base,32);
+                entry.packed_record_id=get<std::uint32_t>(base,40);
+                entry.packed_record_offset=get<std::uint32_t>(base,44);
+            }
+            const bool packed_entry=entry.storage==StorageType::packed;
             if(!validPath(entry.name)||!names.insert(entry.name).second||
+               (base[2]&~3u)!=0||(!packed_format&&packed_entry)||
                (!entry.directory&&!entry.block_count&&entry.size)||
                (entry.directory&&(entry.size||entry.block_count||entry.first_block||entry.crc32))||
+               (entry.directory&&packed_entry)||
+               (packed_entry&&(entry.block_count!=1||entry.size==0||
+                   entry.size>SmallFileAllocationPolicy::threshold||
+                   entry.packed_generation==0||entry.packed_record_id==0||
+                   entry.packed_record_offset<PackedBlock::header_size||
+                   entry.packed_record_offset>=NorFlash::block_size))||
+               (!packed_entry&&packed_format&&
+                   (entry.packed_generation||entry.packed_record_id||
+                    entry.packed_record_offset))||
                (!entry.directory&&(entry.first_block<(layout==Layout::direct_boot?0:2)||
                    static_cast<std::uint64_t>(entry.first_block)+entry.block_count>(layout==Layout::direct_boot?NorFlash::block_count-2:NorFlash::block_count)||
                    entry.size>static_cast<std::uint64_t>(entry.block_count)*NorFlash::block_size))){valid=false;break;}
-            if(layout==Layout::direct_boot&&!slotted_direct&&parsed.empty()&&
-               (!validDirectBootRomName(entry.name)||entry.directory||entry.first_block!=0)){valid=false;break;}
-            if(layout==Layout::direct_boot&&!parsed.empty()&&!entry.directory&&
-               entry.first_block<direct_boot_blocks){valid=false;break;}
-            if(layout==Layout::direct_boot&&!slotted_direct&&parsed.empty()&&
-               !entry.directory&&entry.first_block==0)direct_boot_blocks=entry.block_count;
-            parsed.push_back(std::move(entry));offset+=32+name_length;
+            if(layout==Layout::direct_boot&&!entry.directory&&
+               entry.first_block<direct_boot_blocks) {
+                const bool boot_rom=parsed.empty()&&
+                    entry.storage==StorageType::dedicated&&
+                    entry.first_block==0&&entry.block_count>0&&
+                    entry.block_count<=direct_boot_blocks&&
+                    validDirectBootRomName(entry.name);
+                if(!boot_rom){valid=false;break;}
+            }
+            parsed.push_back(std::move(entry));offset+=entry_size+name_length;
         }
         if(!valid||offset!=length)continue;
         const auto generation=get<std::uint64_t>(bytes.data(),12);
-        if(!found||generation>newest){found=true;newest=generation;chosen=block;chosen_layout=layout;result.boot_slot_blocks_=slotted_direct?slot_blocks:direct_boot_blocks;entries=std::move(parsed);}
+        if(!found||generation>newest){found=true;newest=generation;chosen=block;
+            chosen_layout=layout;chosen_packed=packed_format;
+            result.boot_slot_blocks_=slotted_direct?slot_blocks:direct_boot_blocks;
+            entries=std::move(parsed);}
         // Ordinary EZFA3FS images retain their two metadata blocks at the
         // beginning of the cartridge.  Avoid tail probes on their hot mount
         // path; direct-boot metadata is consulted only as a fallback.
         if(block==1&&found)break;
     }
     if(!found){error="no valid EZFA3FS superblock found";return false;}
-    result.entries_=std::move(entries);result.generation_=newest;result.active_superblock_=chosen;result.layout_=chosen_layout;
+    result.entries_=std::move(entries);result.generation_=newest;
+    result.active_superblock_=chosen;result.layout_=chosen_layout;
+    result.packed_storage_enabled_=chosen_packed;
     // Older empty direct-boot formats reserved 256 blocks before the ROM size
     // was known. Once a ROM exists, its immutable extent is the authoritative
     // partition boundary and any oversized reservation can be released safely.
@@ -265,7 +341,9 @@ const Entry* Filesystem::directBootRom() const noexcept {
     return isDirectBootRom(entry)?&entry:nullptr;
 }
 bool Filesystem::isDirectBootRom(const Entry& entry) const noexcept {
-    return isDirectBoot()&&!entry.directory&&entry.first_block==0&&validDirectBootRomName(entry.name);
+    return isDirectBoot()&&!entry.directory&&
+           entry.storage==StorageType::dedicated&&entry.first_block==0&&
+           validDirectBootRomName(entry.name);
 }
 bool Filesystem::awaitsDirectBootRom() const noexcept {
     return isDirectBoot()&&directBootRom()==nullptr;
@@ -287,18 +365,49 @@ bool Filesystem::commit(std::string& error) {
     if(isDirectBoot())put<std::uint32_t>(manifest.data(),0,static_cast<std::uint32_t>(boot_slot_blocks_));
     put<std::uint32_t>(manifest.data(),isDirectBoot()?4:0,static_cast<std::uint32_t>(entries_.size()));
     std::set<std::string> names;
+    const auto entry_size=
+        packed_storage_enabled_?packed_entry_size:legacy_entry_size;
     for(const auto& entry:entries_) {
-        if(!names.insert(entry.name).second||entry.name.size()>std::numeric_limits<std::uint16_t>::max()){error="invalid live manifest entry";return false;}
-        const auto offset=manifest.size();manifest.resize(offset+32+entry.name.size(),0);auto* base=manifest.data()+offset;
-        put<std::uint16_t>(base,0,static_cast<std::uint16_t>(entry.name.size()));base[2]=entry.directory?1:0;
+        const bool packed=entry.storage==StorageType::packed;
+        const bool invalid_packed=packed&&
+            (!packed_storage_enabled_||entry.directory||entry.size==0||
+             entry.size>SmallFileAllocationPolicy::threshold||
+             entry.block_count!=1||entry.packed_generation==0||
+             entry.packed_record_id==0||
+             entry.packed_record_offset<PackedBlock::header_size||
+             entry.packed_record_offset>=NorFlash::block_size);
+        const bool invalid_dedicated=!packed&&
+            (entry.packed_generation!=0||entry.packed_record_id!=0||
+             entry.packed_record_offset!=0);
+        if(!names.insert(entry.name).second||
+           entry.name.size()>std::numeric_limits<std::uint16_t>::max()||
+           invalid_packed||invalid_dedicated) {
+            error="invalid live manifest entry";
+            return false;
+        }
+        const auto offset=manifest.size();manifest.resize(offset+entry_size+entry.name.size(),0);auto* base=manifest.data()+offset;
+        put<std::uint16_t>(base,0,static_cast<std::uint16_t>(entry.name.size()));
+        base[2]=(entry.directory?1:0)|
+            (entry.storage==StorageType::packed?2:0);
         put<std::uint64_t>(base,4,entry.size);put<std::uint64_t>(base,12,entry.modified_time);put<std::uint32_t>(base,20,entry.crc32);
         put<std::uint32_t>(base,24,entry.first_block);put<std::uint32_t>(base,28,entry.block_count);
-        std::copy(entry.name.begin(),entry.name.end(),reinterpret_cast<char*>(base+32));
+        if(packed_storage_enabled_) {
+            put<std::uint64_t>(base,32,entry.packed_generation);
+            put<std::uint32_t>(base,40,entry.packed_record_id);
+            put<std::uint32_t>(base,44,entry.packed_record_offset);
+        }
+        std::copy(entry.name.begin(),entry.name.end(),reinterpret_cast<char*>(base+entry_size));
     }
     if(manifest.size()>NorFlash::block_size-superblock_header){error="live manifest exceeds superblock capacity";return false;}
     const auto target=alternateSuperblock();
     std::vector<std::uint8_t> block(NorFlash::block_size,0xFF);const auto& selected_magic=layout_==Layout::direct_boot?direct_boot_format_magic:format_magic;std::copy(selected_magic.begin(),selected_magic.end(),block.begin());
-    put<std::uint16_t>(block.data(),8,major);put<std::uint16_t>(block.data(),10,layout_==Layout::direct_boot?direct_boot_minor:minor);put<std::uint64_t>(block.data(),12,generation_+1);
+    put<std::uint16_t>(block.data(),8,major);
+    put<std::uint16_t>(block.data(),10,
+        layout_==Layout::direct_boot?
+            (packed_storage_enabled_?packed_direct_boot_minor:
+                                     legacy_direct_boot_minor):
+            (packed_storage_enabled_?packed_minor:legacy_minor));
+    put<std::uint64_t>(block.data(),12,generation_+1);
     put<std::uint32_t>(block.data(),20,static_cast<std::uint32_t>(manifest.size()));
     put<std::uint32_t>(block.data(),24,Crc32::calculate(manifest.data(),manifest.size()));put<std::uint32_t>(block.data(),28,commit_marker);
     std::copy(manifest.begin(),manifest.end(),block.begin()+superblock_header);
@@ -642,12 +751,17 @@ bool Filesystem::putFileViews(
     }
 
     std::set<std::string> batch_names;
-    std::size_t total_blocks=0;
+    std::vector<const FileWriteView*> packed_writes;
+    std::vector<const FileWriteView*> dedicated_writes;
+    std::set<std::uint32_t> repack_blocks;
+    const SmallFileAllocationPolicy allocation_policy;
+    const auto manifest_entry_size=
+        packed_storage_enabled_?packed_entry_size:legacy_entry_size;
     std::size_t manifest_size=isDirectBoot()?8:4;
-    const auto data_capacity=dataEndBlock()-firstDataBlock();
+    const auto data_capacity=dataEndBlock()-allocationStartBlock();
 
     for(const auto& entry:entries_)
-        manifest_size+=32+entry.name.size();
+        manifest_size+=manifest_entry_size+entry.name.size();
 
     for(const auto& file:files) {
         if(!file.path||!file.bytes||
@@ -669,34 +783,192 @@ bool Filesystem::putFileViews(
             return false;
         }
         if(!existing)
-            manifest_size+=32+file.path->size();
+            manifest_size+=manifest_entry_size+file.path->size();
         if(file.path->size()>std::numeric_limits<std::uint16_t>::max()||
            manifest_size>NorFlash::block_size-superblock_header) {
             error="live manifest exceeds superblock capacity";
             return false;
         }
-        const auto blocks=dataBlockCount(file.bytes->size());
-        if(total_blocks>data_capacity||
-           blocks>data_capacity-total_blocks) {
+
+        if(existing&&existing->storage==StorageType::packed)
+            repack_blocks.insert(existing->first_block);
+
+        if(packed_storage_enabled_&&
+           allocation_policy.shouldPack(file.bytes->size()))
+            packed_writes.push_back(&file);
+        else
+            dedicated_writes.push_back(&file);
+    }
+
+    // New small files opportunistically share the fullest existing block that
+    // can accept at least one incoming record. Do not copy a full block forward
+    // merely to allocate an additional block beside it.
+    if(!packed_writes.empty()&&repack_blocks.empty()) {
+        const auto smallest_incoming=std::min_element(
+            packed_writes.begin(),packed_writes.end(),
+            [](const FileWriteView* left,const FileWriteView* right) {
+                return left->bytes->size()<right->bytes->size();
+            });
+        const auto incoming_size=PackedBlock::encodedRecordSize(
+            (*smallest_incoming)->bytes->size());
+        std::vector<std::pair<std::uint32_t,std::size_t>> live_lengths;
+        for(const auto& entry:entries_) {
+            if(entry.storage!=StorageType::packed)continue;
+            const auto existing=std::find_if(
+                live_lengths.begin(),live_lengths.end(),
+                [&entry](const auto& candidate) {
+                    return candidate.first==entry.first_block;
+                });
+            if(existing==live_lengths.end())
+                live_lengths.push_back({
+                    entry.first_block,
+                    PackedBlock::header_size+
+                        PackedBlock::encodedRecordSize(entry.size)
+                });
+            else
+                existing->second+=PackedBlock::encodedRecordSize(entry.size);
+        }
+
+        std::uint32_t candidate_block=0;
+        std::size_t candidate_used=0;
+        for(const auto& candidate:live_lengths) {
+            if(candidate.second<=PackedBlock::block_size&&
+               incoming_size<=PackedBlock::block_size-candidate.second&&
+               candidate.second>candidate_used) {
+                candidate_block=candidate.first;
+                candidate_used=candidate.second;
+            }
+        }
+        if(candidate_used!=0)repack_blocks.insert(candidate_block);
+    }
+
+    struct PendingPackedRecord final {
+        std::string path;
+        PackedRecord record;
+        std::uint32_t crc32 = 0;
+    };
+    std::vector<PendingPackedRecord> packed_records;
+    std::uint64_t next_record_id=1;
+    std::uint64_t next_packed_generation=1;
+    for(const auto& entry:entries_) {
+        if(entry.storage!=StorageType::packed)
+            continue;
+        next_record_id=std::max(
+            next_record_id,
+            static_cast<std::uint64_t>(entry.packed_record_id)+1);
+        if(entry.packed_generation==std::numeric_limits<std::uint64_t>::max()) {
+            error="packed block generation space is exhausted";
+            return false;
+        }
+        next_packed_generation=std::max(
+            next_packed_generation,entry.packed_generation+1);
+    }
+
+    for(const auto block:repack_blocks) {
+        std::vector<const Entry*> carried_entries;
+        for(const auto& entry:entries_)
+            if(entry.storage==StorageType::packed&&
+               entry.first_block==block&&
+               batch_names.count(entry.name)==0)
+                carried_entries.push_back(&entry);
+        if(carried_entries.empty())continue;
+
+        std::vector<PackedRecord> records;
+        std::vector<PackedRecordLocation> locations;
+        if(!readPackedBlock(
+                block,carried_entries.front()->packed_generation,
+                records,locations,error))
+            return false;
+
+        for(const auto* entry:carried_entries) {
+            if(entry->packed_generation!=
+               carried_entries.front()->packed_generation) {
+                error="manifest contains inconsistent packed-block generations";
+                return false;
+            }
+            std::vector<std::uint8_t> bytes;
+            if(!resolvePackedRecord(
+                    *entry,records,locations,bytes,error))
+                return false;
+            packed_records.push_back({
+                entry->name,
+                {entry->packed_record_id,entry->modified_time,
+                 std::move(bytes)},
+                entry->crc32
+            });
+        }
+    }
+
+    for(const auto* file:packed_writes) {
+        if(next_record_id>std::numeric_limits<std::uint32_t>::max()) {
+            error="packed record identifier space is exhausted";
+            return false;
+        }
+        packed_records.push_back({
+            *file->path,
+            {static_cast<std::uint32_t>(next_record_id++),
+             file->modified_time,*file->bytes},
+            Crc32::calculate(file->bytes->data(),file->bytes->size())
+        });
+    }
+
+    std::vector<PackedRecord> records_to_allocate;
+    records_to_allocate.reserve(packed_records.size());
+    for(const auto& pending:packed_records)
+        records_to_allocate.push_back(pending.record);
+    std::vector<PackedBlockAllocator::Bin> packed_bins;
+    if(!PackedBlockAllocator::buildPlan(
+            records_to_allocate,packed_bins,error))
+        return false;
+
+    std::size_t dedicated_blocks=0;
+    for(const auto* file:dedicated_writes) {
+        const auto blocks=dataBlockCount(file->bytes->size());
+        if(dedicated_blocks>data_capacity||
+           blocks>data_capacity-dedicated_blocks) {
             error="live filesystem batch is out of free blocks";
             return false;
         }
-        total_blocks+=blocks;
+        dedicated_blocks+=blocks;
     }
+    if(packed_bins.size()>data_capacity-dedicated_blocks) {
+        error="live filesystem batch is out of free blocks";
+        return false;
+    }
+    const auto total_blocks=packed_bins.size()+dedicated_blocks;
 
     std::cerr<<"Filesystem putFiles: "<<files.size()<<" file(s), "
-             <<total_blocks<<" block(s).\n";
+             <<total_blocks<<" block(s), "<<packed_bins.size()
+             <<" packed block(s).\n";
 
     std::size_t first_block=next_free_block_;
+    std::vector<std::vector<PackedRecordLocation>> packed_locations;
     if(total_blocks) {
         std::vector<std::uint8_t> extent(
             total_blocks*NorFlash::block_size,0xFF);
-        std::size_t destination_block=0;
-        for(const auto& file:files) {
-            std::copy(file.bytes->begin(),file.bytes->end(),
+        packed_locations.reserve(packed_bins.size());
+        for(std::size_t bin_index=0;bin_index<packed_bins.size();++bin_index) {
+            std::vector<PackedRecord> records;
+            for(const auto record_index:packed_bins[bin_index])
+                records.push_back(packed_records[record_index].record);
+            std::vector<std::uint8_t> packed_block;
+            std::vector<PackedRecordLocation> locations;
+            if(!PackedBlock::encode(
+                    next_packed_generation,records,packed_block,locations,error))
+                return false;
+            std::copy(
+                packed_block.begin(),packed_block.end(),
+                extent.begin()+static_cast<std::ptrdiff_t>(
+                    bin_index*NorFlash::block_size));
+            packed_locations.push_back(std::move(locations));
+        }
+
+        std::size_t destination_block=packed_bins.size();
+        for(const auto* file:dedicated_writes) {
+            std::copy(file->bytes->begin(),file->bytes->end(),
                       extent.begin()+static_cast<std::ptrdiff_t>(
                           destination_block*NorFlash::block_size));
-            destination_block+=dataBlockCount(file.bytes->size());
+            destination_block+=dataBlockCount(file->bytes->size());
         }
 
         constexpr unsigned extent_attempts=3;
@@ -722,19 +994,45 @@ bool Filesystem::putFileViews(
     }
 
     const auto old=entries_;
-    std::size_t block_offset=0;
-    for(const auto& file:files) {
-        const auto blocks=dataBlockCount(file.bytes->size());
+    for(std::size_t bin_index=0;bin_index<packed_bins.size();++bin_index) {
+        for(std::size_t location_index=0;
+            location_index<packed_bins[bin_index].size();++location_index) {
+            const auto& pending=
+                packed_records[packed_bins[bin_index][location_index]];
+            const auto& location=packed_locations[bin_index][location_index];
+            Entry replacement{
+                pending.path,
+                pending.record.bytes.size(),
+                pending.record.modified_time,
+                pending.crc32,
+                static_cast<std::uint32_t>(first_block+bin_index),
+                1,
+                false,
+                StorageType::packed,
+                next_packed_generation,
+                location.id,
+                location.offset
+            };
+            if(auto* existing=find(pending.path))
+                *existing=std::move(replacement);
+            else
+                entries_.push_back(std::move(replacement));
+        }
+    }
+
+    std::size_t block_offset=packed_bins.size();
+    for(const auto* file:dedicated_writes) {
+        const auto blocks=dataBlockCount(file->bytes->size());
         Entry replacement{
-            *file.path,
-            file.bytes->size(),
-            file.modified_time,
-            Crc32::calculate(file.bytes->data(),file.bytes->size()),
+            *file->path,
+            file->bytes->size(),
+            file->modified_time,
+            Crc32::calculate(file->bytes->data(),file->bytes->size()),
             static_cast<std::uint32_t>(first_block+block_offset),
             static_cast<std::uint32_t>(blocks),
             false
         };
-        if(auto* existing=find(*file.path))
+        if(auto* existing=find(*file->path))
             *existing=std::move(replacement);
         else
             entries_.push_back(std::move(replacement));
@@ -1045,11 +1343,180 @@ bool Filesystem::compact(CompactionReport& report,std::string& error,
     return compactFiles(report,error);
 }
 
+bool Filesystem::compactPackedBlocks(
+    CompactionReport& report,std::string& error) {
+
+    std::set<std::uint32_t> source_block_set;
+    std::vector<std::size_t> entry_indexes;
+    std::vector<PackedRecord> records;
+    std::uint64_t packed_generation=1;
+
+    for(const auto& entry:entries_)
+        if(entry.storage==StorageType::packed)
+            source_block_set.insert(entry.first_block);
+
+    for(const auto block:source_block_set) {
+        const auto first=std::find_if(
+            entries_.begin(),entries_.end(),
+            [block](const Entry& entry) {
+                return entry.storage==StorageType::packed&&
+                       entry.first_block==block;
+            });
+        if(first==entries_.end())continue;
+        if(first->packed_generation==std::numeric_limits<std::uint64_t>::max()) {
+            error="packed block generation space is exhausted";
+            return false;
+        }
+
+        std::vector<PackedRecord> block_records;
+        std::vector<PackedRecordLocation> block_locations;
+        if(!readPackedBlock(
+                block,first->packed_generation,
+                block_records,block_locations,error))
+            return false;
+
+        for(std::size_t index=0;index<entries_.size();++index) {
+            const auto& entry=entries_[index];
+            if(entry.storage!=StorageType::packed||
+               entry.first_block!=block)
+                continue;
+            if(entry.packed_generation!=first->packed_generation) {
+                error="manifest contains inconsistent packed-block generations";
+                return false;
+            }
+            if(entry_indexes.size()>=
+               std::numeric_limits<std::uint32_t>::max()) {
+                error="packed record identifier space is exhausted";
+                return false;
+            }
+
+            std::vector<std::uint8_t> bytes;
+            if(!resolvePackedRecord(
+                    entry,block_records,block_locations,bytes,error))
+                return false;
+            entry_indexes.push_back(index);
+            records.push_back({
+                static_cast<std::uint32_t>(entry_indexes.size()),
+                entry.modified_time,
+                std::move(bytes)
+            });
+        }
+        packed_generation=std::max(
+            packed_generation,first->packed_generation+1);
+    }
+
+    if(records.empty()) {
+        error.clear();
+        return true;
+    }
+
+    std::vector<PackedBlockAllocator::Bin> bins;
+    if(!PackedBlockAllocator::buildPlan(records,bins,error))return false;
+
+    std::size_t destination=0;
+    if(bins.size()<source_block_set.size()) {
+        const auto search=findBlankExtent(bins.size(),destination,error);
+        if(search==ExtentSearchResult::error)return false;
+        if(search==ExtentSearchResult::no_extent) {
+            // Packed compaction is opportunistic. Dedicated-extent compaction
+            // can still make progress without a copy-on-write destination.
+            error.clear();
+            return true;
+        }
+    } else {
+        // Even a fully live packed block participates in ordinary defragmenting
+        // compaction when it can move before every one of its source blocks.
+        if(!findBlankExtentBefore(
+                *source_block_set.begin(),bins.size(),destination,error)) {
+            if(!error.empty())return false;
+            error.clear();
+            return true;
+        }
+    }
+
+    std::vector<std::uint8_t> extent(
+        bins.size()*NorFlash::block_size,0xFF);
+    std::vector<std::vector<PackedRecordLocation>> locations;
+    locations.reserve(bins.size());
+    for(std::size_t bin_index=0;bin_index<bins.size();++bin_index) {
+        std::vector<PackedRecord> block_records;
+        block_records.reserve(bins[bin_index].size());
+        for(const auto record_index:bins[bin_index])
+            block_records.push_back(records[record_index]);
+
+        std::vector<std::uint8_t> block;
+        std::vector<PackedRecordLocation> block_locations;
+        if(!PackedBlock::encode(
+                packed_generation,block_records,block,block_locations,error))
+            return false;
+        std::copy(
+            block.begin(),block.end(),
+            extent.begin()+static_cast<std::ptrdiff_t>(
+                bin_index*NorFlash::block_size));
+        locations.push_back(std::move(block_locations));
+    }
+
+    if(!programPreparedExtent(destination,extent,error))return false;
+
+    const auto old_entries=entries_;
+    for(std::size_t bin_index=0;bin_index<bins.size();++bin_index) {
+        for(std::size_t location_index=0;
+            location_index<bins[bin_index].size();++location_index) {
+            const auto record_index=bins[bin_index][location_index];
+            auto& entry=entries_[entry_indexes[record_index]];
+            entry.first_block=static_cast<std::uint32_t>(
+                destination+bin_index);
+            entry.block_count=1;
+            entry.packed_generation=packed_generation;
+            entry.packed_record_id=locations[bin_index][location_index].id;
+            entry.packed_record_offset=
+                locations[bin_index][location_index].offset;
+        }
+    }
+
+    if(!commit(error)) {
+        entries_=old_entries;
+        for(std::size_t block=0;block<bins.size();++block)
+            unavailable_blocks_[destination+block]=true;
+        error="could not commit compacted packed blocks: "+error;
+        return false;
+    }
+    if(!commit(error)) {
+        error="could not synchronize compacted packed metadata: "+error;
+        return false;
+    }
+
+    std::vector<std::size_t> source_blocks(
+        source_block_set.begin(),source_block_set.end());
+    if(!flash_.prepareForErase(error)) {
+        error="could not prepare compacted packed source blocks for erase: "+
+              error;
+        return false;
+    }
+    for(const auto block:source_blocks)
+        unavailable_blocks_[block]=true;
+    if(!flash_.eraseBlocks(source_blocks,error)) {
+        error="could not erase compacted packed source blocks: "+error;
+        return false;
+    }
+    for(const auto block:source_blocks)
+        unavailable_blocks_[block]=false;
+
+    report.files_relocated+=records.size();
+    report.blocks_relocated+=source_blocks.size();
+    next_free_block_=allocationStartBlock();
+    error.clear();
+    return true;
+}
+
 bool Filesystem::compactFiles(CompactionReport& report,std::string& error) {
+    if(!compactPackedBlocks(report,error))return false;
     for(;;) {
         std::vector<std::size_t> candidates;
         for(std::size_t i=0;i<entries_.size();++i)
-            if(!entries_[i].directory&&entries_[i].block_count&&!isDirectBootRom(entries_[i]))candidates.push_back(i);
+            if(!entries_[i].directory&&entries_[i].block_count&&
+               entries_[i].storage==StorageType::dedicated&&
+               !isDirectBootRom(entries_[i]))candidates.push_back(i);
         std::sort(candidates.begin(),candidates.end(),[this](std::size_t left,std::size_t right){
             return entries_[left].first_block>entries_[right].first_block;
         });
@@ -1154,6 +1621,53 @@ bool Filesystem::readFileRange(const std::string& path,std::size_t offset,
     return readEntryRange(*entry,offset,size,bytes,error);
 }
 
+bool Filesystem::readPackedBlock(
+    std::uint32_t block_index,std::uint64_t expected_generation,
+    std::vector<PackedRecord>& records,
+    std::vector<PackedRecordLocation>& locations,
+    std::string& error) const {
+
+    std::vector<std::uint8_t> block(NorFlash::block_size);
+    if(!flash_.read(
+            static_cast<std::size_t>(block_index)*NorFlash::block_size,
+            block.data(),block.size(),error)) {
+        error="could not read packed block "+
+              std::to_string(block_index)+": "+error;
+        return false;
+    }
+
+    std::uint64_t generation=0;
+    if(!PackedBlock::decode(
+            block,generation,records,locations,error)) {
+        error="could not decode packed block "+
+              std::to_string(block_index)+": "+error;
+        return false;
+    }
+    if(generation!=expected_generation) {
+        error="packed block generation does not match its manifest reference";
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
+bool Filesystem::readPackedEntry(
+    const Entry& entry,std::vector<std::uint8_t>& bytes,
+    std::string& error) const {
+
+    if(entry.storage!=StorageType::packed) {
+        error="live entry is not stored in a packed block";
+        return false;
+    }
+
+    std::vector<PackedRecord> records;
+    std::vector<PackedRecordLocation> locations;
+    return readPackedBlock(
+               entry.first_block,entry.packed_generation,
+               records,locations,error)&&
+           resolvePackedRecord(entry,records,locations,bytes,error);
+}
+
 bool Filesystem::readEntryRange(const Entry& entry,std::size_t offset,
                                 std::size_t size,std::vector<std::uint8_t>& bytes,
                                 std::string& error,
@@ -1162,6 +1676,17 @@ bool Filesystem::readEntryRange(const Entry& entry,std::size_t offset,
     if(offset>file_size){error="live file read offset is out of bounds";return false;}
     const auto count=std::min(size,file_size-offset);bytes.clear();bytes.reserve(count);
     if(count==0){error.clear();return true;}
+    if(entry.storage==StorageType::packed) {
+        std::vector<std::uint8_t> record;
+        if(!readPackedEntry(entry,record,error))return false;
+        bytes.insert(
+            bytes.end(),
+            record.begin()+static_cast<std::ptrdiff_t>(offset),
+            record.begin()+static_cast<std::ptrdiff_t>(offset+count));
+        if(block_read)block_read();
+        error.clear();
+        return true;
+    }
     const auto first=offset/NorFlash::block_size;
     const auto last=(offset+count-1)/NorFlash::block_size;
     std::vector<std::uint8_t> block(NorFlash::block_size);
@@ -1180,12 +1705,46 @@ bool Filesystem::readEntryRange(const Entry& entry,std::size_t offset,
 
 bool Filesystem::verify(std::string& error,ScanProgress progress) const {
     std::size_t total=0;
+    std::set<std::uint32_t> packed_blocks;
     for(const auto& entry:entries_)
-        if(!entry.directory)total+=dataBlockCount(entry.size);
+        if(!entry.directory) {
+            if(entry.storage==StorageType::packed)
+                packed_blocks.insert(entry.first_block);
+            else
+                total+=dataBlockCount(entry.size);
+        }
+    total+=packed_blocks.size();
     std::size_t completed=0;
     if(progress)progress(completed,total);
+    std::set<std::uint32_t> verified_packed_blocks;
     for(const auto& entry:entries_) {
         if(entry.directory) continue;
+        if(entry.storage==StorageType::packed) {
+            if(!verified_packed_blocks.insert(entry.first_block).second)
+                continue;
+            std::vector<PackedRecord> records;
+            std::vector<PackedRecordLocation> locations;
+            if(!readPackedBlock(
+                    entry.first_block,entry.packed_generation,
+                    records,locations,error))
+                return false;
+            for(const auto& packed_entry:entries_) {
+                if(packed_entry.storage!=StorageType::packed||
+                   packed_entry.first_block!=entry.first_block)
+                    continue;
+                if(packed_entry.packed_generation!=entry.packed_generation) {
+                    error=
+                        "manifest contains inconsistent packed-block generations";
+                    return false;
+                }
+                std::vector<std::uint8_t> bytes;
+                if(!resolvePackedRecord(
+                        packed_entry,records,locations,bytes,error))
+                    return false;
+            }
+            if(progress)progress(++completed,total);
+            continue;
+        }
         std::vector<std::uint8_t> bytes;
         if(!readEntryRange(entry,0,static_cast<std::size_t>(entry.size),bytes,error,
             [&]{if(progress)progress(++completed,total);}))return false;

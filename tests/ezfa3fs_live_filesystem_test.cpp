@@ -1,5 +1,6 @@
 #include "ezfa3fs/live_filesystem.hpp"
 #include "ezfa3fs/cartridge_flash_geometry.hpp"
+#include "ezfa3fs/packed_block.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -92,7 +93,61 @@ void verifyFormatIdentity() {
     std::vector<std::uint8_t> block(ezfa3fs::live::NorFlash::block_size);
     require(formatted.read(ezfa3fs::live::NorFlash::block_size,block.data(),block.size(),error));
     require(std::equal(current_magic.begin(),current_magic.end(),block.begin()));
-    require(block[8]==0&&block[9]==0&&block[10]==1&&block[11]==0);
+    require(block[8]==0&&block[9]==0&&block[10]==3&&block[11]==0);
+}
+
+void verifyLegacyFormatRemainsDedicated() {
+    ezfa3fs::live::NorFlash flash;std::string error;
+    require(ezfa3fs::live::Filesystem::format(flash,error));
+    const std::uint8_t legacy_minor=1;
+    require(flash.program(
+        ezfa3fs::live::NorFlash::block_size+10,
+        &legacy_minor,1,error));
+
+    ezfa3fs::live::Filesystem filesystem(flash);
+    require(ezfa3fs::live::Filesystem::open(flash,filesystem,error));
+    require(!filesystem.packedStorageEnabled());
+    require(filesystem.putFile("legacy.txt",{'o','k'},1,error));
+    require(filesystem.entries().front().storage==
+            ezfa3fs::live::StorageType::dedicated);
+
+    std::vector<std::uint8_t> superblock(ezfa3fs::live::NorFlash::block_size);
+    require(flash.read(0,superblock.data(),superblock.size(),error));
+    require(superblock[10]==1&&superblock[11]==0);
+}
+
+void verifyPackedBlockCodecRejectsCorruption() {
+    std::string error;
+    const ezfa3fs::live::SmallFileAllocationPolicy policy;
+    require(!policy.shouldPack(0)&&
+            policy.shouldPack(policy.threshold)&&
+            !policy.shouldPack(policy.threshold+1));
+    const std::vector<ezfa3fs::live::PackedRecord> records{
+        {1,10,{'a','b','c'}},
+        {2,11,{'d','e'}}
+    };
+    std::vector<std::uint8_t> block;
+    std::vector<ezfa3fs::live::PackedRecordLocation> locations;
+    require(ezfa3fs::live::PackedBlock::encode(
+        7,records,block,locations,error));
+    std::uint64_t generation=0;
+    std::vector<ezfa3fs::live::PackedRecord> decoded;
+    std::vector<ezfa3fs::live::PackedRecordLocation> decoded_locations;
+    require(ezfa3fs::live::PackedBlock::decode(
+        block,generation,decoded,decoded_locations,error));
+    require(generation==7&&decoded.size()==2&&
+            decoded[0].bytes==records[0].bytes&&
+            decoded[1].bytes==records[1].bytes&&
+            decoded_locations.size()==locations.size()&&
+            decoded_locations[0].id==locations[0].id&&
+            decoded_locations[0].offset==locations[0].offset&&
+            decoded_locations[1].id==locations[1].id&&
+            decoded_locations[1].offset==locations[1].offset);
+
+    block[locations.front().offset+
+          ezfa3fs::live::PackedBlock::record_header_size]^=0x01;
+    require(!ezfa3fs::live::PackedBlock::decode(
+        block,generation,decoded,decoded_locations,error));
 }
 
 void verifyPhysicalEraseGeometry() {
@@ -136,7 +191,7 @@ void verifyDirectBootLayout() {
     require(std::equal(ezfa3fs::live::direct_boot_format_magic.begin(),
                        ezfa3fs::live::direct_boot_format_magic.end(),superblock.begin()));
     require(superblock[8]==0&&superblock[9]==0&&
-            superblock[10]==2&&superblock[11]==0);
+            superblock[10]==4&&superblock[11]==0);
     ezfa3fs::live::Filesystem filesystem(flash);
     require(ezfa3fs::live::Filesystem::open(flash,filesystem,error));
     require(filesystem.isDirectBoot()&&filesystem.entries().size()==1&&
@@ -274,9 +329,9 @@ void verifyInterruptedCompaction(std::size_t failure_offset,
     require(ezfa3fs::live::Filesystem::format(flash,error));
     CountingDevice device(flash);ezfa3fs::live::Filesystem filesystem(device);
     require(ezfa3fs::live::Filesystem::open(device,filesystem,error));
-    require(filesystem.putFile("movable",{'a'},1,error));
-    require(filesystem.putFile("fixed",{'b'},1,error));
-    require(filesystem.putFile("movable",{'c'},2,error));
+    require(filesystem.putFile("movable",blockData(1,0x11),1,error));
+    require(filesystem.putFile("fixed",blockData(1,0x22),1,error));
+    require(filesystem.putFile("movable",blockData(1,0x33),2,error));
     std::size_t reclaimed=0;require(filesystem.collectGarbage(reclaimed,error));
     require(reclaimed==1);
     const auto generation=filesystem.generation();
@@ -292,8 +347,71 @@ void verifyInterruptedCompaction(std::size_t failure_offset,
     require(entry!=recovered.entries().end()&&entry->first_block==recovered_block);
     std::vector<std::uint8_t> bytes;
     require(recovered.readFile("movable",bytes,error));
-    require(bytes==std::vector<std::uint8_t>({'c'}));
+    require(bytes==blockData(1,0x33));
     require(recovered.verify(error));
+}
+
+void verifyPackedSmallFileCopyOnWriteAndCompaction() {
+    ezfa3fs::live::NorFlash flash;std::string error;
+    require(ezfa3fs::live::Filesystem::format(flash,error));
+    ezfa3fs::live::Filesystem filesystem(flash);
+    require(ezfa3fs::live::Filesystem::open(flash,filesystem,error));
+
+    const auto small=[](std::uint8_t value) {
+        return std::vector<std::uint8_t>(
+            ezfa3fs::live::SmallFileAllocationPolicy::threshold,value);
+    };
+    require(filesystem.putFiles({
+        {"alpha",small(0x11),1},
+        {"beta",small(0x22),2},
+        {"gamma",small(0x33),3}
+    },error));
+    const auto full_block_generation=filesystem.entries().front().packed_generation;
+    require(filesystem.putFile("delta",small(0x44),4,error));
+    require(filesystem.entries().size()==4);
+    require(std::all_of(
+        filesystem.entries().begin(),filesystem.entries().end(),
+        [](const ezfa3fs::live::Entry& entry) {
+            return entry.storage==ezfa3fs::live::StorageType::packed&&
+                   entry.block_count==1&&entry.packed_generation!=0&&
+                   entry.packed_record_id!=0;
+        }));
+    require(filesystem.entries()[0].first_block==2&&
+            filesystem.entries()[1].first_block==2&&
+            filesystem.entries()[2].first_block==2&&
+            filesystem.entries()[3].first_block==3&&
+            filesystem.entries()[0].packed_generation==full_block_generation);
+
+    require(filesystem.putFile("gamma",small(0x55),5,error));
+    require(filesystem.entries()[0].first_block==4&&
+            filesystem.entries()[1].first_block==4&&
+            filesystem.entries()[2].first_block==4&&
+            filesystem.entries()[0].packed_generation>
+                full_block_generation);
+
+    ezfa3fs::live::SpaceReport before;
+    require(filesystem.inspectSpace(before,error));
+    require(before.active_blocks==2);
+    require(filesystem.removeFile("alpha",error));
+    require(filesystem.removeFile("beta",error));
+    require(filesystem.rename("gamma","renamed",error));
+
+    ezfa3fs::live::CompactionReport report;
+    require(filesystem.compact(report,error));
+    require(report.files_relocated==2&&report.blocks_relocated==2);
+    require(filesystem.entries().size()==2&&
+            filesystem.entries()[0].first_block==
+                filesystem.entries()[1].first_block);
+
+    std::vector<std::uint8_t> bytes;
+    require(filesystem.readFileRange("renamed",100,10,bytes,error));
+    require(bytes==std::vector<std::uint8_t>(10,0x55));
+    require(filesystem.readFile("delta",bytes,error)&&bytes==small(0x44));
+
+    ezfa3fs::live::Filesystem reopened(flash);
+    require(ezfa3fs::live::Filesystem::open(flash,reopened,error));
+    require(reopened.packedStorageEnabled());
+    require(reopened.verify(error));
 }
 
 void verifyAlternateExtentRetry() {
@@ -350,7 +468,8 @@ void verifyBatchProgramming() {
     const auto empty=find("empty.txt");
     const auto large_entry=find("large.bin");
     require(first!=filesystem.entries().end()&&first->first_block==2&&
-            first->block_count==1);
+            first->block_count==1&&
+            first->storage==ezfa3fs::live::StorageType::packed);
     require(empty!=filesystem.entries().end()&&empty->first_block==3&&
             empty->block_count==0);
     require(large_entry!=filesystem.entries().end()&&
@@ -502,6 +621,8 @@ void verifyAutomaticCompaction() {
 int main()
 {
     verifyFormatIdentity();
+    verifyLegacyFormatRemainsDedicated();
+    verifyPackedBlockCodecRejectsCorruption();
     verifyPhysicalEraseGeometry();
     verifyDirectBootLayout();
     verifyEmptyDirectBootLayout();
@@ -511,6 +632,7 @@ int main()
     verifyInterruptedCompaction(2,4,0);
     verifyInterruptedCompaction(3,2,1);
     verifyAlternateExtentRetry();
+    verifyPackedSmallFileCopyOnWriteAndCompaction();
     verifyBatchProgramming();
     verifyFailedBatchIsNotPublished();
     verifyAutomaticGarbageCollection();
@@ -563,9 +685,9 @@ int main()
     ezfa3fs::live::SpaceReport space;std::size_t inspected=0,inspection_total=0;
     require(reopened.inspectSpace(space,error,
         [&](std::size_t completed,std::size_t total){inspected=completed;inspection_total=total;}));
-    require(space.active_blocks==4);
+    require(space.active_blocks==3);
     require(space.erased_blocks==502);
-    require(space.reclaimable_blocks==4);
+    require(space.reclaimable_blocks==5);
     require(space.largest_erased_extent==502);
     require(space.largest_post_gc_extent==502);
     require(inspected==510&&inspection_total==510);
@@ -579,7 +701,7 @@ int main()
             progress_total=total;
         }));
 
-    require(reclaimed==4);
+    require(reclaimed==5);
 
     // Garbage collection now amortizes the cartridge writer transition across
     // the complete stale-block batch instead of restarting it once per block.
@@ -591,9 +713,9 @@ int main()
     require(reopened.verify(error,[&](std::size_t completed,std::size_t total) {
         verification_progress.emplace_back(completed,total);
     }));
-    require(verification_progress.front()==std::pair<std::size_t,std::size_t>{0,4});
-    require(verification_progress.back()==std::pair<std::size_t,std::size_t>{4,4});
-    require(verification_progress.size()==5);
+    require(verification_progress.front()==std::pair<std::size_t,std::size_t>{0,3});
+    require(verification_progress.back()==std::pair<std::size_t,std::size_t>{3,3});
+    require(verification_progress.size()==4);
     require(reopened.putFile("docs/recycled.txt",{'z'},1238,error));
     const auto recycled=std::find_if(reopened.entries().begin(),reopened.entries().end(),
         [](const ezfa3fs::live::Entry& entry){return entry.name=="docs/recycled.txt";});
@@ -608,14 +730,14 @@ int main()
 
     ezfa3fs::live::CompactionReport compaction;
     require(reopened.compact(compaction,error));
-    require(compaction.garbage_blocks_reclaimed==0);
-    // recycled moves 10 -> 2, then recovered moves 9 -> 6.
-    require(compaction.files_relocated==2);
-    require(compaction.blocks_relocated==2);
+    require(compaction.garbage_blocks_reclaimed==1);
+    // The one packed block containing all three small files moves 10 -> 2.
+    require(compaction.files_relocated==3);
+    require(compaction.blocks_relocated==1);
 
-    // Each relocation publishes two metadata generations before its old
-    // source block is erased.
-    require(reopened.generation()==generation_before_compaction+4);
+    // GC synchronizes metadata once, then packed relocation publishes two
+    // generations before its old source block is erased.
+    require(reopened.generation()==generation_before_compaction+3);
     const auto compacted_recycled=std::find_if(
         reopened.entries().begin(),reopened.entries().end(),
         [](const ezfa3fs::live::Entry& entry){
@@ -630,9 +752,9 @@ int main()
             return entry.name=="docs/recovered.txt";
         });
     require(compacted_recovered!=reopened.entries().end()&&
-            compacted_recovered->first_block==6);
+            compacted_recovered->first_block==2);
 
-    // Both relocated source extents are erased as independent batches.
+    // Garbage collection and packed relocation each erase one batch.
     require(reopened_device.prepare_erase_count==
             prepares_before_compaction+2);
     require(reopened_device.erase_batch_count==
@@ -641,10 +763,10 @@ int main()
     require(reopened.verify(error));
     ezfa3fs::live::SpaceReport compacted_space;
     require(reopened.inspectSpace(compacted_space,error));
-    require(compacted_space.active_blocks==5);
+    require(compacted_space.active_blocks==3);
     require(compacted_space.reclaimable_blocks==0);
-    require(compacted_space.largest_erased_extent==505);
-    require(compacted_space.largest_post_gc_extent==505);
+    require(compacted_space.largest_erased_extent==507);
+    require(compacted_space.largest_post_gc_extent==507);
     require(!reopened.createDirectory("docs/readme.txt",error));
     require(reopened.removeFile("docs/readme.txt",error));
     require(reopened.removeFile("docs/large.bin",error));
