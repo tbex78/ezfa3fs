@@ -226,12 +226,8 @@ void MountSession::idleMaintenanceLoop() {
             }
         }
 
-        if(pass_in_progress)
-            std::cerr
-                <<"Writable cartridge idle; resuming background "
-                  "garbage collection.\n";
-
         const bool fresh_pass=!pass_in_progress;
+        bool announce_resume=pass_in_progress;
         bool first_step=fresh_pass;
 
         for(;;) {
@@ -294,6 +290,13 @@ void MountSession::idleMaintenanceLoop() {
                 }
 
                 if(!interrupted_before_step) {
+                    if(announce_resume) {
+                        std::cerr
+                            <<"Writable cartridge idle; resuming background "
+                              "garbage collection.\n";
+                        announce_resume=false;
+                    }
+
                     maintenance_ok=idle_maintenance_(
                         first_step,
                         resynchronize_next,
@@ -475,6 +478,13 @@ bool MountSession::commitFile(const std::string& path,std::string& error) {
 
 bool MountSession::finishCommit(bool committed,std::string& error) {
     refreshStatfsSnapshot();
+
+    // A cartridge commit can outlive the idle-maintenance delay. Start the
+    // quiet interval when the operation actually finishes, and invalidate any
+    // GC pass that was waiting behind it with an older manifest view.
+    noteActivity(
+        IdleMaintenanceImpact::reschedule,
+        false);
 
     if (committed) return true;
     commit_failed_ = true;

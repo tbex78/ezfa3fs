@@ -5,7 +5,7 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.53.1**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
+Application version: **0.53.2**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
 
 The FUSE/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
@@ -252,7 +252,9 @@ Mounted background garbage collection ignores metadata-only macOS traffic such
 as `getattr`, xattr, and `statfs`. It scans cooperatively so cartridge-facing
 requests can interrupt between inspected blocks, then reclaims all stale blocks
 found by the pass in one erase batch. This amortizes the writer restart and
-readback transition across the complete batch.
+readback transition across the complete batch. The idle interval starts after a
+foreground cartridge commit finishes; GC never resumes merely because a long
+file program or verification operation exceeded the idle timeout.
 
 ## Format references
 
