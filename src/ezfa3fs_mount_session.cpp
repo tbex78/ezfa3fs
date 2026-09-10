@@ -64,7 +64,7 @@ void MountSession::refreshStatfsSnapshot() {
 }
 
 void MountSession::noteActivity(
-    bool maintenance_relevant,
+    IdleMaintenanceImpact maintenance_impact,
     bool deferred_commit_relevant) {
 
     const auto now=std::chrono::steady_clock::now();
@@ -75,9 +75,9 @@ void MountSession::noteActivity(
         last_foreground_activity_=now;
         ++activity_generation_;
 
-        // Every foreground request can interrupt an active maintenance step,
-        // but only mutations restart the full maintenance-idle interval.
-        if(maintenance_relevant) {
+        // Cartridge-facing requests interrupt an active maintenance pass.
+        // Only mutations invalidate its scan and restart the full idle window.
+        if(maintenance_impact==IdleMaintenanceImpact::reschedule) {
             last_activity_=now;
             ++maintenance_request_generation_;
         }
@@ -276,8 +276,9 @@ void MountSession::idleMaintenanceLoop() {
             bool maintenance_changed_before_step=false;
 
             {
-                // The normal FUSE callbacks use this same mutex. Only one GC
-                // block is inspected/reclaimed while it is held.
+                // Cartridge-facing FUSE callbacks use this same mutex. A scan
+                // step inspects one block; the completed pass reclaims its
+                // accumulated stale blocks in one batch while it is held.
                 std::unique_lock<std::mutex> session_lock(mutex_);
 
                 {

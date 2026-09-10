@@ -409,6 +409,57 @@ void verifyAutomaticGarbageCollection() {
     require(filesystem.verify(error));
 }
 
+void verifyCooperativeGarbageCollectionBatching() {
+    ezfa3fs::live::NorFlash flash;
+    std::string error;
+    require(ezfa3fs::live::Filesystem::format(flash,error));
+    CountingDevice device(flash);
+    ezfa3fs::live::Filesystem filesystem(device);
+    require(ezfa3fs::live::Filesystem::open(device,filesystem,error));
+    require(filesystem.putFile("replaceable",blockData(3,0x11),1,error));
+    require(filesystem.putFile("replaceable",blockData(3,0x22),2,error));
+
+    const auto erase_batches=device.erase_batch_count;
+    ezfa3fs::live::GarbageCollectionState state;
+    bool complete=false;
+
+    // Accumulate the first stale extent, then simulate a mutation while the
+    // cooperative scan is in progress. Resynchronization must discard those
+    // decisions, rescan from the beginning, and include both stale extents in
+    // the one final batch.
+    for(std::size_t steps=0;steps<10;++steps)
+        require(filesystem.collectGarbageStep(
+            state,
+            false,
+            complete,
+            error));
+
+    require(!complete);
+    require(filesystem.putFile("replaceable",blockData(3,0x33),3,error));
+    require(filesystem.collectGarbageStep(
+        state,
+        true,
+        complete,
+        error));
+
+    for(std::size_t steps=0;
+        !complete&&steps<=ezfa3fs::live::NorFlash::block_count*2;
+        ++steps) {
+
+        require(filesystem.collectGarbageStep(
+            state,
+            false,
+            complete,
+            error));
+    }
+
+    require(complete);
+    require(state.reclaimed_blocks==6);
+    require(state.last_reclaimed_blocks==
+            std::vector<std::size_t>{2,3,4,5,6,7});
+    require(device.erase_batch_count==erase_batches+1);
+}
+
 void verifyAutomaticCompaction() {
     ezfa3fs::live::NorFlash flash;std::string error;
     require(ezfa3fs::live::Filesystem::format(flash,error));
@@ -453,6 +504,7 @@ int main()
     verifyBatchProgramming();
     verifyFailedBatchIsNotPublished();
     verifyAutomaticGarbageCollection();
+    verifyCooperativeGarbageCollectionBatching();
     verifyAutomaticCompaction();
 
     ezfa3fs::live::NorFlash flash;std::string error;

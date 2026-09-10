@@ -21,6 +21,11 @@ enum class FsyncPolicy {
     deferred
 };
 
+enum class IdleMaintenanceImpact {
+    interrupt,
+    reschedule
+};
+
 class MountSession final {
 public:
     using IdleMaintenance=
@@ -44,22 +49,39 @@ public:
         return metadata_mutex_;
     }
 
-    std::mutex& metadataActivityMutex() {
-        noteActivity(false,false);
+    // Metadata-only activity uses independent in-memory state and must not
+    // interrupt physical cartridge maintenance.
+    std::mutex& metadataActivityMutex() noexcept {
         return metadata_mutex_;
     }
 
     // Signals meaningful filesystem activity before waiting for the main
-    // session mutex. This lets a queued FUSE request stop idle maintenance
-    // after the current single-block step.
+    // session mutex. This lets a queued cartridge-facing request stop the GC
+    // scan after its current block and before the maximal erase batch begins.
     std::mutex& activityMutex(bool maintenance_relevant = true) {
-        noteActivity(maintenance_relevant,true);
+        noteActivity(
+            maintenance_relevant
+                ? IdleMaintenanceImpact::reschedule
+                : IdleMaintenanceImpact::interrupt,
+            true);
         return mutex_;
     }
 
     void noteActivity(
+        IdleMaintenanceImpact maintenance_impact,
+        bool deferred_commit_relevant);
+
+    // Source-compatible adapter for callers using the former boolean policy.
+    void noteActivity(
         bool maintenance_relevant = true,
-        bool deferred_commit_relevant = true);
+        bool deferred_commit_relevant = true) {
+
+        noteActivity(
+            maintenance_relevant
+                ? IdleMaintenanceImpact::reschedule
+                : IdleMaintenanceImpact::interrupt,
+            deferred_commit_relevant);
+    }
 
     struct StatfsSnapshot final {
         std::uint64_t capacity_bytes = 0;

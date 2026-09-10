@@ -187,7 +187,10 @@ public:
         }
 
         if(scope==ActivityLockScope::none) {
-            session().noteActivity(maintenance_relevant,false);
+            if(maintenance_relevant)
+                session().noteActivity(
+                    IdleMaintenanceImpact::reschedule,
+                    false);
         } else {
             auto& mutex=
                 scope==ActivityLockScope::metadata

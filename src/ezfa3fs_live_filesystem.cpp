@@ -808,12 +808,6 @@ bool Filesystem::collectGarbageStep(
     bool& complete,
     std::string& error) {
 
-    // Background FUSE maintenance must remain interruptible. A foreground
-    // request signals activity before waiting for the session mutex, so limit
-    // each destructive idle-GC step to one logical block. Synchronous garbage
-    // collection retains its larger batch erase path.
-    constexpr std::size_t erase_batch_size=1;
-
     const auto first_data_block=firstDataBlock();
     const auto end_block=dataEndBlock();
 
@@ -832,18 +826,17 @@ bool Filesystem::collectGarbageStep(
     if(resynchronize_metadata) {
         state.metadata_synchronized=false;
 
-        // The manifest may have changed while GC was paused. Do not retain a
-        // stale erase decision across that mutation. Rewind to the first
-        // queued block and inspect those candidates again.
-        if(!state.pending_blocks.empty()) {
-            state.next_block=std::min(
-                state.next_block,
-                state.pending_blocks.front());
-            state.pending_blocks.clear();
-        }
+        // The manifest may have changed while GC was paused. Previously live
+        // blocks anywhere behind the cursor may now be garbage, and queued
+        // candidates may have become live. Discard every stale decision and
+        // rescan the complete data range against the new manifest.
+        state.next_block=first_data_block;
+        state.pending_blocks.clear();
     }
 
-    // Scan at most one block per cooperative maintenance step.
+    // Scan at most one block per cooperative maintenance step. Cartridge-facing
+    // requests can therefore interrupt the scan promptly, while metadata-only
+    // FUSE traffic continues independently without resetting this pass.
     if(state.next_block<end_block) {
         const auto block=state.next_block++;
 
@@ -869,14 +862,15 @@ bool Filesystem::collectGarbageStep(
                 state.pending_blocks.push_back(block);
             }
         }
+
+        // Always return after inspection, including the final block. This gives
+        // the mount scheduler one last opportunity to observe a waiting
+        // cartridge request before the accumulated erase batch begins.
+        error.clear();
+        return true;
     }
 
-    const bool end_of_scan=state.next_block>=end_block;
-    const bool erase_ready=
-        state.pending_blocks.size()>=erase_batch_size ||
-        (end_of_scan&&!state.pending_blocks.empty());
-
-    if(erase_ready) {
+    if(!state.pending_blocks.empty()) {
         // Before the first destructive batch -- and again after any foreground
         // mutation -- publish an identical current manifest generation. Both
         // durable generations then agree that these stale blocks are garbage.
@@ -899,6 +893,9 @@ bool Filesystem::collectGarbageStep(
             return false;
         }
 
+        // Reclaim the complete pass in one maximal batch. The mount keeps
+        // metadata-only operations independent from this cartridge transaction,
+        // avoiding one writer restart and readback transition per stale block.
         const auto batch=state.pending_blocks;
 
         for(const auto block:batch)
@@ -920,9 +917,7 @@ bool Filesystem::collectGarbageStep(
         state.pending_blocks.clear();
     }
 
-    complete=
-        state.next_block>=end_block &&
-        state.pending_blocks.empty();
+    complete=true;
 
     error.clear();
     return true;
