@@ -185,6 +185,7 @@ void verifyEmptyDirectBootLayout() {
     require(filesystem.activeSuperblock()==
             ezfa3fs::live::NorFlash::block_count-2);
     require(filesystem.isDirectBoot()&&filesystem.entries().empty());
+    require(filesystem.freeBlocks()==ezfa3fs::live::NorFlash::block_count-3);
     require(!filesystem.canCreateFile(".DS_Store",error));
     require(error.find("root-level .gba")!=std::string::npos);
     const std::vector<std::uint8_t> rom{0x18,0x00,0x00,0xEA,0x44};
@@ -192,7 +193,15 @@ void verifyEmptyDirectBootLayout() {
     std::vector<std::uint8_t> bytes(rom.size());
     require(flash.read(0,bytes.data(),bytes.size(),error)&&bytes==rom);
     require(filesystem.entries().size()==1&&filesystem.entries().front().first_block==0);
+    require(filesystem.freeBlocks()==ezfa3fs::live::NorFlash::block_count-3);
     require(filesystem.putFile("second.gba",rom,1235,error));
+    const auto second=std::find_if(
+        filesystem.entries().begin(),
+        filesystem.entries().end(),
+        [](const ezfa3fs::live::Entry& entry) {
+            return entry.name=="second.gba";
+        });
+    require(second!=filesystem.entries().end()&&second->first_block==1);
     require(!filesystem.putFile("first.GBA",rom,1236,error));
     require(error.find("immutable")!=std::string::npos);
 
@@ -219,6 +228,7 @@ void verifyDirectBootDeleteInvalidatesOnlyFirstBlock() {
     const auto old_rom=blockData(3,0x00);
     require(filesystem.putFile("old.gba",old_rom,1234,error));
     require(filesystem.entries().front().block_count==3);
+    require(filesystem.freeBlocks()==ezfa3fs::live::NorFlash::block_count-5);
     const auto prepared_before_delete=device.prepare_erase_count;
     const auto block0_erases=std::count(device.erased_blocks.begin(),
                                         device.erased_blocks.end(),0);

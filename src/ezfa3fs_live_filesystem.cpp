@@ -246,7 +246,13 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
         if(block==1&&found)break;
     }
     if(!found){error="no valid EZFA3FS superblock found";return false;}
-    result.entries_=std::move(entries);result.generation_=newest;result.active_superblock_=chosen;result.layout_=chosen_layout;result.next_free_block_=result.firstDataBlock();result.unavailable_blocks_.fill(false);
+    result.entries_=std::move(entries);result.generation_=newest;result.active_superblock_=chosen;result.layout_=chosen_layout;
+    // Older empty direct-boot formats reserved 256 blocks before the ROM size
+    // was known. Once a ROM exists, its immutable extent is the authoritative
+    // partition boundary and any oversized reservation can be released safely.
+    if(const auto* rom=result.directBootRom();rom&&rom->block_count>0)
+        result.boot_slot_blocks_=rom->block_count;
+    result.next_free_block_=result.firstDataBlock();result.unavailable_blocks_.fill(false);
     for(const auto& entry:result.entries_)result.next_free_block_=std::max(result.next_free_block_,static_cast<std::size_t>(entry.first_block+entry.block_count));
     error.clear();return true;
 }
@@ -479,40 +485,44 @@ bool Filesystem::programPreparedExtent(
     next_free_block_=first_block+blocks;error.clear();return true;
 }
 
-bool Filesystem::ensureDirectBootSlotCapacity(std::size_t block_count,
-                                              std::string& error) {
-    if(block_count<=boot_slot_blocks_){error.clear();return true;}
-    if(block_count>dataEndBlock()) {
+bool Filesystem::resizeDirectBootSlot(std::size_t block_count,
+                                      std::string& error) {
+    if(block_count==0||block_count>dataEndBlock()) {
         error="direct-boot ROM requires "+std::to_string(block_count)+
               " blocks, but only "+std::to_string(dataEndBlock())+
               " blocks are available before metadata";return false;
     }
-    for(std::size_t block=boot_slot_blocks_;block<block_count;++block) {
-        const auto occupied=std::find_if(entries_.begin(),entries_.end(),
-            [block](const Entry& entry){
-                return !entry.directory&&block>=entry.first_block&&
-                    block<static_cast<std::size_t>(entry.first_block)+entry.block_count;
-            });
-        if(occupied!=entries_.end()) {
-            error="direct-boot ROM requires "+std::to_string(block_count)+
-                  " blocks, but its reserved slot has "+
-                  std::to_string(boot_slot_blocks_)+" blocks and cannot grow: block "+
-                  std::to_string(block)+" is used by "+occupied->name;return false;
+
+    if(block_count>boot_slot_blocks_) {
+        for(std::size_t block=boot_slot_blocks_;block<block_count;++block) {
+            const auto occupied=std::find_if(entries_.begin(),entries_.end(),
+                [block](const Entry& entry){
+                    return !entry.directory&&block>=entry.first_block&&
+                        block<static_cast<std::size_t>(entry.first_block)+entry.block_count;
+                });
+            if(occupied!=entries_.end()) {
+                error="direct-boot ROM requires "+std::to_string(block_count)+
+                      " blocks, but its reserved slot has "+
+                      std::to_string(boot_slot_blocks_)+" blocks and cannot grow: block "+
+                      std::to_string(block)+" is used by "+occupied->name;return false;
+            }
+        }
+
+        std::vector<std::uint8_t> bytes(NorFlash::block_size);
+        for(std::size_t block=boot_slot_blocks_;block<block_count;++block) {
+            if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
+                error="could not inspect direct-boot slot expansion block "+
+                      std::to_string(block)+": "+error;return false;
+            }
+            const bool blank=std::all_of(bytes.begin(),bytes.end(),
+                [](std::uint8_t byte){return byte==0xFF;});
+            if(!blank&&(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error))) {
+                error="could not erase direct-boot slot expansion block "+
+                      std::to_string(block)+": "+error;return false;
+            }
         }
     }
-    std::vector<std::uint8_t> bytes(NorFlash::block_size);
-    for(std::size_t block=boot_slot_blocks_;block<block_count;++block) {
-        if(!flash_.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error)) {
-            error="could not inspect direct-boot slot expansion block "+
-                  std::to_string(block)+": "+error;return false;
-        }
-        const bool blank=std::all_of(bytes.begin(),bytes.end(),
-            [](std::uint8_t byte){return byte==0xFF;});
-        if(!blank&&(!flash_.prepareForErase(error)||!flash_.eraseBlock(block,error))) {
-            error="could not erase direct-boot slot expansion block "+
-                  std::to_string(block)+": "+error;return false;
-        }
-    }
+
     boot_slot_blocks_=block_count;
     next_free_block_=std::max(next_free_block_,boot_slot_blocks_);
     error.clear();return true;
@@ -570,25 +580,36 @@ bool Filesystem::putFile(const std::string& path,const std::vector<std::uint8_t>
                 error="direct-boot EZFA3FS requires its first file to be one root-level .gba ROM";return false;
             }
             if(bytes.empty()) {error="direct-boot EZFA3FS cannot commit an empty boot ROM";return false;}
-            if(!ensureDirectBootSlotCapacity(blocks,error))return false;
+            const auto previous_entries=entries_;
+            const auto previous_boot_slot_blocks=boot_slot_blocks_;
+            const auto previous_next_free_block=next_free_block_;
+            const auto restore_layout=[&] {
+                entries_=previous_entries;
+                boot_slot_blocks_=previous_boot_slot_blocks;
+                next_free_block_=previous_next_free_block;
+            };
+            if(!resizeDirectBootSlot(blocks,error))return false;
             // Removing a boot ROM invalidates only block zero. Its remaining
             // bytes are deliberately reclaimed lazily, so identify every
             // stale block that the replacement will overwrite. Cartridge
             // devices erase and program this extent in one writer session;
             // the in-memory device uses the same operation contract.
             std::vector<std::size_t> stale_blocks;
-            if(!findStaleDirectBootRomBlocks(blocks,stale_blocks,error))return false;
+            if(!findStaleDirectBootRomBlocks(blocks,stale_blocks,error)) {
+                restore_layout();return false;
+            }
             std::vector<std::uint8_t> extent(blocks*NorFlash::block_size,0xFF);
             std::copy(bytes.begin(),bytes.end(),extent.begin());std::size_t completed=0;
             if(!flash_.replaceBlocks(0,extent.data(),blocks,stale_blocks,
                                      completed,error)||
                completed!=blocks) {
-                if(error.empty())error="direct-boot ROM programming was incomplete";return false;
+                if(error.empty())error="direct-boot ROM programming was incomplete";
+                restore_layout();return false;
             }
             entries_.insert(entries_.begin(),{path,bytes.size(),modified_time,Crc32::calculate(bytes.data(),bytes.size()),0,static_cast<std::uint32_t>(blocks),false});
             next_free_block_=blocks;
             if(commit(error))return true;
-            entries_.clear();return false;
+            restore_layout();return false;
         }
         if(const auto* existing=find(path);existing&&isDirectBootRom(*existing)) {
             error="the direct-boot ROM at cartridge offset 0 is immutable";return false;

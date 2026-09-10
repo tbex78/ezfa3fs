@@ -138,7 +138,7 @@ public:
     explicit Filesystem(BlockDevice& flash) : flash_(flash) {}
     static bool format(BlockDevice& flash,std::string& error);
     static bool formatDirectBootEmpty(BlockDevice& flash,std::string& error,
-                                      std::size_t boot_slot_blocks=256);
+                                      std::size_t boot_slot_blocks=1);
     static bool formatDirectBoot(BlockDevice& flash,const std::string& rom_name,
                                  const std::vector<std::uint8_t>& rom,
                                  std::uint64_t modified_time,std::string& error);
@@ -208,8 +208,7 @@ private:
     bool putFileViews(const std::vector<FileWriteView>& files,
                       std::string& error,
                       const MaintenanceObserver& maintenance);
-    bool ensureDirectBootSlotCapacity(std::size_t block_count,
-                                      std::string& error);
+    bool resizeDirectBootSlot(std::size_t block_count,std::string& error);
     bool findStaleDirectBootRomBlocks(std::size_t block_count,
                                       std::vector<std::size_t>& stale_blocks,
                                       std::string& error);
