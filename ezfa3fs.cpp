@@ -564,6 +564,7 @@ void usage() {
     std::cout<<R"(Usage:
   ezfa3fs format IMAGE.ezfa3fs
   ezfa3fs format --direct-boot IMAGE.ezfa3fs ROM.gba
+  ezfa3fs info IMAGE.ezfa3fs
   ezfa3fs list IMAGE.ezfa3fs
   ezfa3fs verify IMAGE.ezfa3fs
   ezfa3fs mkdir IMAGE.ezfa3fs DIRECTORY
@@ -581,6 +582,7 @@ void usage() {
   ezfa3fs card-format [--direct-boot]
   ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
   ezfa3fs card-put-many SOURCE_FILE... [--skip-snapshot-restore]
+  ezfa3fs card-info
   ezfa3fs card-gc
   ezfa3fs card-compact
   ezfa3fs card-space
@@ -641,6 +643,26 @@ int liveFormatDirectBootEmpty(const fs::path& path) {
 void printLiveEntries(const ezfa3fs::live::Filesystem& filesystem) { std::cout<<"EZFA3FS generation "<<filesystem.generation()<<"\n";
     for(const auto& entry:filesystem.entries())std::cout<<(entry.directory?"directory ":"file      ")<<std::setw(10)<<entry.size<<"  "<<entry.name<<'\n';
     std::cout<<"Free blocks: "<<filesystem.freeBlocks()<<'\n'; }
+void printLiveInfo(const ezfa3fs::live::Filesystem& filesystem) {
+    const auto identity=filesystem.formatIdentity();
+    std::cout
+        <<"Layout:                "
+        <<(identity.layout==ezfa3fs::live::Layout::direct_boot?
+           "direct-boot":"standard")<<'\n'
+        <<"Format version:        "<<identity.version<<'\n'
+        <<"Generation:            "<<filesystem.generation()<<'\n'
+        <<"Packed storage:        "
+        <<(identity.packed_storage?"enabled":"disabled")<<'\n'
+        <<"Entries:               "<<filesystem.entries().size()<<'\n'
+        <<"Active metadata block: "<<filesystem.activeSuperblock()<<'\n';
+}
+int liveInfo(const fs::path& path) {
+    ezfa3fs::live::NorFlash flash;
+    ezfa3fs::live::Filesystem filesystem(flash);
+    if(!loadLive(path,flash,filesystem))return 1;
+    printLiveInfo(filesystem);
+    return 0;
+}
 int liveList(const fs::path& path) { ezfa3fs::live::NorFlash flash;ezfa3fs::live::Filesystem filesystem(flash);if(!loadLive(path,flash,filesystem))return 1;printLiveEntries(filesystem);return 0; }
 int liveVerify(const fs::path& path) { ezfa3fs::live::NorFlash flash;ezfa3fs::live::Filesystem filesystem(flash);if(!loadLive(path,flash,filesystem))return 1;std::string error;
     if(!filesystem.verify(error)){std::cerr<<error<<'\n';return 1;}std::cout<<"Verified EZFA3FS generation "<<filesystem.generation()<<" with "<<filesystem.entries().size()<<" entries.\n";return 0; }
@@ -1001,6 +1023,31 @@ int liveCardSpace() {
     if(!inspected||!closed){if(error.empty())error=close_error;std::cerr<<error<<'\n';return 1;}
     printLiveSpace(filesystem,report);return 0;
 }
+int liveCardInfo() {
+    ezfa3fs::CartridgeStorage storage;
+    std::string error;
+    if(!storage.open(error)) {
+        std::cerr<<error<<'\n';
+        return 1;
+    }
+
+    ezfa3fs::CartridgeLiveDevice device(storage);
+    ezfa3fs::live::Filesystem filesystem(device);
+    const bool opened=ezfa3fs::live::Filesystem::open(
+        device,filesystem,error);
+    std::string close_error;
+    const bool closed=storage.close(close_error);
+    if(!opened||!closed) {
+        if(error.empty())error=close_error;
+        else if(!closed&&!close_error.empty())
+            error+="; cartridge close failed: "+close_error;
+        std::cerr<<error<<'\n';
+        return 1;
+    }
+
+    printLiveInfo(filesystem);
+    return 0;
+}
 int liveCardGarbageCollect() {
     std::cout<<"WARNING: this will erase unreferenced EZFA3FS data blocks on the cartridge.\n"
              <<"Unmount the cartridge before continuing.\n";
@@ -1206,6 +1253,7 @@ int main(int argc,char** argv) {
     if(argc==3&&std::string(argv[1])=="format")return liveFormat(argv[2]);
     if(argc==4&&std::string(argv[1])=="format"&&std::string(argv[2])=="--direct-boot")return liveFormatDirectBootEmpty(argv[3]);
     if(argc==5&&std::string(argv[1])=="format"&&std::string(argv[2])=="--direct-boot")return liveFormatDirectBoot(argv[3],argv[4]);
+    if(argc==3&&std::string(argv[1])=="info")return liveInfo(argv[2]);
     if(argc==3&&std::string(argv[1])=="list")return liveList(argv[2]);
     if(argc==3&&std::string(argv[1])=="verify")return liveVerify(argv[2]);
     if(argc>=4&&std::string(argv[1])=="mount"){
@@ -1265,6 +1313,7 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="card-gc")return liveCardGarbageCollect();
     if(argc==2&&std::string(argv[1])=="card-compact")return liveCardCompact();
     if(argc==2&&std::string(argv[1])=="card-space")return liveCardSpace();
+    if(argc==2&&std::string(argv[1])=="card-info")return liveCardInfo();
 
     usage();return 1;
 }

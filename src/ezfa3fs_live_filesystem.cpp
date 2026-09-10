@@ -431,6 +431,21 @@ std::size_t Filesystem::freeBlocks() const noexcept {
     return count;
 }
 
+FormatIdentity Filesystem::formatIdentity() const noexcept {
+    if(layout_==Layout::direct_boot)
+        return {
+            layout_,
+            packed_storage_enabled_?direct_boot_format_version:
+                                    legacy_direct_boot_format_version,
+            packed_storage_enabled_
+        };
+    return {
+        layout_,
+        packed_storage_enabled_?format_version:legacy_format_version,
+        packed_storage_enabled_
+    };
+}
+
 bool Filesystem::inspectSpace(SpaceReport& report,std::string& error,
                               ScanProgress progress) const {
     report={};const auto first_data_block=firstDataBlock();

@@ -5,7 +5,7 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.54.1**. Newly formatted filesystems use experimental
+Application version: **0.55.0**. Newly formatted filesystems use experimental
 format **0.3.0** in the standard layout and **0.4.0** in the slotted
 direct-boot layout. Existing **0.1.0** and **0.2.0** filesystems remain
 readable and writable with their dedicated-extent allocation rules; opening
@@ -34,6 +34,7 @@ The binary is `build/cmake/ezfa3fs`.
 ./build/cmake/ezfa3fs mkdir cartridge.ezfa3fs documents
 ./build/cmake/ezfa3fs put cartridge.ezfa3fs test.txt documents/test.txt
 ./build/cmake/ezfa3fs put-many cartridge.ezfa3fs README.md LICENSE
+./build/cmake/ezfa3fs info cartridge.ezfa3fs
 ./build/cmake/ezfa3fs list cartridge.ezfa3fs
 ./build/cmake/ezfa3fs verify cartridge.ezfa3fs
 ./build/cmake/ezfa3fs card-write cartridge.ezfa3fs
@@ -139,6 +140,7 @@ Image commands:
 ```text
 ezfa3fs format IMAGE.ezfa3fs
 ezfa3fs format --direct-boot IMAGE.ezfa3fs [ROM.gba]
+ezfa3fs info IMAGE.ezfa3fs
 ezfa3fs list IMAGE.ezfa3fs
 ezfa3fs verify IMAGE.ezfa3fs
 ezfa3fs mkdir IMAGE.ezfa3fs DIRECTORY
@@ -157,6 +159,17 @@ When `DESTINATION` is omitted from `put`, the source path is also the destinatio
 `put-many` places every source at the image root using its basename and rejects
 duplicate destination basenames.
 
+`info` reports an image's standard or direct-boot layout, exact on-media format
+revision, active generation, packed-storage capability, entry count, and active
+metadata block. `card-info` reports the same fields directly from a connected
+cartridge without mounting it, scanning file contents, or changing cartridge
+data:
+
+```sh
+./build/cmake/ezfa3fs info cartridge.ezfa3fs
+./build/cmake/ezfa3fs card-info
+```
+
 Cartridge commands:
 
 ```text
@@ -166,6 +179,7 @@ ezfa3fs card-pull IMAGE.ezfa3fs
 ezfa3fs card-format [--direct-boot]
 ezfa3fs card-write IMAGE.ezfa3fs [--skip-verification]
 ezfa3fs card-put-many SOURCE_FILE... [--skip-snapshot-restore]
+ezfa3fs card-info
 ezfa3fs card-gc
 ezfa3fs card-compact
 ezfa3fs card-space

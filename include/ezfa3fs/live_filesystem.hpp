@@ -21,6 +21,8 @@ struct PackedRecordLocation;
 
 inline constexpr std::string_view format_version = "0.3.0";
 inline constexpr std::string_view direct_boot_format_version = "0.4.0";
+inline constexpr std::string_view legacy_format_version = "0.1.0";
+inline constexpr std::string_view legacy_direct_boot_format_version = "0.2.0";
 inline constexpr std::array<std::uint8_t,8> format_magic{
     {'E','Z','F','A','3','F','S',0}};
 inline constexpr std::array<std::uint8_t,8> direct_boot_format_magic{
@@ -142,6 +144,12 @@ enum class Layout {
     direct_boot
 };
 
+struct FormatIdentity final {
+    Layout layout = Layout::transactional;
+    std::string_view version;
+    bool packed_storage = false;
+};
+
 class Filesystem final {
 public:
     using ScanProgress = std::function<void(std::size_t,std::size_t)>;
@@ -193,6 +201,7 @@ public:
     std::size_t activeSuperblock() const noexcept { return active_superblock_; }
     std::size_t freeBlocks() const noexcept;
     Layout layout() const noexcept { return layout_; }
+    FormatIdentity formatIdentity() const noexcept;
     bool isDirectBoot() const noexcept { return layout_==Layout::direct_boot; }
     bool awaitsDirectBootRom() const noexcept;
     bool packedStorageEnabled() const noexcept {

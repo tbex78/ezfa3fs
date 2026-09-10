@@ -101,6 +101,13 @@ void verifyFormatIdentity() {
     require(formatted.read(ezfa3fs::live::NorFlash::block_size,block.data(),block.size(),error));
     require(std::equal(current_magic.begin(),current_magic.end(),block.begin()));
     require(block[8]==0&&block[9]==0&&block[10]==3&&block[11]==0);
+    ezfa3fs::live::Filesystem filesystem(formatted);
+    require(ezfa3fs::live::Filesystem::open(
+        formatted,filesystem,error));
+    const auto identity=filesystem.formatIdentity();
+    require(identity.layout==ezfa3fs::live::Layout::transactional&&
+            identity.version==ezfa3fs::live::format_version&&
+            identity.packed_storage);
 }
 
 void verifyLegacyFormatRemainsDedicated() {
@@ -114,6 +121,10 @@ void verifyLegacyFormatRemainsDedicated() {
     ezfa3fs::live::Filesystem filesystem(flash);
     require(ezfa3fs::live::Filesystem::open(flash,filesystem,error));
     require(!filesystem.packedStorageEnabled());
+    const auto identity=filesystem.formatIdentity();
+    require(identity.layout==ezfa3fs::live::Layout::transactional&&
+            identity.version==ezfa3fs::live::legacy_format_version&&
+            !identity.packed_storage);
     require(filesystem.putFile("legacy.txt",{'o','k'},1,error));
     require(filesystem.entries().front().storage==
             ezfa3fs::live::StorageType::dedicated);
@@ -201,6 +212,10 @@ void verifyDirectBootLayout() {
             superblock[10]==4&&superblock[11]==0);
     ezfa3fs::live::Filesystem filesystem(flash);
     require(ezfa3fs::live::Filesystem::open(flash,filesystem,error));
+    const auto identity=filesystem.formatIdentity();
+    require(identity.layout==ezfa3fs::live::Layout::direct_boot&&
+            identity.version==ezfa3fs::live::direct_boot_format_version&&
+            identity.packed_storage);
     require(filesystem.isDirectBoot()&&filesystem.entries().size()==1&&
             filesystem.entries().front().first_block==0);
     require(filesystem.readFile("direct.gba",bytes,error)&&bytes==rom);

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ezfa3fs VERSION 0.54.1 LANGUAGES CXX)
+project(ezfa3fs VERSION 0.55.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -50,5 +50,26 @@ if(BUILD_TESTING)
     ezfa3fs_add_test(ezfa3fs_mount_session_test tests/ezfa3fs_mount_session_test.cpp)
     ezfa3fs_add_test(ezfa3fs_save_bank_restore_policy_test tests/ezfa3fs_save_bank_restore_policy_test.cpp)
     add_test(NAME ezfa3fs_cli_version COMMAND ezfa3fs --version)
-    set_tests_properties(ezfa3fs_cli_version PROPERTIES PASS_REGULAR_EXPRESSION "ezfa3fs 0.54.1")
+    set_tests_properties(ezfa3fs_cli_version PROPERTIES PASS_REGULAR_EXPRESSION "ezfa3fs 0.55.0")
+    set(EZFA3FS_CLI_INFO_IMAGE
+        "${CMAKE_CURRENT_BINARY_DIR}/ezfa3fs_cli_info_test.ezfa3fs")
+    add_test(
+        NAME ezfa3fs_cli_info_format
+        COMMAND ezfa3fs format "${EZFA3FS_CLI_INFO_IMAGE}")
+    set_tests_properties(
+        ezfa3fs_cli_info_format PROPERTIES
+        FIXTURES_SETUP ezfa3fs_cli_info_image)
+    add_test(
+        NAME ezfa3fs_cli_info
+        COMMAND ezfa3fs info "${EZFA3FS_CLI_INFO_IMAGE}")
+    set_tests_properties(
+        ezfa3fs_cli_info PROPERTIES
+        FIXTURES_REQUIRED ezfa3fs_cli_info_image
+        PASS_REGULAR_EXPRESSION "Format version:[ ]+0.3.0")
+    add_test(
+        NAME ezfa3fs_cli_info_cleanup
+        COMMAND ${CMAKE_COMMAND} -E rm -f "${EZFA3FS_CLI_INFO_IMAGE}")
+    set_tests_properties(
+        ezfa3fs_cli_info_cleanup PROPERTIES
+        FIXTURES_CLEANUP ezfa3fs_cli_info_image)
 endif()
