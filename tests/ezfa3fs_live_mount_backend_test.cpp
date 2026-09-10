@@ -1,6 +1,15 @@
 #include "ezfa3fs/live_mount_backend.hpp"
 #include <cstdlib>
-namespace { void require(bool value){if(!value)std::abort();} }
+#include <iostream>
+namespace {
+void requireAt(bool value,int line) {
+    if(!value) {
+        std::cerr<<"requirement failed at line "<<line<<'\n';
+        std::abort();
+    }
+}
+#define require(...) requireAt((__VA_ARGS__),__LINE__)
+}
 int main() {
     ezfa3fs::live::NorFlash flash;std::string error;
     require(ezfa3fs::live::Filesystem::format(flash,error));

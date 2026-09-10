@@ -90,6 +90,9 @@ bool PackedBlock::encode(
         }
 
         locations.push_back({record.id,static_cast<std::uint32_t>(offset)});
+        std::fill_n(
+            block.begin()+static_cast<std::ptrdiff_t>(offset),
+            record_header_size,0);
         put<std::uint32_t>(block.data(),offset,record.id);
         put<std::uint32_t>(
             block.data(),offset+4,

@@ -4,10 +4,17 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <iostream>
 #include <set>
 
 namespace {
-void require(bool condition) { if(!condition)std::abort(); }
+void requireAt(bool condition,int line) {
+    if(!condition) {
+        std::cerr<<"requirement failed at line "<<line<<'\n';
+        std::abort();
+    }
+}
+#define require(...) requireAt((__VA_ARGS__),__LINE__)
 
 class CountingDevice final : public ezfa3fs::live::BlockDevice {
 public:

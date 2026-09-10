@@ -1,7 +1,7 @@
 # EZFA3FS transactional format
 
 This document describes the 32 MiB EZFA3FS format implemented by application
-version **0.54.0**. Newly formatted standard filesystems use experimental
+version **0.54.1**. Newly formatted standard filesystems use experimental
 format **0.3.0**; newly formatted slotted direct-boot filesystems use
 experimental format **0.4.0**. The older **0.1.0** and **0.2.0** revisions
 remain readable and writable without implicit conversion.
