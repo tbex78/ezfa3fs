@@ -21,8 +21,6 @@ struct PackedRecordLocation;
 
 inline constexpr std::string_view format_version = "0.3.0";
 inline constexpr std::string_view direct_boot_format_version = "0.4.0";
-inline constexpr std::string_view legacy_format_version = "0.1.0";
-inline constexpr std::string_view legacy_direct_boot_format_version = "0.2.0";
 inline constexpr std::array<std::uint8_t,8> format_magic{
     {'E','Z','F','A','3','F','S',0}};
 inline constexpr std::array<std::uint8_t,8> direct_boot_format_magic{
@@ -204,9 +202,7 @@ public:
     FormatIdentity formatIdentity() const noexcept;
     bool isDirectBoot() const noexcept { return layout_==Layout::direct_boot; }
     bool awaitsDirectBootRom() const noexcept;
-    bool packedStorageEnabled() const noexcept {
-        return packed_storage_enabled_;
-    }
+    bool packedStorageEnabled() const noexcept { return true; }
 
 private:
     struct FileWriteView final {
@@ -265,7 +261,6 @@ private:
     std::size_t next_free_block_ = 2;
     Layout layout_ = Layout::transactional;
     std::size_t boot_slot_blocks_ = 0;
-    bool packed_storage_enabled_ = false;
     std::array<bool,NorFlash::block_count> unavailable_blocks_{};
 };
 

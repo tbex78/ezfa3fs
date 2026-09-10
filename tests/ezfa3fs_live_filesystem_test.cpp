@@ -110,28 +110,35 @@ void verifyFormatIdentity() {
             identity.packed_storage);
 }
 
-void verifyLegacyFormatRemainsDedicated() {
+void rewriteFormatMinor(ezfa3fs::live::NorFlash& flash,
+                        std::size_t block_index,std::uint16_t minor) {
+    std::string error;
+    std::vector<std::uint8_t> block(ezfa3fs::live::NorFlash::block_size);
+    require(flash.read(block_index*ezfa3fs::live::NorFlash::block_size,
+                       block.data(),block.size(),error));
+    putLittle(block,10,minor,2);
+    require(flash.eraseBlock(block_index,error));
+    require(flash.program(block_index*ezfa3fs::live::NorFlash::block_size,
+                          block.data(),block.size(),error));
+}
+
+void verifyLegacyFormatsAreRejected() {
     ezfa3fs::live::NorFlash flash;std::string error;
     require(ezfa3fs::live::Filesystem::format(flash,error));
-    const std::uint8_t legacy_minor=1;
-    require(flash.program(
-        ezfa3fs::live::NorFlash::block_size+10,
-        &legacy_minor,1,error));
-
+    rewriteFormatMinor(flash,1,1);
     ezfa3fs::live::Filesystem filesystem(flash);
-    require(ezfa3fs::live::Filesystem::open(flash,filesystem,error));
-    require(!filesystem.packedStorageEnabled());
-    const auto identity=filesystem.formatIdentity();
-    require(identity.layout==ezfa3fs::live::Layout::transactional&&
-            identity.version==ezfa3fs::live::legacy_format_version&&
-            !identity.packed_storage);
-    require(filesystem.putFile("legacy.txt",{'o','k'},1,error));
-    require(filesystem.entries().front().storage==
-            ezfa3fs::live::StorageType::dedicated);
+    require(!ezfa3fs::live::Filesystem::open(flash,filesystem,error));
+    require(error=="no valid EZFA3FS superblock found");
 
-    std::vector<std::uint8_t> superblock(ezfa3fs::live::NorFlash::block_size);
-    require(flash.read(0,superblock.data(),superblock.size(),error));
-    require(superblock[10]==1&&superblock[11]==0);
+    ezfa3fs::live::NorFlash direct_boot;
+    require(ezfa3fs::live::Filesystem::formatDirectBootEmpty(
+        direct_boot,error));
+    rewriteFormatMinor(direct_boot,
+                       ezfa3fs::live::NorFlash::block_count-2,2);
+    ezfa3fs::live::Filesystem direct_filesystem(direct_boot);
+    require(!ezfa3fs::live::Filesystem::open(
+        direct_boot,direct_filesystem,error));
+    require(error=="no valid EZFA3FS superblock found");
 }
 
 void verifyPackedBlockCodecRejectsCorruption() {
@@ -643,7 +650,7 @@ void verifyAutomaticCompaction() {
 int main()
 {
     verifyFormatIdentity();
-    verifyLegacyFormatRemainsDedicated();
+    verifyLegacyFormatsAreRejected();
     verifyPackedBlockCodecRejectsCorruption();
     verifyPhysicalEraseGeometry();
     verifyDirectBootLayout();

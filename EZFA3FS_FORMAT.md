@@ -1,10 +1,10 @@
 # EZFA3FS transactional format
 
 This document describes the 32 MiB EZFA3FS format implemented by application
-version **0.55.0**. Newly formatted standard filesystems use experimental
+version **0.56.0**. Newly formatted standard filesystems use experimental
 format **0.3.0**; newly formatted slotted direct-boot filesystems use
-experimental format **0.4.0**. The older **0.1.0** and **0.2.0** revisions
-remain readable and writable without implicit conversion.
+experimental format **0.4.0**. The older **0.1.0** and **0.2.0** revisions are
+not supported.
 
 EZFA3FS is an independent indexed filesystem for EZ-Flash Advance III NOR flash. It is not FAT, has no partition table, and does not use the original EZ3 menu or ROM patching. All multibyte integers are little-endian.
 
@@ -29,8 +29,7 @@ Standard layout:
 | 0 and 1 | Alternating metadata superblocks |
 | 2 through 511 | File data and erased free space |
 
-Its magic is `EZFA3FS\0`, major `0`, minor `3`. Minor `1` is the compatible
-legacy revision without packed storage.
+Its magic is `EZFA3FS\0`, major `0`, minor `3`.
 
 Direct-boot layout:
 
@@ -40,8 +39,7 @@ Direct-boot layout:
 | `boot_slot_blocks` through 509 | Other file data and free space |
 | 510 and 511 | Alternating metadata superblocks |
 
-Its magic is `EZFA3DB\0`, major `0`, minor `4`. Minor `2` is the compatible
-legacy revision without packed storage. An empty direct-boot format initially
+Its magic is `EZFA3DB\0`, major `0`, minor `4`. An empty direct-boot format initially
 reserves one provisional 64 KiB block. Installing the first ROM or a
 replacement resizes the slot to exactly the ROM's rounded-up logical block
 count. On open, the immutable ROM extent also normalizes oversized reservations
@@ -88,10 +86,6 @@ UTF-8 path:
 | `0x28` | 4 | Packed record identifier, or zero for a dedicated extent |
 | `0x2C` | 4 | Packed record header offset, or zero for a dedicated extent |
 | `0x30` | variable | UTF-8 path |
-
-Legacy revisions 0.1.0 and 0.2.0 use the first 32 bytes of this header and place
-the path at `0x20`; bit 1 and packed references are unavailable. A legacy
-filesystem continues using dedicated extents when modified.
 
 Directories have no data extent. Empty regular files also use no blocks.
 Dedicated extents must be in the layout's data region, large enough for the

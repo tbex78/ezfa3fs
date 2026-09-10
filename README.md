@@ -5,11 +5,10 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.55.0**. Newly formatted filesystems use experimental
+Application version: **0.56.0**. Newly formatted filesystems use experimental
 format **0.3.0** in the standard layout and **0.4.0** in the slotted
-direct-boot layout. Existing **0.1.0** and **0.2.0** filesystems remain
-readable and writable with their dedicated-extent allocation rules; opening
-them never silently converts their format.
+direct-boot layout. Older **0.1.0** and **0.2.0** filesystems are no longer
+supported and must be recreated in a current format before use.
 
 The FUSE/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 

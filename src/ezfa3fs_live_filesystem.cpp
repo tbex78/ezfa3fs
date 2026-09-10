@@ -15,31 +15,16 @@
 namespace ezfa3fs::live {
 namespace {
 constexpr std::uint16_t major=0;
-constexpr std::uint16_t legacy_minor=1;
-constexpr std::uint16_t legacy_direct_boot_minor=2;
 constexpr std::uint16_t packed_minor=3;
 constexpr std::uint16_t packed_direct_boot_minor=4;
 constexpr std::uint32_t commit_marker=0xC0FF17EDu;
 constexpr std::size_t superblock_header=32;
-constexpr std::size_t legacy_entry_size=32;
 constexpr std::size_t packed_entry_size=48;
 
-enum class FormatRevision { invalid,legacy,packed };
-
-FormatRevision standardRevision(std::uint16_t candidate_major,
-                                std::uint16_t candidate_minor) noexcept {
-    if(candidate_major!=major)return FormatRevision::invalid;
-    if(candidate_minor==legacy_minor)return FormatRevision::legacy;
-    if(candidate_minor==packed_minor)return FormatRevision::packed;
-    return FormatRevision::invalid;
-}
-
-FormatRevision directBootRevision(std::uint16_t candidate_major,
-                                  std::uint16_t candidate_minor) noexcept {
-    if(candidate_major!=major)return FormatRevision::invalid;
-    if(candidate_minor==legacy_direct_boot_minor)return FormatRevision::legacy;
-    if(candidate_minor==packed_direct_boot_minor)return FormatRevision::packed;
-    return FormatRevision::invalid;
+bool matchesRevision(std::uint16_t candidate_major,
+                     std::uint16_t candidate_minor,
+                     std::uint16_t expected_minor) noexcept {
+    return candidate_major==major&&candidate_minor==expected_minor;
 }
 
 template<typename T> void put(std::uint8_t* bytes,std::size_t offset,T value) {
@@ -206,7 +191,7 @@ bool NorFlash::eraseBlock(std::size_t block,std::string& error) {
 bool Filesystem::format(BlockDevice& flash,std::string& error) {
     for(std::size_t block=0;block<NorFlash::block_count;++block)
         if(!flash.eraseBlock(block,error))return false;
-    Filesystem filesystem(flash);filesystem.packed_storage_enabled_=true;
+    Filesystem filesystem(flash);
     return filesystem.commit(error);
 }
 
@@ -217,7 +202,6 @@ bool Filesystem::formatDirectBootEmpty(BlockDevice& flash,std::string& error,
         if(!flash.eraseBlock(block,error))return false;
     Filesystem filesystem(flash);filesystem.layout_=Layout::direct_boot;
     filesystem.boot_slot_blocks_=boot_slot_blocks;
-    filesystem.packed_storage_enabled_=true;
     return filesystem.commit(error);
 }
 
@@ -235,7 +219,6 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
     // the point of use instead of scanning the complete free tail on mount.
     (void)progress;
     bool found=false;std::uint64_t newest=0;std::size_t chosen=0;
-    bool chosen_packed=false;
     Layout chosen_layout=Layout::transactional;std::vector<Entry> entries;
     const std::array<std::pair<std::size_t,Layout>,4> candidates{{
         {0,Layout::transactional},{1,Layout::transactional},
@@ -245,23 +228,18 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
         if(!flash.read(block*NorFlash::block_size,bytes.data(),bytes.size(),error))return false;
         const auto candidate_major=get<std::uint16_t>(bytes.data(),8);
         const auto candidate_minor=get<std::uint16_t>(bytes.data(),10);
-        const auto standard_revision=
-            standardRevision(candidate_major,candidate_minor);
         const bool current_format=std::equal(format_magic.begin(),format_magic.end(),bytes.begin())&&
-            standard_revision!=FormatRevision::invalid;
-        const auto direct_revision=directBootRevision(candidate_major,candidate_minor);
+            matchesRevision(candidate_major,candidate_minor,packed_minor);
         const bool direct_format=std::equal(direct_boot_format_magic.begin(),direct_boot_format_magic.end(),bytes.begin())&&
-            direct_revision!=FormatRevision::invalid;
+            matchesRevision(candidate_major,candidate_minor,
+                            packed_direct_boot_minor);
         if((layout==Layout::transactional?!current_format:!direct_format)||get<std::uint32_t>(bytes.data(),28)!=commit_marker)continue;
         const auto length=get<std::uint32_t>(bytes.data(),20);
         if(length>NorFlash::block_size-superblock_header||
            Crc32::calculate(bytes.data()+superblock_header,length)!=get<std::uint32_t>(bytes.data(),24))continue;
         std::vector<Entry> parsed;std::set<std::string> names;
         const bool slotted_direct=layout==Layout::direct_boot;
-        const bool packed_format=layout==Layout::direct_boot?
-            direct_revision==FormatRevision::packed:
-            standard_revision==FormatRevision::packed;
-        const auto entry_size=packed_format?packed_entry_size:legacy_entry_size;
+        const auto entry_size=packed_entry_size;
         const auto slot_blocks=slotted_direct?get<std::uint32_t>(bytes.data()+superblock_header,0):0;
         std::size_t direct_boot_blocks=slotted_direct?slot_blocks:0;
         const auto count=get<std::uint32_t>(bytes.data()+superblock_header,slotted_direct?4:0);std::size_t offset=slotted_direct?8:4;bool valid= !slotted_direct||(slot_blocks>0&&slot_blocks<=NorFlash::block_count-2);
@@ -275,14 +253,12 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
             entry.storage=(base[2]&2)!=0?StorageType::packed:StorageType::dedicated;
             entry.size=get<std::uint64_t>(base,4);entry.modified_time=get<std::uint64_t>(base,12);
             entry.crc32=get<std::uint32_t>(base,20);entry.first_block=get<std::uint32_t>(base,24);entry.block_count=get<std::uint32_t>(base,28);
-            if(packed_format) {
-                entry.packed_generation=get<std::uint64_t>(base,32);
-                entry.packed_record_id=get<std::uint32_t>(base,40);
-                entry.packed_record_offset=get<std::uint32_t>(base,44);
-            }
+            entry.packed_generation=get<std::uint64_t>(base,32);
+            entry.packed_record_id=get<std::uint32_t>(base,40);
+            entry.packed_record_offset=get<std::uint32_t>(base,44);
             const bool packed_entry=entry.storage==StorageType::packed;
             if(!validPath(entry.name)||!names.insert(entry.name).second||
-               (base[2]&~3u)!=0||(!packed_format&&packed_entry)||
+               (base[2]&~3u)!=0||
                (!entry.directory&&!entry.block_count&&entry.size)||
                (entry.directory&&(entry.size||entry.block_count||entry.first_block||entry.crc32))||
                (entry.directory&&packed_entry)||
@@ -291,7 +267,7 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
                    entry.packed_generation==0||entry.packed_record_id==0||
                    entry.packed_record_offset<PackedBlock::header_size||
                    entry.packed_record_offset>=NorFlash::block_size))||
-               (!packed_entry&&packed_format&&
+               (!packed_entry&&
                    (entry.packed_generation||entry.packed_record_id||
                     entry.packed_record_offset))||
                (!entry.directory&&(entry.first_block<(layout==Layout::direct_boot?0:2)||
@@ -311,7 +287,7 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
         if(!valid||offset!=length)continue;
         const auto generation=get<std::uint64_t>(bytes.data(),12);
         if(!found||generation>newest){found=true;newest=generation;chosen=block;
-            chosen_layout=layout;chosen_packed=packed_format;
+            chosen_layout=layout;
             result.boot_slot_blocks_=slotted_direct?slot_blocks:direct_boot_blocks;
             entries=std::move(parsed);}
         // Ordinary EZFA3FS images retain their two metadata blocks at the
@@ -322,7 +298,6 @@ bool Filesystem::open(BlockDevice& flash,Filesystem& result,std::string& error,
     if(!found){error="no valid EZFA3FS superblock found";return false;}
     result.entries_=std::move(entries);result.generation_=newest;
     result.active_superblock_=chosen;result.layout_=chosen_layout;
-    result.packed_storage_enabled_=chosen_packed;
     // Older empty direct-boot formats reserved 256 blocks before the ROM size
     // was known. Once a ROM exists, its immutable extent is the authoritative
     // partition boundary and any oversized reservation can be released safely.
@@ -365,12 +340,11 @@ bool Filesystem::commit(std::string& error) {
     if(isDirectBoot())put<std::uint32_t>(manifest.data(),0,static_cast<std::uint32_t>(boot_slot_blocks_));
     put<std::uint32_t>(manifest.data(),isDirectBoot()?4:0,static_cast<std::uint32_t>(entries_.size()));
     std::set<std::string> names;
-    const auto entry_size=
-        packed_storage_enabled_?packed_entry_size:legacy_entry_size;
+    const auto entry_size=packed_entry_size;
     for(const auto& entry:entries_) {
         const bool packed=entry.storage==StorageType::packed;
         const bool invalid_packed=packed&&
-            (!packed_storage_enabled_||entry.directory||entry.size==0||
+            (entry.directory||entry.size==0||
              entry.size>SmallFileAllocationPolicy::threshold||
              entry.block_count!=1||entry.packed_generation==0||
              entry.packed_record_id==0||
@@ -391,11 +365,9 @@ bool Filesystem::commit(std::string& error) {
             (entry.storage==StorageType::packed?2:0);
         put<std::uint64_t>(base,4,entry.size);put<std::uint64_t>(base,12,entry.modified_time);put<std::uint32_t>(base,20,entry.crc32);
         put<std::uint32_t>(base,24,entry.first_block);put<std::uint32_t>(base,28,entry.block_count);
-        if(packed_storage_enabled_) {
-            put<std::uint64_t>(base,32,entry.packed_generation);
-            put<std::uint32_t>(base,40,entry.packed_record_id);
-            put<std::uint32_t>(base,44,entry.packed_record_offset);
-        }
+        put<std::uint64_t>(base,32,entry.packed_generation);
+        put<std::uint32_t>(base,40,entry.packed_record_id);
+        put<std::uint32_t>(base,44,entry.packed_record_offset);
         std::copy(entry.name.begin(),entry.name.end(),reinterpret_cast<char*>(base+entry_size));
     }
     if(manifest.size()>NorFlash::block_size-superblock_header){error="live manifest exceeds superblock capacity";return false;}
@@ -403,10 +375,7 @@ bool Filesystem::commit(std::string& error) {
     std::vector<std::uint8_t> block(NorFlash::block_size,0xFF);const auto& selected_magic=layout_==Layout::direct_boot?direct_boot_format_magic:format_magic;std::copy(selected_magic.begin(),selected_magic.end(),block.begin());
     put<std::uint16_t>(block.data(),8,major);
     put<std::uint16_t>(block.data(),10,
-        layout_==Layout::direct_boot?
-            (packed_storage_enabled_?packed_direct_boot_minor:
-                                     legacy_direct_boot_minor):
-            (packed_storage_enabled_?packed_minor:legacy_minor));
+        layout_==Layout::direct_boot?packed_direct_boot_minor:packed_minor);
     put<std::uint64_t>(block.data(),12,generation_+1);
     put<std::uint32_t>(block.data(),20,static_cast<std::uint32_t>(manifest.size()));
     put<std::uint32_t>(block.data(),24,Crc32::calculate(manifest.data(),manifest.size()));put<std::uint32_t>(block.data(),28,commit_marker);
@@ -433,17 +402,8 @@ std::size_t Filesystem::freeBlocks() const noexcept {
 
 FormatIdentity Filesystem::formatIdentity() const noexcept {
     if(layout_==Layout::direct_boot)
-        return {
-            layout_,
-            packed_storage_enabled_?direct_boot_format_version:
-                                    legacy_direct_boot_format_version,
-            packed_storage_enabled_
-        };
-    return {
-        layout_,
-        packed_storage_enabled_?format_version:legacy_format_version,
-        packed_storage_enabled_
-    };
+        return {layout_,direct_boot_format_version,true};
+    return {layout_,format_version,true};
 }
 
 bool Filesystem::inspectSpace(SpaceReport& report,std::string& error,
@@ -770,8 +730,7 @@ bool Filesystem::putFileViews(
     std::vector<const FileWriteView*> dedicated_writes;
     std::set<std::uint32_t> repack_blocks;
     const SmallFileAllocationPolicy allocation_policy;
-    const auto manifest_entry_size=
-        packed_storage_enabled_?packed_entry_size:legacy_entry_size;
+    const auto manifest_entry_size=packed_entry_size;
     std::size_t manifest_size=isDirectBoot()?8:4;
     const auto data_capacity=dataEndBlock()-allocationStartBlock();
 
@@ -808,8 +767,7 @@ bool Filesystem::putFileViews(
         if(existing&&existing->storage==StorageType::packed)
             repack_blocks.insert(existing->first_block);
 
-        if(packed_storage_enabled_&&
-           allocation_policy.shouldPack(file.bytes->size()))
+        if(allocation_policy.shouldPack(file.bytes->size()))
             packed_writes.push_back(&file);
         else
             dedicated_writes.push_back(&file);
