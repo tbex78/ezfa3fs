@@ -5,7 +5,7 @@ EZFA3FS is an independent filesystem toolkit for the EZ-Flash Advance III cartri
 The project provides the `ezfa3fs` program for the transactional **EZFA3FS**
 format.
 
-Application version: **0.52.9**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
+Application version: **0.53.1**. EZFA3FS is experimental format **0.1.0** in its standard layout and **0.2.0** in its slotted direct-boot layout. Images using the former 2.0.0 and 2.1.0 identifiers remain readable for now. Legacy EZFA3FS remains format **1.2** but are not supported in the last software version.
 
 The FUSE/macFUSE and real-cartridge workflow has been exercised with directories, file creation and reading, replacement, deletion, recursive deletion, large GBA ROM copies, garbage collection, compaction, cartridge pullback, verification, and SHA-256 comparison with source files.
 
@@ -112,15 +112,15 @@ Create it with a ROM:
 ./build/cmake/ezfa3fs format --direct-boot direct-boot.ezfa3fs game.gba
 ```
 
-Or create an empty image with a 16 MiB boot slot and copy the first ROM through a writable mount later:
+Or create an empty image with a one-block provisional boot slot and copy the first ROM through a writable mount later:
 
 ```sh
 ./build/cmake/ezfa3fs format --direct-boot direct-boot.ezfa3fs
 ```
 
-The first persistent file must be a non-empty root-level `.gba` file. The slot expands when possible if the ROM needs more room. Additional files and directories live after the reserved slot, so direct boot remains compatible with a multi-file filesystem.
+The first persistent file must be a non-empty root-level `.gba` file. Its boot slot is resized to exactly the number of 64 KiB blocks required by the ROM. Existing direct-boot filesystems with an oversized legacy slot are normalized from the immutable ROM extent when opened. Additional files and directories live after the resulting boundary, so direct boot remains compatible with a multi-file filesystem without reserving unused ROM capacity.
 
-The ROM at offset zero is immutable while present. Delete it, then copy a new root-level `.gba` file to replace it. Deletion erases only logical block 0 to invalidate the old ROM immediately. When a replacement is copied, its required stale blocks are erased and the ROM is programmed in one capture-derived writer session; programmed blocks are then verified before the manifest is committed. Retries resume at the first unverified block. The reserved slot remains available. A direct-boot ROM may occupy at most 510 blocks (31.875 MiB).
+The ROM at offset zero is immutable while present. Delete it, then copy a new root-level `.gba` file to replace it. Deletion erases only logical block 0 to invalidate the old ROM immediately. When a replacement is copied, its required stale blocks are erased, the slot is resized to the replacement ROM, and the ROM is programmed in one capture-derived writer session; programmed blocks are then verified before the manifest is committed. Retries resume at the first unverified block. Blocks released by a smaller replacement become reclaimable filesystem space. A direct-boot ROM may occupy at most 510 blocks (31.875 MiB).
 
 ## Command reference
 
